@@ -3,7 +3,21 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 type OpenAIMessage = OpenAI.ChatCompletionMessageParam;
 
+interface StreamState {
+  id: string;
+  model: string;
+  toolCallCounter: number;
+}
+
 export class MessagesToChatCompletionConverter {
+  private streamState: StreamState;
+
+  constructor() {
+    this.streamState = this.createStreamState();
+  }
+
+  // --- Request conversion ---
+
   convertRequest(
     params: Anthropic.MessageCreateParams,
   ): OpenAI.ChatCompletionCreateParams {
@@ -56,6 +70,8 @@ export class MessagesToChatCompletionConverter {
     return result;
   }
 
+  // --- Response conversion ---
+
   convertResponse(
     message: Anthropic.Message,
   ): OpenAI.ChatCompletion {
@@ -99,7 +115,7 @@ export class MessagesToChatCompletionConverter {
         {
           index: 0,
           message: assistantMessage,
-          finish_reason: this.mapStopReason(message.stop_reason),
+          finish_reason: this.mapStopReasonToFinishReason(message.stop_reason),
           logprobs: null,
         },
       ],
@@ -111,69 +127,111 @@ export class MessagesToChatCompletionConverter {
     };
   }
 
-  createStreamConverter(): (
-    event: Anthropic.RawMessageStreamEvent,
-  ) => OpenAI.ChatCompletionChunk | null {
-    const state = {
-      id: '',
-      model: '',
-      toolCallCounter: 0,
-    };
+  // --- Stream conversion ---
 
-    return (event: Anthropic.RawMessageStreamEvent): OpenAI.ChatCompletionChunk | null => {
-      switch (event.type) {
-        case 'message_start': {
-          state.id = event.message.id;
-          state.model = event.message.model;
-          return this.makeChunk(state, { role: 'assistant' });
-        }
-        case 'content_block_start': {
-          const block = event.content_block;
-          if (block.type === 'tool_use') {
-            const index = state.toolCallCounter++;
-            return this.makeChunk(state, {
-              tool_calls: [{
-                index,
-                id: block.id,
-                type: 'function',
-                function: { name: block.name, arguments: '' },
-              }],
-            });
-          }
-          return null;
-        }
-        case 'content_block_delta': {
-          const delta = event.delta;
-          if (delta.type === 'text_delta') {
-            return this.makeChunk(state, { content: delta.text });
-          }
-          if (delta.type === 'input_json_delta') {
-            const toolIndex = state.toolCallCounter - 1;
-            return this.makeChunk(state, {
-              tool_calls: [{
-                index: toolIndex,
-                function: { arguments: delta.partial_json },
-              }],
-            });
-          }
-          return null;
-        }
-        case 'message_delta': {
-          return this.makeChunk(
-            state,
-            {},
-            this.mapStreamStopReason(event.delta.stop_reason),
-          );
-        }
-        case 'content_block_stop':
-        case 'message_stop':
-        default:
-          return null;
-      }
-    };
+  convertStream(
+    event: Anthropic.RawMessageStreamEvent,
+  ): OpenAI.ChatCompletionChunk | null {
+    switch (event.type) {
+      case 'message_start':
+        return this.handleMessageStart(event);
+      case 'content_block_start':
+        return this.handleContentBlockStart(event);
+      case 'content_block_delta':
+        return this.handleContentBlockDelta(event);
+      case 'content_block_stop':
+        return null;
+      case 'message_delta':
+        return this.handleMessageDelta(event);
+      case 'message_stop':
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  resetStreamState(): void {
+    this.streamState = this.createStreamState();
   }
 
   // --- Private helpers ---
+
+  private createStreamState(): StreamState {
+    return { id: '', model: '', toolCallCounter: 0 };
+  }
+
+  private makeChunk(
+    delta: OpenAI.ChatCompletionChunk.Choice.Delta,
+    finish_reason: OpenAI.ChatCompletionChunk.Choice['finish_reason'] = null,
+  ): OpenAI.ChatCompletionChunk {
+    return {
+      id: this.streamState.id,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: this.streamState.model,
+      choices: [{ index: 0, delta, finish_reason }],
+    };
+  }
+
+  private handleMessageStart(
+    event: Anthropic.RawMessageStartEvent,
+  ): OpenAI.ChatCompletionChunk {
+    this.streamState.id = event.message.id;
+    this.streamState.model = event.message.model;
+    return this.makeChunk({ role: 'assistant' });
+  }
+
+  private handleContentBlockStart(
+    event: Anthropic.RawContentBlockStartEvent,
+  ): OpenAI.ChatCompletionChunk | null {
+    const block = event.content_block;
+
+    if (block.type === 'tool_use') {
+      const index = this.streamState.toolCallCounter++;
+      return this.makeChunk({
+        tool_calls: [
+          {
+            index,
+            id: block.id,
+            type: 'function',
+            function: { name: block.name, arguments: '' },
+          },
+        ],
+      });
+    }
+
+    return null;
+  }
+
+  private handleContentBlockDelta(
+    event: Anthropic.RawContentBlockDeltaEvent,
+  ): OpenAI.ChatCompletionChunk | null {
+    const delta = event.delta;
+
+    if (delta.type === 'text_delta') {
+      return this.makeChunk({ content: delta.text });
+    }
+
+    if (delta.type === 'input_json_delta') {
+      const toolIndex = this.streamState.toolCallCounter - 1;
+      return this.makeChunk({
+        tool_calls: [
+          { index: toolIndex, function: { arguments: delta.partial_json } },
+        ],
+      });
+    }
+
+    return null;
+  }
+
+  private handleMessageDelta(
+    event: Anthropic.RawMessageDeltaEvent,
+  ): OpenAI.ChatCompletionChunk {
+    return this.makeChunk(
+      {},
+      this.mapStopReasonToFinishReason(event.delta.stop_reason),
+    );
+  }
 
   private convertUserMessage(
     messages: OpenAIMessage[],
@@ -215,7 +273,11 @@ export class MessagesToChatCompletionConverter {
                 .map((b) => b.text)
                 .join('\n')
             : '';
-        messages.push({ role: 'tool', tool_call_id: tr.tool_use_id, content });
+        messages.push({
+          role: 'tool',
+          tool_call_id: tr.tool_use_id,
+          content,
+        });
       }
       return;
     }
@@ -232,12 +294,16 @@ export class MessagesToChatCompletionConverter {
     block: Anthropic.ImageBlockParam,
   ): OpenAI.ChatCompletionContentPartImage {
     const source = block.source;
+
     if (source.type === 'base64') {
       return {
         type: 'image_url',
-        image_url: { url: `data:${source.media_type};base64,${source.data}` },
+        image_url: {
+          url: `data:${source.media_type};base64,${source.data}`,
+        },
       };
     }
+
     return {
       type: 'image_url',
       image_url: { url: (source as Anthropic.URLImageSource).url },
@@ -264,19 +330,31 @@ export class MessagesToChatCompletionConverter {
         toolCalls.push({
           id: tu.id,
           type: 'function',
-          function: { name: tu.name, arguments: JSON.stringify(tu.input) },
+          function: {
+            name: tu.name,
+            arguments: JSON.stringify(tu.input),
+          },
         });
       }
     }
 
-    const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant' };
-    if (textContent !== undefined) assistantMsg.content = textContent;
-    if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
+    const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
+      role: 'assistant',
+    };
+
+    if (textContent !== undefined) {
+      assistantMsg.content = textContent;
+    }
+    if (toolCalls.length > 0) {
+      assistantMsg.tool_calls = toolCalls;
+    }
 
     messages.push(assistantMsg);
   }
 
-  private convertTools(tools: Anthropic.ToolUnion[]): OpenAI.ChatCompletionTool[] {
+  private convertTools(
+    tools: Anthropic.ToolUnion[],
+  ): OpenAI.ChatCompletionTool[] {
     return tools
       .filter((t): t is Anthropic.Tool => 'input_schema' in t)
       .map((t) => ({
@@ -289,46 +367,39 @@ export class MessagesToChatCompletionConverter {
       }));
   }
 
-  private convertToolChoice(choice: Anthropic.ToolChoice): OpenAI.ChatCompletionToolChoiceOption {
+  private convertToolChoice(
+    choice: Anthropic.ToolChoice,
+  ): OpenAI.ChatCompletionToolChoiceOption {
     switch (choice.type) {
-      case 'auto': return 'auto';
-      case 'any': return 'required';
-      case 'none': return 'none';
+      case 'auto':
+        return 'auto';
+      case 'any':
+        return 'required';
+      case 'none':
+        return 'none';
       case 'tool':
-        return { type: 'function', function: { name: (choice as Anthropic.ToolChoiceTool).name } };
-      default: return 'auto';
+        return {
+          type: 'function',
+          function: { name: (choice as Anthropic.ToolChoiceTool).name },
+        };
+      default:
+        return 'auto';
     }
   }
 
-  private mapStopReason(
-    reason: Anthropic.Message['stop_reason'],
+  private mapStopReasonToFinishReason(
+    reason: Anthropic.Message['stop_reason'] | Anthropic.StopReason | null,
   ): OpenAI.ChatCompletion.Choice['finish_reason'] {
     switch (reason) {
       case 'end_turn':
-      case 'stop_sequence': return 'stop';
-      case 'tool_use': return 'tool_calls';
-      case 'max_tokens': return 'length';
-      default: return 'stop';
+      case 'stop_sequence':
+        return 'stop';
+      case 'tool_use':
+        return 'tool_calls';
+      case 'max_tokens':
+        return 'length';
+      default:
+        return 'stop';
     }
-  }
-
-  private mapStreamStopReason(
-    reason: Anthropic.StopReason | null,
-  ): OpenAI.ChatCompletionChunk.Choice['finish_reason'] {
-    return this.mapStopReason(reason);
-  }
-
-  private makeChunk(
-    state: { id: string; model: string },
-    delta: OpenAI.ChatCompletionChunk.Choice.Delta,
-    finish_reason: OpenAI.ChatCompletionChunk.Choice['finish_reason'] = null,
-  ): OpenAI.ChatCompletionChunk {
-    return {
-      id: state.id,
-      object: 'chat.completion.chunk',
-      created: Math.floor(Date.now() / 1000),
-      model: state.model,
-      choices: [{ index: 0, delta, finish_reason }],
-    };
   }
 }
