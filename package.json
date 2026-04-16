@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "test:verbose": "jest --verbose"
   },
   "license": "MIT",
   "dependencies": {
