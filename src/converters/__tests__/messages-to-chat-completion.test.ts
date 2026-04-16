@@ -241,6 +241,83 @@ describe('MessagesToChatCompletionConverter', () => {
         expect(result.tool_choice).toEqual({ type: 'function', function: { name: 'get_weather' } });
       });
     });
+
+    describe('output_config mapping', () => {
+      it('maps json_schema output_config to response_format', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          output_config: { format: { type: 'json_schema', schema: { type: 'object', properties: { answer: { type: 'string' } } } } },
+        });
+        expect(result.response_format).toEqual({
+          type: 'json_schema',
+          json_schema: { name: 'response', schema: { type: 'object', properties: { answer: { type: 'string' } } }, strict: true },
+        });
+      });
+
+      it('maps output_config without format to text', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          output_config: {},
+        });
+        expect(result.response_format).toEqual({ type: 'text' });
+      });
+    });
+
+    describe('thinking mapping', () => {
+      it('maps thinking enabled to reasoning_effort', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 16000,
+          messages: [{ role: 'user', content: 'Hi' }],
+          thinking: { type: 'enabled', budget_tokens: 10000 },
+        });
+        expect((result as any).reasoning_effort).toBe('high');
+      });
+
+      it('maps thinking disabled to reasoning_effort none', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          thinking: { type: 'disabled' },
+        });
+        expect((result as any).reasoning_effort).toBe('none');
+      });
+    });
+
+    describe('metadata mapping', () => {
+      it('maps metadata.user_id to user', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          metadata: { user_id: 'user-123' },
+        });
+        expect(result.user).toBe('user-123');
+      });
+    });
+
+    describe('parallel_tool_calls mapping', () => {
+      it('maps disable_parallel_tool_use=true to parallel_tool_calls=false', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          tools: [{ name: 'fn', input_schema: { type: 'object' } }],
+          tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+        });
+        expect(result.tool_choice).toBe('auto');
+        expect((result as any).parallel_tool_calls).toBe(false);
+      });
+
+      it('does not set parallel_tool_calls when disable_parallel_tool_use is not set', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          tool_choice: { type: 'auto' },
+        });
+        expect(result.tool_choice).toBe('auto');
+        expect((result as any).parallel_tool_calls).toBeUndefined();
+      });
+    });
   });
 
   // ===== convertResponse =====

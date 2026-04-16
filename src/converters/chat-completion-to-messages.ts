@@ -71,7 +71,25 @@ export class ChatCompletionToMessagesConverter {
       result.tools = this.convertTools(params.tools);
     }
     if (params.tool_choice !== undefined) {
-      result.tool_choice = this.convertToolChoice(params.tool_choice);
+      result.tool_choice = this.convertToolChoice(
+        params.tool_choice,
+        (params as any).parallel_tool_calls,
+      );
+    }
+    if (params.response_format) {
+      result.output_config = this.convertResponseFormat(params.response_format);
+    }
+    if ((params as any).reasoning_effort != null) {
+      result.thinking = this.convertReasoningEffort((params as any).reasoning_effort);
+    }
+    if (params.user) {
+      result.metadata = { user_id: params.user };
+    }
+    if ((params as any).service_tier != null) {
+      const tier = (params as any).service_tier;
+      if (tier === 'auto' || tier === 'standard_only') {
+        result.service_tier = tier;
+      }
     }
     if (params.stream === true) {
       (result as any).stream = true;
@@ -416,18 +434,70 @@ export class ChatCompletionToMessagesConverter {
 
   private convertToolChoice(
     choice: OpenAI.ChatCompletionToolChoiceOption,
+    parallelToolCalls?: boolean,
   ): Anthropic.ToolChoice {
-    if (choice === 'auto') return { type: 'auto' };
-    if (choice === 'required') return { type: 'any' };
+    const disableParallel = parallelToolCalls === false ? true : undefined;
+
+    if (choice === 'auto') {
+      return disableParallel ? { type: 'auto', disable_parallel_tool_use: true } : { type: 'auto' };
+    }
+    if (choice === 'required') {
+      return disableParallel ? { type: 'any', disable_parallel_tool_use: true } : { type: 'any' };
+    }
     if (choice === 'none') return { type: 'none' };
 
     if (typeof choice === 'object' && 'type' in choice) {
       if (choice.type === 'function' && 'function' in choice) {
-        return { type: 'tool', name: (choice as OpenAI.ChatCompletionNamedToolChoice).function.name };
+        const name = (choice as OpenAI.ChatCompletionNamedToolChoice).function.name;
+        return disableParallel
+          ? { type: 'tool', name, disable_parallel_tool_use: true }
+          : { type: 'tool', name };
       }
     }
 
     return { type: 'auto' };
+  }
+
+  private convertResponseFormat(
+    format: NonNullable<OpenAI.ChatCompletionCreateParams['response_format']>,
+  ): Anthropic.OutputConfig {
+    if ('json_schema' in format && format.type === 'json_schema') {
+      return {
+        format: {
+          type: 'json_schema',
+          schema: format.json_schema.schema ?? {},
+        },
+      };
+    }
+    if (format.type === 'json_object') {
+      return {
+        format: {
+          type: 'json_schema',
+          schema: { type: 'object' },
+        },
+      };
+    }
+    // text format — no output_config needed, return empty
+    return {};
+  }
+
+  private convertReasoningEffort(
+    effort: string | null,
+  ): Anthropic.ThinkingConfigParam {
+    if (!effort || effort === 'none' || effort === 'minimal') {
+      return { type: 'disabled' };
+    }
+    // Map OpenAI effort levels to Anthropic budget_tokens
+    const budgetMap: Record<string, number> = {
+      low: 2048,
+      medium: 5120,
+      high: 10240,
+      xhigh: 20480,
+    };
+    return {
+      type: 'enabled',
+      budget_tokens: budgetMap[effort] ?? 10240,
+    };
   }
 
   private mapFinishReasonToStopReason(

@@ -319,6 +319,97 @@ describe('ChatCompletionToMessagesConverter', () => {
         expect(result.tool_choice).toEqual({ type: 'tool', name: 'get_weather' });
       });
     });
+
+    describe('response_format mapping', () => {
+      it('maps json_schema response_format to output_config', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          response_format: {
+            type: 'json_schema',
+            json_schema: { name: 'response', schema: { type: 'object', properties: { answer: { type: 'string' } } } },
+          },
+        });
+        expect(result.output_config).toEqual({
+          format: { type: 'json_schema', schema: { type: 'object', properties: { answer: { type: 'string' } } } },
+        });
+      });
+
+      it('maps json_object response_format to output_config', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          response_format: { type: 'json_object' },
+        });
+        expect(result.output_config).toEqual({
+          format: { type: 'json_schema', schema: { type: 'object' } },
+        });
+      });
+
+      it('does not set output_config for text format', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          response_format: { type: 'text' },
+        });
+        expect(result.output_config).toEqual({});
+      });
+    });
+
+    describe('reasoning_effort mapping', () => {
+      it('maps "high" reasoning_effort to thinking enabled', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          reasoning_effort: 'high',
+        } as any);
+        expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 10240 });
+      });
+
+      it('maps "low" reasoning_effort to thinking enabled with small budget', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          reasoning_effort: 'low',
+        } as any);
+        expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 2048 });
+      });
+
+      it('maps "none" reasoning_effort to thinking disabled', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          reasoning_effort: 'none',
+        } as any);
+        expect(result.thinking).toEqual({ type: 'disabled' });
+      });
+    });
+
+    describe('user mapping', () => {
+      it('maps user to metadata.user_id', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          user: 'user-123',
+        });
+        expect(result.metadata).toEqual({ user_id: 'user-123' });
+      });
+    });
+
+    describe('parallel_tool_calls mapping', () => {
+      it('maps parallel_tool_calls=false to disable_parallel_tool_use=true', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+        } as any);
+        expect(result.tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+      });
+
+      it('does not set disable_parallel_tool_use when parallel_tool_calls is true', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
+          tool_choice: 'auto',
+          parallel_tool_calls: true,
+        } as any);
+        expect(result.tool_choice).toEqual({ type: 'auto' });
+      });
+    });
   });
 
   // ===== convertResponse =====

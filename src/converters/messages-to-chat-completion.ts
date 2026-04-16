@@ -61,7 +61,23 @@ export class MessagesToChatCompletionConverter {
       result.tools = this.convertTools(params.tools);
     }
     if (params.tool_choice !== undefined) {
-      result.tool_choice = this.convertToolChoice(params.tool_choice);
+      const { toolChoice, parallelToolCalls } = this.convertToolChoice(params.tool_choice);
+      result.tool_choice = toolChoice;
+      if (parallelToolCalls !== undefined) {
+        (result as any).parallel_tool_calls = parallelToolCalls;
+      }
+    }
+    if (params.output_config) {
+      result.response_format = this.convertOutputConfig(params.output_config);
+    }
+    if (params.thinking) {
+      (result as any).reasoning_effort = this.convertThinking(params.thinking);
+    }
+    if (params.metadata?.user_id) {
+      result.user = params.metadata.user_id;
+    }
+    if (params.service_tier != null) {
+      (result as any).service_tier = params.service_tier === 'standard_only' ? 'default' : params.service_tier;
     }
     if (params.stream === true) {
       (result as any).stream = true;
@@ -369,22 +385,60 @@ export class MessagesToChatCompletionConverter {
 
   private convertToolChoice(
     choice: Anthropic.ToolChoice,
-  ): OpenAI.ChatCompletionToolChoiceOption {
+  ): { toolChoice: OpenAI.ChatCompletionToolChoiceOption; parallelToolCalls?: boolean } {
+    const parallelToolCalls = 'disable_parallel_tool_use' in choice && choice.disable_parallel_tool_use === true
+      ? false
+      : undefined;
+
     switch (choice.type) {
       case 'auto':
-        return 'auto';
+        return { toolChoice: 'auto', parallelToolCalls };
       case 'any':
-        return 'required';
+        return { toolChoice: 'required', parallelToolCalls };
       case 'none':
-        return 'none';
+        return { toolChoice: 'none' };
       case 'tool':
         return {
-          type: 'function',
-          function: { name: (choice as Anthropic.ToolChoiceTool).name },
+          toolChoice: {
+            type: 'function',
+            function: { name: (choice as Anthropic.ToolChoiceTool).name },
+          },
+          parallelToolCalls,
         };
       default:
-        return 'auto';
+        return { toolChoice: 'auto' };
     }
+  }
+
+  private convertOutputConfig(
+    config: Anthropic.OutputConfig,
+  ): OpenAI.ChatCompletionCreateParams['response_format'] {
+    if (config.format?.type === 'json_schema') {
+      return {
+        type: 'json_schema',
+        json_schema: {
+          name: 'response',
+          schema: config.format.schema,
+          strict: true,
+        },
+      };
+    }
+    return { type: 'text' };
+  }
+
+  private convertThinking(
+    thinking: Anthropic.ThinkingConfigParam,
+  ): string | null {
+    if (thinking.type === 'disabled') return 'none';
+    if (thinking.type === 'enabled') {
+      const budget = (thinking as Anthropic.ThinkingConfigEnabled).budget_tokens;
+      if (budget <= 2048) return 'low';
+      if (budget <= 5120) return 'medium';
+      if (budget <= 10240) return 'high';
+      return 'high';
+    }
+    // adaptive
+    return 'medium';
   }
 
   private mapStopReasonToFinishReason(
