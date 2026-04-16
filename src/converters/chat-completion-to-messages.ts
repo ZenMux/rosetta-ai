@@ -6,7 +6,24 @@ type AnthropicContentBlock = Anthropic.ContentBlockParam;
 
 const DEFAULT_MAX_TOKENS = 4096;
 
+interface StreamState {
+  messageStarted: boolean;
+  currentBlockIndex: number;
+  currentBlockType: 'text' | 'tool_use' | null;
+  id: string;
+  model: string;
+  toolCallIndexMap: Map<number, number>;
+}
+
 export class ChatCompletionToMessagesConverter {
+  private streamState: StreamState;
+
+  constructor() {
+    this.streamState = this.createStreamState();
+  }
+
+  // --- Request conversion ---
+
   convertRequest(
     params: OpenAI.ChatCompletionCreateParams,
   ): Anthropic.MessageCreateParams {
@@ -24,7 +41,7 @@ export class ChatCompletionToMessagesConverter {
       } else if (msg.role === 'assistant') {
         messages.push({
           role: 'assistant',
-          content: this.convertAssistantContent(msg),
+          content: this.convertAssistantMessage(msg),
         });
       } else if (msg.role === 'tool') {
         this.appendToolResult(messages, msg);
@@ -63,6 +80,8 @@ export class ChatCompletionToMessagesConverter {
     return result;
   }
 
+  // --- Response conversion ---
+
   convertResponse(
     response: OpenAI.ChatCompletion,
   ): Anthropic.Message {
@@ -99,7 +118,7 @@ export class ChatCompletionToMessagesConverter {
       role: 'assistant',
       model: response.model as Anthropic.Model,
       content,
-      stop_reason: this.mapFinishReason(choice?.finish_reason),
+      stop_reason: this.mapFinishReasonToStopReason(choice?.finish_reason),
       stop_sequence: null,
       usage: {
         input_tokens: response.usage?.prompt_tokens ?? 0,
@@ -115,137 +134,164 @@ export class ChatCompletionToMessagesConverter {
     };
   }
 
-  createStreamConverter(): (
+  // --- Stream conversion ---
+
+  convertStream(
     chunk: OpenAI.ChatCompletionChunk,
-  ) => Anthropic.RawMessageStreamEvent[] {
-    const state = {
-      messageStarted: false,
-      currentBlockIndex: -1,
-      currentBlockType: null as 'text' | 'tool_use' | null,
-      id: '',
-      model: '',
-      toolCallIndexMap: new Map<number, number>(),
-    };
+  ): Anthropic.RawMessageStreamEvent[] {
+    const state = this.streamState;
+    const events: Anthropic.RawMessageStreamEvent[] = [];
+    const choice = chunk.choices[0];
+    if (!choice) return events;
 
-    return (chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] => {
-      const events: Anthropic.RawMessageStreamEvent[] = [];
-      const choice = chunk.choices[0];
-      if (!choice) return events;
+    state.id = chunk.id;
+    state.model = chunk.model;
 
-      state.id = chunk.id;
-      state.model = chunk.model;
-      const delta = choice.delta;
+    const delta = choice.delta;
 
-      if (!state.messageStarted && delta.role === 'assistant') {
-        state.messageStarted = true;
-        events.push({
-          type: 'message_start',
-          message: {
-            id: chunk.id,
-            type: 'message',
-            role: 'assistant',
-            model: chunk.model as Anthropic.Model,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: {
-              input_tokens: 0,
-              output_tokens: 0,
-              cache_creation_input_tokens: null,
-              cache_read_input_tokens: null,
-              cache_creation: null,
-              inference_geo: null,
-              server_tool_use: null,
-              service_tier: null,
-            },
-            container: null,
-          },
-        });
-
-        state.currentBlockIndex = 0;
-        state.currentBlockType = 'text';
-        events.push({
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '', citations: null },
-        });
-      }
-
-      if (delta.content) {
-        events.push({
-          type: 'content_block_delta',
-          index: state.currentBlockIndex,
-          delta: { type: 'text_delta', text: delta.content },
-        });
-      }
-
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          if (tc.id && tc.function?.name) {
-            if (state.currentBlockType !== null) {
-              events.push({ type: 'content_block_stop', index: state.currentBlockIndex });
-            }
-            state.currentBlockIndex++;
-            state.currentBlockType = 'tool_use';
-            state.toolCallIndexMap.set(tc.index, state.currentBlockIndex);
-
-            events.push({
-              type: 'content_block_start',
-              index: state.currentBlockIndex,
-              content_block: {
-                type: 'tool_use',
-                id: tc.id,
-                name: tc.function.name,
-                input: {},
-                caller: { type: 'direct' },
-              },
-            });
-
-            if (tc.function.arguments) {
-              events.push({
-                type: 'content_block_delta',
-                index: state.currentBlockIndex,
-                delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
-              });
-            }
-          } else if (tc.function?.arguments) {
-            const blockIndex = state.toolCallIndexMap.get(tc.index) ?? state.currentBlockIndex;
-            events.push({
-              type: 'content_block_delta',
-              index: blockIndex,
-              delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
-            });
-          }
-        }
-      }
-
-      if (choice.finish_reason) {
-        if (state.currentBlockType !== null) {
-          events.push({ type: 'content_block_stop', index: state.currentBlockIndex });
-        }
-        events.push({
-          type: 'message_delta',
-          delta: {
-            stop_reason: this.mapStreamFinishReason(choice.finish_reason),
-            stop_sequence: null,
-            container: null,
-          },
+    // First chunk with role - emit message_start
+    if (!state.messageStarted && delta.role === 'assistant') {
+      state.messageStarted = true;
+      events.push({
+        type: 'message_start',
+        message: {
+          id: chunk.id,
+          type: 'message',
+          role: 'assistant',
+          model: chunk.model as Anthropic.Model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
           usage: {
+            input_tokens: 0,
             output_tokens: 0,
-            input_tokens: null,
             cache_creation_input_tokens: null,
             cache_read_input_tokens: null,
+            cache_creation: null,
+            inference_geo: null,
             server_tool_use: null,
+            service_tier: null,
           },
+          container: null,
+        },
+      });
+
+      state.currentBlockIndex = 0;
+      state.currentBlockType = 'text';
+      events.push({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '', citations: null },
+      });
+    }
+
+    // Text content delta
+    if (delta.content) {
+      events.push({
+        type: 'content_block_delta',
+        index: state.currentBlockIndex,
+        delta: { type: 'text_delta', text: delta.content },
+      });
+    }
+
+    // Tool call deltas
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        if (tc.id && tc.function?.name) {
+          if (state.currentBlockType !== null) {
+            events.push({
+              type: 'content_block_stop',
+              index: state.currentBlockIndex,
+            });
+          }
+
+          state.currentBlockIndex++;
+          state.currentBlockType = 'tool_use';
+          state.toolCallIndexMap.set(tc.index, state.currentBlockIndex);
+
+          events.push({
+            type: 'content_block_start',
+            index: state.currentBlockIndex,
+            content_block: {
+              type: 'tool_use',
+              id: tc.id,
+              name: tc.function.name,
+              input: {},
+              caller: { type: 'direct' },
+            },
+          });
+
+          if (tc.function.arguments) {
+            events.push({
+              type: 'content_block_delta',
+              index: state.currentBlockIndex,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: tc.function.arguments,
+              },
+            });
+          }
+        } else if (tc.function?.arguments) {
+          const blockIndex = state.toolCallIndexMap.get(tc.index) ?? state.currentBlockIndex;
+          events.push({
+            type: 'content_block_delta',
+            index: blockIndex,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: tc.function.arguments,
+            },
+          });
+        }
+      }
+    }
+
+    // Finish reason - emit stop events
+    if (choice.finish_reason) {
+      if (state.currentBlockType !== null) {
+        events.push({
+          type: 'content_block_stop',
+          index: state.currentBlockIndex,
         });
-        events.push({ type: 'message_stop' });
       }
 
-      return events;
-    };
+      events.push({
+        type: 'message_delta',
+        delta: {
+          stop_reason: this.mapFinishReasonToStopReason(choice.finish_reason),
+          stop_sequence: null,
+          container: null,
+        },
+        usage: {
+          output_tokens: 0,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      events.push({ type: 'message_stop' });
+    }
+
+    return events;
+  }
+
+  resetStreamState(): void {
+    this.streamState = this.createStreamState();
   }
 
   // --- Private helpers ---
+
+  private createStreamState(): StreamState {
+    return {
+      messageStarted: false,
+      currentBlockIndex: -1,
+      currentBlockType: null,
+      id: '',
+      model: '',
+      toolCallIndexMap: new Map(),
+    };
+  }
 
   private extractSystemText(
     msg: OpenAI.ChatCompletionSystemMessageParam | OpenAI.ChatCompletionDeveloperMessageParam,
@@ -293,10 +339,13 @@ export class ChatCompletionToMessagesConverter {
       };
     }
 
-    return { type: 'image', source: { type: 'url', url } };
+    return {
+      type: 'image',
+      source: { type: 'url', url },
+    };
   }
 
-  private convertAssistantContent(
+  private convertAssistantMessage(
     msg: OpenAI.ChatCompletionAssistantMessageParam,
   ): AnthropicContentBlock[] {
     const blocks: AnthropicContentBlock[] = [];
@@ -353,7 +402,9 @@ export class ChatCompletionToMessagesConverter {
     messages.push({ role: 'user', content: [toolResult] });
   }
 
-  private convertTools(tools: OpenAI.ChatCompletionTool[]): Anthropic.Tool[] {
+  private convertTools(
+    tools: OpenAI.ChatCompletionTool[],
+  ): Anthropic.Tool[] {
     return tools
       .filter((t): t is OpenAI.ChatCompletionFunctionTool => t.type === 'function')
       .map((t) => ({
@@ -363,7 +414,9 @@ export class ChatCompletionToMessagesConverter {
       }));
   }
 
-  private convertToolChoice(choice: OpenAI.ChatCompletionToolChoiceOption): Anthropic.ToolChoice {
+  private convertToolChoice(
+    choice: OpenAI.ChatCompletionToolChoiceOption,
+  ): Anthropic.ToolChoice {
     if (choice === 'auto') return { type: 'auto' };
     if (choice === 'required') return { type: 'any' };
     if (choice === 'none') return { type: 'none' };
@@ -377,18 +430,20 @@ export class ChatCompletionToMessagesConverter {
     return { type: 'auto' };
   }
 
-  private mapFinishReason(
-    reason: OpenAI.ChatCompletion.Choice['finish_reason'] | undefined,
+  private mapFinishReasonToStopReason(
+    reason: OpenAI.ChatCompletion.Choice['finish_reason'] | string | undefined,
   ): Anthropic.Message['stop_reason'] {
     switch (reason) {
-      case 'stop': return 'end_turn';
-      case 'tool_calls': return 'tool_use';
-      case 'length': return 'max_tokens';
-      default: return 'end_turn';
+      case 'stop':
+        return 'end_turn';
+      case 'tool_calls':
+        return 'tool_use';
+      case 'length':
+        return 'max_tokens';
+      case 'content_filter':
+      case 'function_call':
+      default:
+        return 'end_turn';
     }
-  }
-
-  private mapStreamFinishReason(reason: string): Anthropic.Message['stop_reason'] {
-    return this.mapFinishReason(reason as any);
   }
 }
