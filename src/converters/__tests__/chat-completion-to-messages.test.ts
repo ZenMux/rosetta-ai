@@ -410,6 +410,43 @@ describe('ChatCompletionToMessagesConverter', () => {
         expect(result.tool_choice).toEqual({ type: 'auto' });
       });
     });
+
+    describe('stream mapping', () => {
+      it('passes stream=true through', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          stream: true,
+        } as any);
+        expect((result as any).stream).toBe(true);
+      });
+
+      it('does not set stream when not provided', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+        });
+        expect((result as any).stream).toBeUndefined();
+      });
+    });
+
+    describe('service_tier mapping', () => {
+      it('maps service_tier "auto" through', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          service_tier: 'auto',
+        } as any);
+        expect(result.service_tier).toBe('auto');
+      });
+    });
+
+    describe('reasoning_effort mapping (additional)', () => {
+      it('maps "medium" reasoning_effort to thinking enabled with budget 5120', () => {
+        const result = converter.convertRequest({
+          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          reasoning_effort: 'medium',
+        } as any);
+        expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 5120 });
+      });
+    });
   });
 
   // ===== convertResponse =====
@@ -549,6 +586,26 @@ describe('ChatCompletionToMessagesConverter', () => {
         expect(types).toContain('content_block_stop');
         expect(types).toContain('message_delta');
         expect(types).toContain('message_stop');
+      });
+
+      it('maps finish_reason "tool_calls" to stop_reason "tool_use" in stream', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+
+        const events = c.convertStream(makeChunk({ finish_reason: 'tool_calls' }));
+        const msgDelta = events.find(e => e.type === 'message_delta') as Anthropic.RawMessageDeltaEvent;
+
+        expect(msgDelta.delta.stop_reason).toBe('tool_use');
+      });
+
+      it('maps finish_reason "length" to stop_reason "max_tokens" in stream', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+
+        const events = c.convertStream(makeChunk({ finish_reason: 'length' }));
+        const msgDelta = events.find(e => e.type === 'message_delta') as Anthropic.RawMessageDeltaEvent;
+
+        expect(msgDelta.delta.stop_reason).toBe('max_tokens');
       });
     });
 
