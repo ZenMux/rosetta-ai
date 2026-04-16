@@ -318,6 +318,56 @@ describe('MessagesToChatCompletionConverter', () => {
         expect((result as any).parallel_tool_calls).toBeUndefined();
       });
     });
+
+    describe('stream mapping', () => {
+      it('passes stream=true through', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          stream: true,
+        } as any);
+        expect((result as any).stream).toBe(true);
+      });
+
+      it('does not set stream when not provided', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+        });
+        expect((result as any).stream).toBeUndefined();
+      });
+    });
+
+    describe('service_tier mapping', () => {
+      it('maps service_tier "auto" through', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          service_tier: 'auto',
+        });
+        expect((result as any).service_tier).toBe('auto');
+      });
+
+      it('maps service_tier "standard_only" to "default"', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          service_tier: 'standard_only',
+        });
+        expect((result as any).service_tier).toBe('default');
+      });
+    });
+
+    describe('thinking mapping (additional)', () => {
+      it('maps thinking adaptive to reasoning_effort "medium"', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 16000,
+          messages: [{ role: 'user', content: 'Hi' }],
+          thinking: { type: 'adaptive' },
+        });
+        expect((result as any).reasoning_effort).toBe('medium');
+      });
+    });
   });
 
   // ===== convertResponse =====
@@ -374,6 +424,10 @@ describe('MessagesToChatCompletionConverter', () => {
 
     it('maps stop_reason "tool_use" to "tool_calls"', () => {
       expect(converter.convertResponse(makeMessage({ stop_reason: 'tool_use' })).choices[0].finish_reason).toBe('tool_calls');
+    });
+
+    it('maps stop_reason "stop_sequence" to "stop"', () => {
+      expect(converter.convertResponse(makeMessage({ stop_reason: 'stop_sequence' })).choices[0].finish_reason).toBe('stop');
     });
 
     it('joins multiple text blocks', () => {
@@ -492,6 +546,19 @@ describe('MessagesToChatCompletionConverter', () => {
         });
 
         expect(result!.choices[0].finish_reason).toBe('tool_calls');
+      });
+
+      it('maps max_tokens stop_reason to length finish_reason in stream', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+
+        const result = c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'max_tokens', stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+
+        expect(result!.choices[0].finish_reason).toBe('length');
       });
     });
 
