@@ -1263,5 +1263,64 @@ describe("MessagesToChatCompletionConverter", () => {
         expect(result!.choices[0].finish_reason).toBe("content_filter");
       });
     });
+
+    describe("convertStream (AsyncIterable)", () => {
+      async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+        const result: T[] = [];
+        for await (const item of iter) {
+          result.push(item);
+        }
+        return result;
+      }
+
+      async function* toAsync<T>(items: T[]): AsyncIterable<T> {
+        for (const item of items) {
+          yield item;
+        }
+      }
+
+      it("converts a full text stream", async () => {
+        const events: Anthropic.RawMessageStreamEvent[] = [
+          messageStart(),
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " world" } },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          { type: "message_stop" },
+        ];
+
+        const c = new MessagesToChatCompletionConverter();
+        const chunks = await collect(c.convertStream(toAsync(events)));
+
+        expect(chunks.length).toBeGreaterThan(0);
+        expect(chunks[0].choices[0].delta.role).toBe("assistant");
+        const textChunks = chunks.filter(ch => ch.choices[0]?.delta?.content && ch.choices[0].delta.content !== "");
+        expect(textChunks.length).toBe(2);
+        const finishChunk = chunks.find(ch => ch.choices[0]?.finish_reason === "stop");
+        expect(finishChunk).toBeDefined();
+        const usageChunk = chunks.find(ch => ch.choices.length === 0 && ch.usage);
+        expect(usageChunk).toBeDefined();
+        expect(usageChunk!.usage!.completion_tokens).toBe(5);
+      });
+
+      it("filters out null events (content_block_start with empty text)", async () => {
+        const events: Anthropic.RawMessageStreamEvent[] = [
+          messageStart(),
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          { type: "message_stop" },
+        ];
+
+        const c = new MessagesToChatCompletionConverter();
+        const chunks = await collect(c.convertStream(toAsync(events)));
+
+        // content_block_start with empty text returns null and should be filtered
+        const allDefined = chunks.every(ch => ch != null);
+        expect(allDefined).toBe(true);
+      });
+    });
   });
 });

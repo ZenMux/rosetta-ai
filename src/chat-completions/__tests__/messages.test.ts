@@ -1046,5 +1046,72 @@ describe("ChatCompletionToMessagesConverter", () => {
         expect((startEvent.content_block as any).content[0].title).toBe("Example");
       });
     });
+
+    describe("convertStream (AsyncIterable)", () => {
+      async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+        const result: T[] = [];
+        for await (const item of iter) {
+          result.push(item);
+        }
+        return result;
+      }
+
+      async function* toAsync<T>(items: T[]): AsyncIterable<T> {
+        for (const item of items) {
+          yield item;
+        }
+      }
+
+      it("converts a full text stream", async () => {
+        const chunks = [
+          makeChunk({ delta: { role: "assistant" } }),
+          makeChunk({ delta: { content: "Hello" } }),
+          makeChunk({ delta: { content: " world" } }),
+          makeChunk({ finish_reason: "stop" }),
+        ];
+
+        const c = new ChatCompletionToMessagesConverter();
+        const events = await collect(c.convertStream(toAsync(chunks)));
+        const types = events.map(e => e.type);
+
+        expect(types[0]).toBe("message_start");
+        expect(types).toContain("content_block_start");
+        expect(types.filter(t => t === "content_block_delta").length).toBe(2);
+        expect(types).toContain("content_block_stop");
+        expect(types).toContain("message_delta");
+        expect(types).toContain("message_stop");
+      });
+
+      it("converts a tool call stream", async () => {
+        const chunks = [
+          makeChunk({ delta: { role: "assistant" } }),
+          makeChunk({
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_weather", arguments: "" },
+                },
+              ],
+            },
+          }),
+          makeChunk({
+            delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"SF"}' } }] },
+          }),
+          makeChunk({ finish_reason: "tool_calls" }),
+        ];
+
+        const c = new ChatCompletionToMessagesConverter();
+        const events = await collect(c.convertStream(toAsync(chunks)));
+        const types = events.map(e => e.type);
+
+        expect(types).toContain("message_start");
+        expect(types).toContain("content_block_start");
+        expect(types.filter(t => t === "content_block_delta").length).toBeGreaterThanOrEqual(1);
+        expect(types).toContain("message_stop");
+      });
+    });
   });
 });
