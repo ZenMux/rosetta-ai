@@ -519,12 +519,12 @@ describe('ChatCompletionToMessagesConverter', () => {
       expect(converter.convertResponse(input).stop_reason).toBe('max_tokens');
     });
 
-    it('maps finish_reason "content_filter" to "end_turn"', () => {
+    it('maps finish_reason "content_filter" to "refusal"', () => {
       const input: OpenAI.ChatCompletion = {
         id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
         choices: [{ index: 0, message: { role: 'assistant', content: '', refusal: null }, finish_reason: 'content_filter', logprobs: null }],
       };
-      expect(converter.convertResponse(input).stop_reason).toBe('end_turn');
+      expect(converter.convertResponse(input).stop_reason).toBe('refusal');
     });
 
     it('handles null content with no tool calls', () => {
@@ -533,6 +533,59 @@ describe('ChatCompletionToMessagesConverter', () => {
         choices: [{ index: 0, message: { role: 'assistant', content: null, refusal: null }, finish_reason: 'stop', logprobs: null }],
       };
       expect(converter.convertResponse(input).content).toEqual([{ type: 'text', text: '', citations: null }]);
+    });
+
+    it('converts reasoning to thinking block', () => {
+      const input: OpenAI.ChatCompletion = {
+        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'Answer is 42.', refusal: null, reasoning: 'Let me think...' } as any,
+          finish_reason: 'stop', logprobs: null,
+        }],
+      };
+      const result = converter.convertResponse(input);
+      expect(result.content[0]).toEqual({ type: 'thinking', thinking: 'Let me think...', signature: '' });
+      expect(result.content[1]).toEqual({ type: 'text', text: 'Answer is 42.', citations: null });
+    });
+
+    it('converts annotations to web_search_tool_result', () => {
+      const input: OpenAI.ChatCompletion = {
+        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant', content: 'Search result.', refusal: null,
+            annotations: [{ type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 10 } }],
+          },
+          finish_reason: 'stop', logprobs: null,
+        }],
+      };
+      const result = converter.convertResponse(input);
+      const wsBlock = result.content.find(b => b.type === 'web_search_tool_result') as any;
+      expect(wsBlock).toBeDefined();
+      expect(wsBlock.content[0].title).toBe('Example');
+      expect(wsBlock.content[0].url).toBe('https://example.com');
+    });
+
+    it('maps function_call finish_reason to tool_use', () => {
+      const input: OpenAI.ChatCompletion = {
+        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
+        choices: [{ index: 0, message: { role: 'assistant', content: null, refusal: null }, finish_reason: 'function_call', logprobs: null }],
+      };
+      expect(converter.convertResponse(input).stop_reason).toBe('tool_use');
+    });
+
+    it('converts usage with cache details', () => {
+      const input: OpenAI.ChatCompletion = {
+        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', refusal: null }, finish_reason: 'stop', logprobs: null }],
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, prompt_tokens_details: { cached_tokens: 30 } },
+      };
+      const result = converter.convertResponse(input);
+      expect(result.usage.input_tokens).toBe(100);
+      expect(result.usage.output_tokens).toBe(50);
+      expect(result.usage.cache_read_input_tokens).toBe(30);
     });
   });
 
@@ -552,27 +605,39 @@ describe('ChatCompletionToMessagesConverter', () => {
     }
 
     describe('text streaming', () => {
-      it('emits message_start + content_block_start on first chunk', () => {
+      it('emits message_start on first chunk', () => {
         const c = new ChatCompletionToMessagesConverter();
         const events = c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
-        expect(events.length).toBe(2);
+        expect(events.length).toBe(1);
         expect(events[0].type).toBe('message_start');
-        expect(events[1].type).toBe('content_block_start');
-        expect((events[1] as Anthropic.RawContentBlockStartEvent).index).toBe(0);
       });
 
-      it('emits content_block_delta for text chunks', () => {
+      it('emits content_block_start + content_block_delta for first text chunk', () => {
         const c = new ChatCompletionToMessagesConverter();
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
         const events = c.convertStream(makeChunk({ delta: { content: 'Hello' } }));
 
+        expect(events.length).toBe(2);
+        expect(events[0].type).toBe('content_block_start');
+        expect((events[0] as Anthropic.RawContentBlockStartEvent).content_block.type).toBe('text');
+        expect(events[1].type).toBe('content_block_delta');
+        const d = (events[1] as Anthropic.RawContentBlockDeltaEvent).delta;
+        expect(d.type).toBe('text_delta');
+        expect((d as Anthropic.TextDelta).text).toBe('Hello');
+      });
+
+      it('emits only content_block_delta for subsequent text chunks', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+        c.convertStream(makeChunk({ delta: { content: 'Hello' } }));
+
+        const events = c.convertStream(makeChunk({ delta: { content: ' world' } }));
+
         expect(events.length).toBe(1);
         expect(events[0].type).toBe('content_block_delta');
-        const delta = (events[0] as Anthropic.RawContentBlockDeltaEvent).delta;
-        expect(delta.type).toBe('text_delta');
-        expect((delta as Anthropic.TextDelta).text).toBe('Hello');
+        expect((events[0] as Anthropic.RawContentBlockDeltaEvent).delta.type).toBe('text_delta');
       });
 
       it('emits stop events on finish', () => {
@@ -657,6 +722,58 @@ describe('ChatCompletionToMessagesConverter', () => {
         const types = events.map(e => e.type);
         expect(types).toContain('content_block_stop');
         expect(types).toContain('content_block_start');
+      });
+    });
+
+    describe('reasoning streaming', () => {
+      it('emits thinking block events for reasoning delta', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+
+        const events = c.convertStream(makeChunk({
+          delta: { reasoning: 'Let me think...' } as any,
+        }));
+
+        const types = events.map(e => e.type);
+        expect(types).toContain('content_block_start');
+        expect(types).toContain('content_block_delta');
+        const startEvent = events.find(e => e.type === 'content_block_start') as Anthropic.RawContentBlockStartEvent;
+        expect(startEvent.content_block.type).toBe('thinking');
+        const deltaEvent = events.find(e => e.type === 'content_block_delta') as Anthropic.RawContentBlockDeltaEvent;
+        expect(deltaEvent.delta.type).toBe('thinking_delta');
+        expect((deltaEvent.delta as Anthropic.ThinkingDelta).thinking).toBe('Let me think...');
+      });
+
+      it('transitions from reasoning to text with content_block_stop', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+        c.convertStream(makeChunk({ delta: { reasoning: 'thinking...' } as any }));
+
+        const events = c.convertStream(makeChunk({ delta: { content: 'Answer' } }));
+
+        const types = events.map(e => e.type);
+        expect(types[0]).toBe('content_block_stop');
+        expect(types).toContain('content_block_start');
+        expect(types).toContain('content_block_delta');
+      });
+    });
+
+    describe('annotations streaming', () => {
+      it('emits web_search_tool_result for annotations delta', () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
+        c.convertStream(makeChunk({ delta: { content: 'Results:' } }));
+
+        const events = c.convertStream(makeChunk({
+          delta: { annotations: [{ type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 5 } }] } as any,
+        }));
+
+        const types = events.map(e => e.type);
+        expect(types).toContain('content_block_stop');
+        expect(types).toContain('content_block_start');
+        const startEvent = events.find(e => e.type === 'content_block_start') as Anthropic.RawContentBlockStartEvent;
+        expect(startEvent.content_block.type).toBe('web_search_tool_result');
+        expect((startEvent.content_block as any).content[0].title).toBe('Example');
       });
     });
   });
