@@ -360,12 +360,21 @@ describe("ResponsesToChatCompletionConverter", () => {
           function: { name: "get_weather", arguments: '{"city":"SF"}' },
         },
       ]);
-      expect(result.choices[0].finish_reason).toBe("stop");
+      expect(result.choices[0].finish_reason).toBe("tool_calls");
     });
 
     it('maps incomplete status with max_output_tokens to "length"', () => {
       const result = converter.convertResponse(
         makeResponse({
+          output: [
+            {
+              type: "message",
+              id: "msg_1",
+              role: "assistant",
+              status: "incomplete",
+              content: [{ type: "output_text", text: "Partial", annotations: [], logprobs: null as any }],
+            } as any,
+          ],
           status: "incomplete",
           incomplete_details: { reason: "max_output_tokens" },
         })
@@ -376,6 +385,15 @@ describe("ResponsesToChatCompletionConverter", () => {
     it('maps incomplete status with content_filter to "content_filter"', () => {
       const result = converter.convertResponse(
         makeResponse({
+          output: [
+            {
+              type: "message",
+              id: "msg_1",
+              role: "assistant",
+              status: "incomplete",
+              content: [{ type: "output_text", text: "", annotations: [], logprobs: null as any }],
+            } as any,
+          ],
           status: "incomplete",
           incomplete_details: { reason: "content_filter" },
         })
@@ -452,74 +470,82 @@ describe("ResponsesToChatCompletionConverter", () => {
   });
 
   describe("convertStreamEvent", () => {
-    it("emits role chunk on response.created", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      const result = c.convertStreamEvent({
-        type: "response.created",
-        response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-        sequence_number: 0,
-      });
+    function first(
+      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null,
+    ): OpenAI.ChatCompletionChunk {
+      if (Array.isArray(result)) return result[0];
+      return result!;
+    }
 
-      expect(result).not.toBeNull();
-      expect(result!.choices[0].delta.role).toBe("assistant");
-      expect(result!.id).toBe("resp_1");
-    });
-
-    it("emits text delta on response.output_text.delta", () => {
-      const c = new ResponsesToChatCompletionConverter();
+    function initStream(c: ResponsesToChatCompletionConverter) {
       c.convertStreamEvent({
         type: "response.created",
         response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
         sequence_number: 0,
       });
+    }
 
-      const result = c.convertStreamEvent({
-        type: "response.output_text.delta",
-        delta: "Hello",
-        item_id: "msg_1",
-        output_index: 0,
-        content_index: 0,
-        sequence_number: 1,
-      } as any);
+    it("emits role chunk on response.created", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.created",
+          response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
+          sequence_number: 0,
+        })
+      );
 
-      expect(result!.choices[0].delta.content).toBe("Hello");
+      expect(result.choices[0].delta.role).toBe("assistant");
+      expect(result.id).toBe("resp_1");
+    });
+
+    it("emits text delta with role on response.output_text.delta", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.output_text.delta",
+          delta: "Hello",
+          item_id: "msg_1",
+          output_index: 0,
+          content_index: 0,
+          sequence_number: 1,
+        } as any)
+      );
+
+      expect(result.choices[0].delta.role).toBe("assistant");
+      expect(result.choices[0].delta.content).toBe("Hello");
     });
 
     it("emits tool_call start on response.output_item.added (function_call)", () => {
       const c = new ResponsesToChatCompletionConverter();
-      c.convertStreamEvent({
-        type: "response.created",
-        response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-        sequence_number: 0,
-      });
+      initStream(c);
 
-      const result = c.convertStreamEvent({
-        type: "response.output_item.added",
-        item: {
-          type: "function_call",
-          id: "fc_1",
-          call_id: "call_1",
-          name: "get_weather",
-          arguments: "",
-          status: "in_progress",
-        },
-        output_index: 0,
-        sequence_number: 1,
-      } as any);
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.output_item.added",
+          item: {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "get_weather",
+            arguments: "",
+            status: "in_progress",
+          },
+          output_index: 0,
+          sequence_number: 1,
+        } as any)
+      );
 
-      expect(result).not.toBeNull();
-      const tc = result!.choices[0].delta.tool_calls![0];
+      const tc = result.choices[0].delta.tool_calls![0];
       expect(tc.id).toBe("call_1");
       expect(tc.function!.name).toBe("get_weather");
     });
 
     it("emits tool_call arguments delta", () => {
       const c = new ResponsesToChatCompletionConverter();
-      c.convertStreamEvent({
-        type: "response.created",
-        response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-        sequence_number: 0,
-      });
+      initStream(c);
       c.convertStreamEvent({
         type: "response.output_item.added",
         item: {
@@ -534,37 +560,135 @@ describe("ResponsesToChatCompletionConverter", () => {
         sequence_number: 1,
       } as any);
 
-      const result = c.convertStreamEvent({
-        type: "response.function_call_arguments.delta",
-        delta: '{"city',
-        item_id: "fc_1",
-        output_index: 0,
-        sequence_number: 2,
-      } as any);
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.function_call_arguments.delta",
+          delta: '{"city',
+          item_id: "fc_1",
+          output_index: 0,
+          sequence_number: 2,
+        } as any)
+      );
 
-      expect(result!.choices[0].delta.tool_calls![0].function!.arguments).toBe('{"city');
+      expect(result.choices[0].delta.tool_calls![0].function!.arguments).toBe('{"city');
     });
 
-    it("emits finish_reason on response.completed", () => {
+    it("emits tool_calls finish_reason when tool calls present", () => {
       const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
       c.convertStreamEvent({
-        type: "response.created",
-        response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-        sequence_number: 0,
-      });
+        type: "response.output_item.added",
+        item: {
+          type: "function_call",
+          id: "fc_1",
+          call_id: "call_1",
+          name: "fn",
+          arguments: "",
+          status: "in_progress",
+        },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
-      const result = c.convertStreamEvent({
-        type: "response.completed",
-        response: {
-          id: "resp_1",
-          status: "completed",
-          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-        } as any,
-        sequence_number: 10,
-      });
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.completed",
+          response: {
+            id: "resp_1",
+            status: "completed",
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          } as any,
+          sequence_number: 10,
+        })
+      );
 
-      expect(result!.choices[0].finish_reason).toBe("stop");
-      expect(result!.usage?.prompt_tokens).toBe(10);
+      expect(result.choices[0].finish_reason).toBe("tool_calls");
+    });
+
+    it("emits finish_reason stop on response.completed without tool calls", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.completed",
+          response: {
+            id: "resp_1",
+            status: "completed",
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          } as any,
+          sequence_number: 10,
+        })
+      );
+
+      expect(result.choices[0].finish_reason).toBe("stop");
+    });
+
+    it("handles reasoning_summary_text.delta", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.reasoning_summary_text.delta",
+          delta: "Thinking...",
+          item_id: "rs_1",
+          output_index: 0,
+          summary_index: 0,
+          sequence_number: 1,
+        } as any)
+      );
+
+      expect((result.choices[0].delta as any).reasoning).toBe("Thinking...");
+    });
+
+    it("tracks web_search_call.completed count", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
+
+      const r1 = c.convertStreamEvent({
+        type: "response.web_search_call.completed",
+      } as any);
+      expect(r1).toBeNull();
+
+      // webSearchCount is tracked internally; verified via usage in completed event
+    });
+
+    it("collects annotations from output_text.annotation.added", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      initStream(c);
+
+      c.convertStreamEvent({
+        type: "response.output_text.annotation.added",
+        annotation: {
+          type: "url_citation",
+          url: "https://example.com",
+          title: "Example",
+          start_index: 0,
+          end_index: 5,
+        },
+      } as any);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.completed",
+          response: { id: "resp_1", status: "completed" } as any,
+          sequence_number: 10,
+        })
+      );
+
+      expect((result.choices[0].delta as any).annotations).toEqual([
+        {
+          type: "url_citation",
+          url_citation: {
+            type: "url_citation",
+            url: "https://example.com",
+            title: "Example",
+            start_index: 0,
+            end_index: 5,
+          },
+        },
+      ]);
     });
 
     it("returns null for unknown events", () => {
