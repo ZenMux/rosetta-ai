@@ -192,7 +192,18 @@ export class ChatCompletionToMessagesConverter {
 
   // --- Stream conversion ---
 
-  convertStream(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
+  async *convertStream(
+    stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
+  ): AsyncIterable<Anthropic.RawMessageStreamEvent> {
+    for await (const chunk of stream) {
+      const events = this.convertStreamChunk(chunk);
+      for (const event of events) {
+        yield event;
+      }
+    }
+  }
+
+  convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
     const events: Anthropic.RawMessageStreamEvent[] = [];
     const choice = chunk.choices[0];

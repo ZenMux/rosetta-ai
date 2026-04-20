@@ -816,7 +816,7 @@ describe("ChatCompletionToMessagesConverter", () => {
     describe("text streaming", () => {
       it("emits message_start on first chunk", () => {
         const c = new ChatCompletionToMessagesConverter();
-        const events = c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        const events = c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
         expect(events.length).toBe(1);
         expect(events[0].type).toBe("message_start");
@@ -824,9 +824,9 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it("emits content_block_start + content_block_delta for first text chunk", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-        const events = c.convertStream(makeChunk({ delta: { content: "Hello" } }));
+        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
 
         expect(events.length).toBe(2);
         expect(events[0].type).toBe("content_block_start");
@@ -839,10 +839,10 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it("emits only content_block_delta for subsequent text chunks", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(makeChunk({ delta: { content: "Hello" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
 
-        const events = c.convertStream(makeChunk({ delta: { content: " world" } }));
+        const events = c.convertStreamChunk(makeChunk({ delta: { content: " world" } }));
 
         expect(events.length).toBe(1);
         expect(events[0].type).toBe("content_block_delta");
@@ -851,10 +851,10 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it("emits stop events on finish", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(makeChunk({ delta: { content: "Hi" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
 
-        const events = c.convertStream(makeChunk({ finish_reason: "stop" }));
+        const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
         const types = events.map(e => e.type);
 
         expect(types).toContain("content_block_stop");
@@ -864,9 +864,9 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it('maps finish_reason "tool_calls" to stop_reason "tool_use" in stream', () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-        const events = c.convertStream(makeChunk({ finish_reason: "tool_calls" }));
+        const events = c.convertStreamChunk(makeChunk({ finish_reason: "tool_calls" }));
         const msgDelta = events.find(
           e => e.type === "message_delta"
         ) as Anthropic.RawMessageDeltaEvent;
@@ -876,9 +876,9 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it('maps finish_reason "length" to stop_reason "max_tokens" in stream', () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-        const events = c.convertStream(makeChunk({ finish_reason: "length" }));
+        const events = c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
         const msgDelta = events.find(
           e => e.type === "message_delta"
         ) as Anthropic.RawMessageDeltaEvent;
@@ -890,9 +890,9 @@ describe("ChatCompletionToMessagesConverter", () => {
     describe("tool call streaming", () => {
       it("emits content_block_start for tool_use when tool_call starts", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-        const events = c.convertStream(
+        const events = c.convertStreamChunk(
           makeChunk({
             delta: {
               tool_calls: [
@@ -916,8 +916,8 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it("emits input_json_delta for tool call arguments", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(
           makeChunk({
             delta: {
               tool_calls: [
@@ -932,7 +932,7 @@ describe("ChatCompletionToMessagesConverter", () => {
           })
         );
 
-        const events = c.convertStream(
+        const events = c.convertStreamChunk(
           makeChunk({
             delta: { tool_calls: [{ index: 0, function: { arguments: '{"loc' } }] },
           })
@@ -949,10 +949,10 @@ describe("ChatCompletionToMessagesConverter", () => {
     describe("text + tool call mixed", () => {
       it("handles text followed by tool calls", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(makeChunk({ delta: { content: "Let me check." } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Let me check." } }));
 
-        const events = c.convertStream(
+        const events = c.convertStreamChunk(
           makeChunk({
             delta: {
               tool_calls: [
@@ -976,9 +976,9 @@ describe("ChatCompletionToMessagesConverter", () => {
     describe("reasoning streaming", () => {
       it("emits thinking block events for reasoning delta", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-        const events = c.convertStream(
+        const events = c.convertStreamChunk(
           makeChunk({
             delta: { reasoning: "Let me think..." } as any,
           })
@@ -1000,10 +1000,10 @@ describe("ChatCompletionToMessagesConverter", () => {
 
       it("transitions from reasoning to text with content_block_stop", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(makeChunk({ delta: { reasoning: "thinking..." } as any }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { reasoning: "thinking..." } as any }));
 
-        const events = c.convertStream(makeChunk({ delta: { content: "Answer" } }));
+        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Answer" } }));
 
         const types = events.map(e => e.type);
         expect(types[0]).toBe("content_block_stop");
@@ -1015,10 +1015,10 @@ describe("ChatCompletionToMessagesConverter", () => {
     describe("annotations streaming", () => {
       it("emits web_search_tool_result for annotations delta", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStream(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStream(makeChunk({ delta: { content: "Results:" } }));
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Results:" } }));
 
-        const events = c.convertStream(
+        const events = c.convertStreamChunk(
           makeChunk({
             delta: {
               annotations: [
