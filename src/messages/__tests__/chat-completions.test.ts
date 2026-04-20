@@ -886,7 +886,7 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("text streaming", () => {
       it("emits first chunk with role on message_start", () => {
         const c = new MessagesToChatCompletionConverter();
-        const result = c.convertStream(messageStart());
+        const result = c.convertStreamEvent(messageStart());
 
         expect(result).not.toBeNull();
         expect(result!.id).toBe("msg_123");
@@ -896,9 +896,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("returns null for content_block_start (text)", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: { type: "text", text: "", citations: null },
@@ -909,9 +909,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("emits text content for content_block_delta (text_delta)", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_delta",
           index: 0,
           delta: { type: "text_delta", text: "Hello" },
@@ -923,9 +923,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("emits finish_reason on message_delta", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
@@ -937,14 +937,14 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("emits final usage chunk on message_stop", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        c.convertStream({
+        c.convertStreamEvent(messageStart());
+        c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
         });
 
-        const result = c.convertStream({ type: "message_stop" });
+        const result = c.convertStreamEvent({ type: "message_stop" });
 
         expect(result).not.toBeNull();
         expect(result!.choices).toEqual([]);
@@ -958,9 +958,9 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("tool call streaming", () => {
       it("emits tool_call start on content_block_start (tool_use)", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: {
@@ -982,8 +982,8 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("emits tool_call arguments on content_block_delta (input_json_delta)", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        c.convertStream({
+        c.convertStreamEvent(messageStart());
+        c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: {
@@ -995,7 +995,7 @@ describe("MessagesToChatCompletionConverter", () => {
           },
         });
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_delta",
           index: 0,
           delta: { type: "input_json_delta", partial_json: '{"loc' },
@@ -1012,9 +1012,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("maps tool_use stop_reason to tool_calls finish_reason", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "tool_use", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
@@ -1025,9 +1025,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("maps max_tokens stop_reason to length finish_reason in stream", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
@@ -1040,8 +1040,8 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("content_block_stop", () => {
       it("emits empty content chunk on content_block_stop", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        const result = c.convertStream({ type: "content_block_stop", index: 0 });
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({ type: "content_block_stop", index: 0 });
         expect(result).not.toBeNull();
         expect(result!.choices[0].delta.content).toBe("");
       });
@@ -1050,8 +1050,8 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("text in content_block_start", () => {
       it("emits content chunk when text block has initial non-empty text", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        const result = c.convertStream({
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: { type: "text", text: "Hello", citations: null },
@@ -1062,8 +1062,8 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("returns null when text block is empty", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        const result = c.convertStream({
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: { type: "text", text: "", citations: null },
@@ -1075,9 +1075,9 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("thinking streaming", () => {
       it("emits reasoning chunk for thinking_delta", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_delta",
           index: 0,
           delta: { type: "thinking_delta", thinking: "Let me think..." } as any,
@@ -1098,9 +1098,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("emits reasoning_details with signature for signature_delta", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_delta",
           index: 0,
           delta: { type: "signature_delta", signature: "sig_xyz" } as any,
@@ -1118,9 +1118,9 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("server_tool_use streaming", () => {
       it("treats server_tool_use same as tool_use in content_block_start", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
-        const result = c.convertStream({
+        const result = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: {
@@ -1142,10 +1142,10 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("web_search_tool_result streaming", () => {
       it("collects annotations and emits them on message_delta", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
+        c.convertStreamEvent(messageStart());
 
         // content_block_start for web_search_tool_result returns null
-        const startResult = c.convertStream({
+        const startResult = c.convertStreamEvent({
           type: "content_block_start",
           index: 0,
           content_block: {
@@ -1165,7 +1165,7 @@ describe("MessagesToChatCompletionConverter", () => {
         });
         expect(startResult).toBeNull();
 
-        const deltaResult = c.convertStream({
+        const deltaResult = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
@@ -1188,7 +1188,7 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("extended usage in message_stop", () => {
       it("includes cache and web_search counts from message_start + message_delta", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream({
+        c.convertStreamEvent({
           type: "message_start",
           message: {
             id: "msg_x",
@@ -1214,7 +1214,7 @@ describe("MessagesToChatCompletionConverter", () => {
             container: null,
           },
         });
-        c.convertStream({
+        c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
           usage: {
@@ -1226,7 +1226,7 @@ describe("MessagesToChatCompletionConverter", () => {
           },
         });
 
-        const result = c.convertStream({ type: "message_stop" });
+        const result = c.convertStreamEvent({ type: "message_stop" });
 
         expect(result!.usage!.prompt_tokens).toBe(100);
         expect(result!.usage!.completion_tokens).toBe(50);
@@ -1243,8 +1243,8 @@ describe("MessagesToChatCompletionConverter", () => {
     describe("extended stop_reason mappings", () => {
       it("maps pause_turn to stop", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        const result = c.convertStream({
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "pause_turn", stop_sequence: null, container: null },
           usage: baseDeltaUsage,
@@ -1254,8 +1254,8 @@ describe("MessagesToChatCompletionConverter", () => {
 
       it("maps refusal to content_filter", () => {
         const c = new MessagesToChatCompletionConverter();
-        c.convertStream(messageStart());
-        const result = c.convertStream({
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
           type: "message_delta",
           delta: { stop_reason: "refusal", stop_sequence: null, container: null },
           usage: baseDeltaUsage,

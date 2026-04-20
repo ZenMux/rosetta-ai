@@ -208,7 +208,18 @@ export class MessagesToChatCompletionConverter {
 
   // --- Stream conversion ---
 
-  convertStream(event: Anthropic.RawMessageStreamEvent): OpenAI.ChatCompletionChunk | null {
+  async *convertStream(
+    stream: AsyncIterable<Anthropic.RawMessageStreamEvent>,
+  ): AsyncIterable<OpenAI.ChatCompletionChunk> {
+    for await (const event of stream) {
+      const chunk = this.convertStreamEvent(event);
+      if (chunk) {
+        yield chunk;
+      }
+    }
+  }
+
+  convertStreamEvent(event: Anthropic.RawMessageStreamEvent): OpenAI.ChatCompletionChunk | null {
     switch (event.type) {
       case "message_start":
         return this.handleMessageStart(event);

@@ -25,13 +25,10 @@ const anthropicRequest = converter.convertRequest(openaiRequest);
 // Convert response
 const anthropicResponse = converter.convertResponse(openaiResponse);
 
-// Convert streaming chunks (create new instance per stream)
+// Convert stream (create new instance per stream)
 const streamConverter = new ChatCompletionToMessagesConverter();
-for await (const chunk of openaiStream) {
-  const events = streamConverter.convertStream(chunk);
-  for (const event of events) {
-    // each event is an Anthropic RawMessageStreamEvent
-  }
+for await (const event of streamConverter.convertStream(openaiStream)) {
+  // each event is an Anthropic RawMessageStreamEvent
 }
 ```
 
@@ -48,13 +45,10 @@ const openaiRequest = converter.convertRequest(anthropicRequest);
 // Convert response
 const openaiResponse = converter.convertResponse(anthropicResponse);
 
-// Convert streaming events (create new instance per stream)
+// Convert stream (create new instance per stream)
 const streamConverter = new MessagesToChatCompletionConverter();
-for await (const event of anthropicStream) {
-  const chunk = streamConverter.convertStream(event);
-  if (chunk) {
-    // chunk is an OpenAI ChatCompletionChunk
-  }
+for await (const chunk of streamConverter.convertStream(anthropicStream)) {
+  // chunk is an OpenAI ChatCompletionChunk
 }
 ```
 
