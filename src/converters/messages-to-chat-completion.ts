@@ -66,7 +66,13 @@ export class MessagesToChatCompletionConverter {
       result.stop = params.stop_sequences;
     }
     if (params.tools) {
-      result.tools = this.convertTools(params.tools);
+      const { tools, webSearchOptions } = this.convertTools(params.tools);
+      if (tools.length > 0) {
+        result.tools = tools;
+      }
+      if (webSearchOptions) {
+        (result as any).web_search_options = webSearchOptions;
+      }
     }
     if (params.tool_choice !== undefined) {
       const { toolChoice, parallelToolCalls } = this.convertToolChoice(params.tool_choice);
@@ -459,6 +465,10 @@ export class MessagesToChatCompletionConverter {
           hasNonText = true;
           contentParts.push(this.convertImageBlock(block as Anthropic.ImageBlockParam));
           break;
+        case 'document':
+          hasNonText = true;
+          contentParts.push(this.convertDocumentBlock(block as Anthropic.DocumentBlockParam));
+          break;
         case 'tool_result':
           toolResults.push(block as Anthropic.ToolResultBlockParam);
           break;
@@ -512,6 +522,42 @@ export class MessagesToChatCompletionConverter {
     };
   }
 
+  private convertDocumentBlock(
+    block: Anthropic.DocumentBlockParam,
+  ): OpenAI.ChatCompletionContentPart {
+    const source = block.source;
+
+    if (source.type === 'base64') {
+      const src = source as Anthropic.Base64PDFSource;
+      return {
+        type: 'file',
+        file: {
+          file_data: `data:${src.media_type};base64,${src.data}`,
+          filename: block.title ?? undefined,
+        },
+      };
+    }
+
+    if (source.type === 'url') {
+      const src = source as Anthropic.URLPDFSource;
+      return {
+        type: 'file',
+        file: {
+          file_data: src.url,
+          filename: block.title ?? undefined,
+        },
+      };
+    }
+
+    // plain text source — encode as text content
+    if (source.type === 'text') {
+      const src = source as Anthropic.PlainTextSource;
+      return { type: 'text', text: src.data };
+    }
+
+    return { type: 'text', text: '[Unsupported document source]' };
+  }
+
   private convertAssistantMessage(
     messages: OpenAIMessage[],
     msg: Anthropic.MessageParam,
@@ -524,9 +570,22 @@ export class MessagesToChatCompletionConverter {
     let textContent: string | undefined;
     const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
 
+    let thinkingContent: string | undefined;
+    const reasoningDetails: Array<Record<string, unknown>> = [];
+
     for (const block of msg.content) {
       if (block.type === 'text') {
         textContent = textContent ? textContent + block.text : block.text;
+      } else if (block.type === 'thinking') {
+        const tb = block as Anthropic.ThinkingBlockParam;
+        thinkingContent = thinkingContent ? thinkingContent + tb.thinking : tb.thinking;
+        reasoningDetails.push({
+          type: 'reasoning.text',
+          text: tb.thinking,
+          signature: tb.signature,
+          format: 'anthropic-claude-v1',
+          index: 0,
+        });
       } else if (block.type === 'tool_use') {
         const tu = block as Anthropic.ToolUseBlockParam;
         toolCalls.push({
@@ -544,6 +603,12 @@ export class MessagesToChatCompletionConverter {
       role: 'assistant',
     };
 
+    if (thinkingContent !== undefined) {
+      Object.assign(assistantMsg, {
+        reasoning: thinkingContent,
+        reasoning_details: reasoningDetails,
+      });
+    }
     if (textContent !== undefined) {
       assistantMsg.content = textContent;
     }
@@ -556,17 +621,33 @@ export class MessagesToChatCompletionConverter {
 
   private convertTools(
     tools: Anthropic.ToolUnion[],
-  ): OpenAI.ChatCompletionTool[] {
-    return tools
-      .filter((t): t is Anthropic.Tool => 'input_schema' in t)
-      .map((t) => ({
-        type: 'function' as const,
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.input_schema as unknown as Record<string, unknown>,
-        },
-      }));
+  ): { tools: OpenAI.ChatCompletionTool[]; webSearchOptions?: Record<string, unknown> } {
+    const functionTools: OpenAI.ChatCompletionTool[] = [];
+    let webSearchOptions: Record<string, unknown> | undefined;
+
+    for (const t of tools) {
+      if ('input_schema' in t) {
+        functionTools.push({
+          type: 'function',
+          function: {
+            name: (t as Anthropic.Tool).name,
+            description: (t as Anthropic.Tool).description,
+            parameters: (t as Anthropic.Tool).input_schema as unknown as Record<string, unknown>,
+          },
+        });
+      } else if ('type' in t && (t.type === 'web_search_20250305' || t.type === 'web_search_20260209')) {
+        const ws = t as Anthropic.WebSearchTool20250305;
+        webSearchOptions = {};
+        if (ws.max_uses != null) {
+          webSearchOptions['max_uses'] = ws.max_uses;
+        }
+        if (ws.user_location != null) {
+          webSearchOptions['user_location'] = ws.user_location;
+        }
+      }
+    }
+
+    return { tools: functionTools, webSearchOptions };
   }
 
   private convertToolChoice(
