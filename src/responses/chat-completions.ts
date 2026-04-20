@@ -40,10 +40,19 @@ export class ResponsesToChatCompletionConverter {
       result.top_p = params.top_p;
     }
     if (params.tools) {
-      result.tools = this.convertTools(params.tools);
+      const { tools, webSearchOptions } = this.convertTools(params.tools);
+      if (tools.length > 0) {
+        result.tools = tools;
+      }
+      if (webSearchOptions) {
+        (result as any).web_search_options = webSearchOptions;
+      }
     }
     if (params.tool_choice != null) {
       result.tool_choice = this.convertToolChoice(params.tool_choice);
+    }
+    if ((params as any).parallel_tool_calls != null) {
+      (result as any).parallel_tool_calls = (params as any).parallel_tool_calls;
     }
     if (params.reasoning) {
       (result as any).reasoning_effort = (params.reasoning as any).effort ?? null;
@@ -51,14 +60,37 @@ export class ResponsesToChatCompletionConverter {
     if (params.text?.format) {
       result.response_format = this.convertTextFormat(params.text.format);
     }
+    if ((params.text as any)?.verbosity) {
+      (result as any).verbosity = (params.text as any).verbosity;
+    }
     if (params.metadata) {
       result.metadata = params.metadata;
     }
     if (params.service_tier != null) {
       result.service_tier = params.service_tier;
     }
+    if ((params as any).prompt_cache_key) {
+      (result as any).prompt_cache_key = (params as any).prompt_cache_key;
+    }
+    if ((params as any).prompt_cache_retention != null) {
+      (result as any).prompt_cache_retention = (params as any).prompt_cache_retention;
+    }
+    if ((params as any).safety_identifier) {
+      (result as any).safety_identifier = (params as any).safety_identifier;
+    }
+    if (params.include) {
+      for (const inc of params.include) {
+        if (inc === "message.output_text.logprobs") {
+          (result as any).top_logprobs = 20;
+          break;
+        }
+      }
+    }
     if (params.stream === true) {
       (result as any).stream = true;
+      if ((params as any).stream_options) {
+        (result as any).stream_options = (params as any).stream_options;
+      }
     }
 
     return result;
@@ -203,45 +235,74 @@ export class ResponsesToChatCompletionConverter {
       return;
     }
 
+    const pendingToolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
+
+    const flushToolCalls = () => {
+      if (pendingToolCalls.length > 0) {
+        messages.push({
+          role: "assistant",
+          tool_calls: [...pendingToolCalls],
+        });
+        pendingToolCalls.length = 0;
+      }
+    };
+
     for (const item of input!) {
       if ("role" in item && "content" in item && typeof item.content === "string") {
+        flushToolCalls();
         const role = (item as any).role;
         if (role === "user" || role === "system" || role === "developer" || role === "assistant") {
-          messages.push({ role, content: item.content } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
+          messages.push({
+            role,
+            content: item.content,
+          } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
         }
         continue;
       }
 
       const typed = item as any;
       if (typed.type === "message") {
+        flushToolCalls();
         if (typed.role === "user" || typed.role === "system" || typed.role === "developer") {
           const content = this.convertInputContent(typed.content);
-          messages.push({ role: typed.role, content } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
+          messages.push({
+            role: typed.role,
+            content,
+          } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
         } else if (typed.role === "assistant") {
           const textParts: string[] = [];
-          const tcalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
           if (Array.isArray(typed.content)) {
             for (const part of typed.content) {
               if (part.type === "output_text") textParts.push(part.text);
             }
           }
-          const msg: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = { role: "assistant" };
+          const msg: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = {
+            role: "assistant",
+          };
           if (textParts.length > 0) msg.content = textParts.join("");
-          if (tcalls.length > 0) msg.tool_calls = tcalls;
+          messages.push(msg);
+        }
+      } else if (typed.type === "reasoning") {
+        flushToolCalls();
+        const summaryTexts: string[] = [];
+        if (Array.isArray(typed.summary)) {
+          for (const s of typed.summary) {
+            if (s.type === "summary_text") summaryTexts.push(s.text);
+          }
+        }
+        if (summaryTexts.length > 0) {
+          const msg: any = { role: "assistant" };
+          msg.reasoning_content = summaryTexts.join("");
           messages.push(msg);
         }
       } else if (typed.type === "function_call") {
-        messages.push({
-          role: "assistant",
-          tool_calls: [
-            {
-              id: typed.call_id,
-              type: "function",
-              function: { name: typed.name, arguments: typed.arguments },
-            },
-          ],
+        pendingToolCalls.push({
+          id: typed.call_id,
+          type: "function",
+          function: { name: typed.name, arguments: typed.arguments },
         });
       } else if (typed.type === "function_call_output") {
+        flushToolCalls();
         messages.push({
           role: "tool",
           tool_call_id: typed.call_id,
@@ -249,6 +310,8 @@ export class ResponsesToChatCompletionConverter {
         });
       }
     }
+
+    flushToolCalls();
   }
 
   private convertInputContent(
@@ -284,21 +347,49 @@ export class ResponsesToChatCompletionConverter {
     });
   }
 
-  private convertTools(
-    tools: OpenAI.Responses.ResponseCreateParams["tools"],
-  ): OpenAI.Chat.Completions.ChatCompletionTool[] {
-    if (!tools) return [];
-    return tools
-      .filter((t: any) => t.type === "function")
-      .map((t: any) => ({
-        type: "function" as const,
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-          strict: t.strict,
-        },
-      }));
+  private convertTools(tools: OpenAI.Responses.ResponseCreateParams["tools"]): {
+    tools: OpenAI.Chat.Completions.ChatCompletionTool[];
+    webSearchOptions?: Record<string, unknown>;
+  } {
+    if (!tools) return { tools: [] };
+
+    const ccTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
+    let webSearchOptions: Record<string, unknown> | undefined;
+
+    for (const t of tools) {
+      const tt = t as any;
+      if (tt.type === "function") {
+        ccTools.push({
+          type: "function",
+          function: {
+            name: tt.name,
+            description: tt.description,
+            parameters: tt.parameters ?? { type: "object" },
+            strict: tt.strict,
+          },
+        });
+      } else if (this.isWebSearch(tt)) {
+        webSearchOptions = {};
+        if (tt.search_context_size) {
+          webSearchOptions.search_context_size = tt.search_context_size;
+        }
+        if (tt.user_location) {
+          webSearchOptions.user_location = tt.user_location;
+        }
+      }
+    }
+
+    return { tools: ccTools, webSearchOptions };
+  }
+
+  private isWebSearch(tool: any): boolean {
+    const t = tool.type;
+    return (
+      t === "web_search" ||
+      t === "web_search_2025_08_26" ||
+      t === "web_search_preview" ||
+      t === "web_search_preview_2025_03_11"
+    );
   }
 
   private convertToolChoice(
