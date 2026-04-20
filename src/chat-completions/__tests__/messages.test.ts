@@ -1,6 +1,6 @@
 import type OpenAI from 'openai';
 import type Anthropic from '@anthropic-ai/sdk';
-import { ChatCompletionToMessagesConverter } from '../chat-completion-to-messages';
+import { ChatCompletionToMessagesConverter } from '../messages';
 
 describe('ChatCompletionToMessagesConverter', () => {
   const converter = new ChatCompletionToMessagesConverter();
