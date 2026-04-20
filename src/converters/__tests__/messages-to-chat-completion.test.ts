@@ -430,11 +430,94 @@ describe('MessagesToChatCompletionConverter', () => {
       expect(converter.convertResponse(makeMessage({ stop_reason: 'stop_sequence' })).choices[0].finish_reason).toBe('stop');
     });
 
-    it('joins multiple text blocks', () => {
+    it('concatenates multiple text blocks without separator', () => {
       const result = converter.convertResponse(makeMessage({
-        content: [{ type: 'text', text: 'Hello', citations: null }, { type: 'text', text: 'World', citations: null }],
+        content: [{ type: 'text', text: 'Hello ', citations: null }, { type: 'text', text: 'world', citations: null }],
       }));
-      expect(result.choices[0].message.content).toBe('Hello\nWorld');
+      expect(result.choices[0].message.content).toBe('Hello world');
+    });
+
+    it('maps stop_reason "pause_turn" to "stop"', () => {
+      expect(converter.convertResponse(makeMessage({ stop_reason: 'pause_turn' })).choices[0].finish_reason).toBe('stop');
+    });
+
+    it('maps stop_reason "refusal" to "content_filter"', () => {
+      expect(converter.convertResponse(makeMessage({ stop_reason: 'refusal' })).choices[0].finish_reason).toBe('content_filter');
+    });
+
+    it('maps stop_reason "model_context_window_exceeded" to "length"', () => {
+      expect(converter.convertResponse(makeMessage({ stop_reason: 'model_context_window_exceeded' as any })).choices[0].finish_reason).toBe('length');
+    });
+
+    it('extracts thinking blocks into reasoning and reasoning_details', () => {
+      const result = converter.convertResponse(makeMessage({
+        content: [
+          { type: 'thinking', thinking: 'Let me think...', signature: 'sig_abc' } as any,
+          { type: 'text', text: 'The answer is 42.', citations: null },
+        ],
+      }));
+
+      const msg = result.choices[0].message as any;
+      expect(msg.content).toBe('The answer is 42.');
+      expect(msg.reasoning).toBe('Let me think...');
+      expect(msg.reasoning_details).toEqual([
+        { type: 'reasoning.text', text: 'Let me think...', signature: 'sig_abc', format: 'anthropic-claude-v1', index: 0 },
+      ]);
+    });
+
+    it('converts server_tool_use blocks to tool_calls', () => {
+      const result = converter.convertResponse(makeMessage({
+        content: [
+          { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'test' }, caller: { type: 'direct' } } as any,
+        ],
+      }));
+
+      expect(result.choices[0].message.tool_calls).toEqual([
+        { id: 'srv_1', type: 'function', function: { name: 'web_search', arguments: '{"query":"test"}' } },
+      ]);
+    });
+
+    it('extracts web_search_tool_result as url_citation annotations', () => {
+      const result = converter.convertResponse(makeMessage({
+        content: [
+          { type: 'text', text: 'Based on my search:', citations: null },
+          {
+            type: 'web_search_tool_result',
+            tool_use_id: 'srv_1',
+            content: [
+              { type: 'web_search_result', url: 'https://example.com', title: 'Example', encrypted_content: 'x', page_age: null },
+            ],
+            caller: { type: 'direct' },
+          } as any,
+        ],
+      }));
+
+      const msg = result.choices[0].message;
+      expect(msg.annotations).toEqual([
+        { type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 0 } },
+      ]);
+    });
+
+    it('includes extended usage fields (cache, web_search)', () => {
+      const result = converter.convertResponse(makeMessage({
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 30,
+          cache_creation: { ephemeral_5m_input_tokens: 15, ephemeral_1h_input_tokens: 5 } as any,
+          inference_geo: null,
+          server_tool_use: { web_search_requests: 3 } as any,
+          service_tier: null,
+        },
+      }));
+
+      const details = result.usage!.prompt_tokens_details as any;
+      expect(details.cached_tokens).toBe(30);
+      expect(details.ephemeral_5m_input_tokens).toBe(15);
+      expect(details.ephemeral_1h_input_tokens).toBe(5);
+      expect(details.web_search).toBe(3);
+      expect(details.cache_creation_input_tokens).toBe(20);
     });
   });
 
@@ -491,10 +574,22 @@ describe('MessagesToChatCompletionConverter', () => {
         expect(result!.choices[0].finish_reason).toBe('stop');
       });
 
-      it('returns null for message_stop', () => {
+      it('emits final usage chunk on message_stop', () => {
         const c = new MessagesToChatCompletionConverter();
         c.convertStream(messageStart());
-        expect(c.convertStream({ type: 'message_stop' })).toBeNull();
+        c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+
+        const result = c.convertStream({ type: 'message_stop' });
+
+        expect(result).not.toBeNull();
+        expect(result!.choices).toEqual([]);
+        expect(result!.usage?.prompt_tokens).toBe(10);
+        expect(result!.usage?.completion_tokens).toBe(5);
+        expect(result!.usage?.total_tokens).toBe(15);
       });
     });
 
@@ -562,11 +657,164 @@ describe('MessagesToChatCompletionConverter', () => {
       });
     });
 
-    describe('returns null for irrelevant events', () => {
-      it('returns null for content_block_stop', () => {
+    describe('content_block_stop', () => {
+      it('emits empty content chunk on content_block_stop', () => {
         const c = new MessagesToChatCompletionConverter();
         c.convertStream(messageStart());
-        expect(c.convertStream({ type: 'content_block_stop', index: 0 })).toBeNull();
+        const result = c.convertStream({ type: 'content_block_stop', index: 0 });
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].delta.content).toBe('');
+      });
+    });
+
+    describe('thinking streaming', () => {
+      it('emits reasoning chunk for thinking_delta', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+
+        const result = c.convertStream({
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Let me think...' } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const delta = result!.choices[0].delta as any;
+        expect(delta.reasoning).toBe('Let me think...');
+        expect(delta.reasoning_details).toEqual([
+          { type: 'reasoning.text', text: 'Let me think...', format: 'anthropic-claude-v1', index: 0 },
+        ]);
+      });
+
+      it('emits reasoning_details with signature for signature_delta', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+
+        const result = c.convertStream({
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'signature_delta', signature: 'sig_xyz' } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const delta = result!.choices[0].delta as any;
+        expect(delta.reasoning).toBeNull();
+        expect(delta.reasoning_details).toEqual([
+          { type: 'reasoning.text', signature: 'sig_xyz', format: 'anthropic-claude-v1', index: 0 },
+        ]);
+      });
+    });
+
+    describe('server_tool_use streaming', () => {
+      it('treats server_tool_use same as tool_use in content_block_start', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+
+        const result = c.convertStream({
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: {}, caller: { type: 'direct' } } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const tc = result!.choices[0].delta.tool_calls![0];
+        expect(tc.id).toBe('srv_1');
+        expect(tc.function!.name).toBe('web_search');
+      });
+    });
+
+    describe('web_search_tool_result streaming', () => {
+      it('collects annotations and emits them on message_delta', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+
+        // content_block_start for web_search_tool_result returns null
+        const startResult = c.convertStream({
+          type: 'content_block_start', index: 0,
+          content_block: {
+            type: 'web_search_tool_result',
+            tool_use_id: 'srv_1',
+            content: [{ type: 'web_search_result', url: 'https://example.com', title: 'Example', encrypted_content: 'x', page_age: null }],
+            caller: { type: 'direct' },
+          } as any,
+        });
+        expect(startResult).toBeNull();
+
+        const deltaResult = c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+
+        expect((deltaResult!.choices[0].delta as any).annotations).toEqual([
+          { type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 0 } },
+        ]);
+      });
+    });
+
+    describe('extended usage in message_stop', () => {
+      it('includes cache and web_search counts from message_start + message_delta', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream({
+          type: 'message_start',
+          message: {
+            id: 'msg_x', type: 'message', role: 'assistant', model: 'claude-sonnet-4-20250514',
+            content: [], stop_reason: null, stop_sequence: null,
+            usage: {
+              input_tokens: 100,
+              output_tokens: 0,
+              cache_read_input_tokens: 30,
+              cache_creation_input_tokens: 20,
+              cache_creation: { ephemeral_5m_input_tokens: 15, ephemeral_1h_input_tokens: 5 } as any,
+              inference_geo: null, server_tool_use: null, service_tier: null,
+            },
+            container: null,
+          },
+        });
+        c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null, container: null },
+          usage: {
+            output_tokens: 50,
+            input_tokens: null,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: { web_search_requests: 3 } as any,
+          },
+        });
+
+        const result = c.convertStream({ type: 'message_stop' });
+
+        expect(result!.usage!.prompt_tokens).toBe(100);
+        expect(result!.usage!.completion_tokens).toBe(50);
+        expect(result!.usage!.total_tokens).toBe(150);
+        const details = result!.usage!.prompt_tokens_details as any;
+        expect(details.cached_tokens).toBe(30);
+        expect(details.ephemeral_5m_input_tokens).toBe(15);
+        expect(details.ephemeral_1h_input_tokens).toBe(5);
+        expect(details.web_search).toBe(3);
+        expect(details.cache_creation_input_tokens).toBe(20);
+      });
+    });
+
+    describe('extended stop_reason mappings', () => {
+      it('maps pause_turn to stop', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+        const result = c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'pause_turn', stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+        expect(result!.choices[0].finish_reason).toBe('stop');
+      });
+
+      it('maps refusal to content_filter', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+        const result = c.convertStream({
+          type: 'message_delta',
+          delta: { stop_reason: 'refusal', stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+        expect(result!.choices[0].finish_reason).toBe('content_filter');
       });
     });
   });
