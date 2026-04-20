@@ -166,10 +166,6 @@ export class MessagesToChatCompletionConverter {
     }
   }
 
-  resetStreamState(): void {
-    this.streamState = this.createStreamState();
-  }
-
   // --- Private helpers ---
 
   private createStreamState(): StreamState {
