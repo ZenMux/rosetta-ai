@@ -150,3 +150,101 @@ No difference.
 | **rosetta-ai** | Not supported |
 
 **Rationale:** `additionalBody`/`additionalHeaders` is a gateway-specific escape hatch for provider-specific parameters that don't map to standard fields. A conversion library should not support untyped passthrough — callers can merge additional fields after conversion.
+
+## OpenAI Responses -> OpenAI Chat Completions
+
+### Request Conversion
+
+#### Preset parameters
+
+| | Behavior |
+|---|---|
+| **Reference** | Supports `__additionalProperties.preset` for pre-configured CC params that override defaults |
+| **rosetta-ai** | Not supported |
+
+**Rationale:** Preset injection is a gateway-specific feature for operator-level parameter overrides. A conversion library should not support this — callers can merge presets after conversion.
+
+#### Feature flags
+
+| | Behavior |
+|---|---|
+| **Reference** | Supports `__additionalProperties.flags` array (e.g., `"allow_reasoning_content"`) to control reasoning field attachment |
+| **rosetta-ai** | Always emits `reasoning_content` for reasoning items without flag gating |
+
+**Rationale:** Feature flags are gateway-internal. rosetta-ai always converts reasoning content since the field is harmless for providers that don't understand it.
+
+#### Custom tool type
+
+| | Behavior |
+|---|---|
+| **Reference** | Converts Responses `custom` tools to CC custom tool format (`{ type: "custom", custom: { name, description, format } }`) |
+| **rosetta-ai** | Drops custom tools — only converts `function` tools |
+
+**Rationale:** OpenAI's custom tools are not widely supported by providers. The function tool format is the universal standard. Custom tool support can be added when needed.
+
+#### GLM non-standard handling
+
+| | Behavior |
+|---|---|
+| **Reference** | Forces `status="completed"` if no `finish_reason` but `tool_calls` present (GLM provider workaround) |
+| **rosetta-ai** | Not supported |
+
+**Rationale:** Provider-specific workarounds belong in the gateway adapter layer, not in a protocol conversion library.
+
+#### XAI non-standard `citations` field
+
+| | Behavior |
+|---|---|
+| **Reference** | Falls back to response-level `citations` array (XAI non-standard) when `message.annotations` is absent |
+| **rosetta-ai** | Only reads standard `message.annotations` |
+
+**Rationale:** rosetta-ai follows the OpenAI spec. Provider-specific extensions should be handled by provider adapters.
+
+### Response Conversion (Chat Completions -> Responses)
+
+The reference converts CC responses back to Responses format (reverse direction). rosetta-ai converts Responses → CC, not the reverse. The following differences apply to the inverse direction conceptually.
+
+#### Output item ID generation
+
+| | Behavior |
+|---|---|
+| **Reference** | Uses prefixed IDs: `"rs_"` for reasoning, `"msg_"` for messages, `"fc_"` for function calls, `"ws_"` for web search |
+| **rosetta-ai** | Uses the original IDs from the Responses API output items (no synthetic IDs needed since converting Responses → CC) |
+
+No difference in our direction — we read IDs, not generate them.
+
+#### Default field values in response
+
+| | Behavior |
+|---|---|
+| **Reference** | Sets defaults: `background: false`, `parallel_tool_calls: true`, `temperature: 1`, `top_p: 1`, `tool_choice: "auto"`, `truncation: "disabled"`, `service_tier: "default"` |
+| **rosetta-ai** | Not applicable — we convert Responses → CC, not CC → Responses |
+
+### Stream Conversion
+
+#### Error handling in stream
+
+| | Behavior |
+|---|---|
+| **Reference** | `handleRequestFailed(error)` emits 4 events: `response.created`, `response.in_progress`, `response.error`, `response.failed` |
+| **rosetta-ai** | Not supported — `convertStreamEvent` only handles success events; error propagation is left to the caller |
+
+**Rationale:** Error event synthesis requires constructing full Response objects with error details. This is better handled at the gateway level where the error context (HTTP status, provider details) is available.
+
+#### Web search streaming events
+
+| | Behavior |
+|---|---|
+| **Reference** | Emits `web_search_call.in_progress`, `web_search_call.searching`, `web_search_call.completed` events when annotations are detected |
+| **rosetta-ai** | Not supported — web search events are CC → Responses direction only (reference generates synthetic Responses events from CC annotations) |
+
+**Rationale:** These events are only needed when converting CC stream → Responses stream (reverse of our direction). Our Responses → CC direction reads `response.output_text.delta` which already contains the final text.
+
+#### Delta accumulation
+
+| | Behavior |
+|---|---|
+| **Reference** | Accumulates all deltas (text, arguments, reasoning) into context fields, emits `.done` events with complete accumulated values |
+| **rosetta-ai** | Passes deltas through directly — CC chunks are inherently incremental, no accumulation needed |
+
+**Rationale:** Chat Completions streaming is delta-based by design. Accumulation is only needed when converting TO Responses format (which requires `.done` events with complete values). Our Responses → CC direction doesn't need it.
