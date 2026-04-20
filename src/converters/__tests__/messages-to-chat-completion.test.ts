@@ -180,6 +180,105 @@ describe('MessagesToChatCompletionConverter', () => {
       });
     });
 
+    describe('document content', () => {
+      it('converts document block with base64 source to file content part', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{
+            role: 'user',
+            content: [{
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: 'JVBER...' },
+              title: 'report.pdf',
+            }],
+          }],
+        });
+
+        const msg = result.messages[0] as OpenAI.ChatCompletionUserMessageParam;
+        const content = msg.content as OpenAI.ChatCompletionContentPart[];
+        expect(content[0]).toEqual({
+          type: 'file',
+          file: { file_data: 'data:application/pdf;base64,JVBER...', filename: 'report.pdf' },
+        });
+      });
+
+      it('converts document block with plain text source to text part', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{
+            role: 'user',
+            content: [{
+              type: 'document',
+              source: { type: 'text', media_type: 'text/plain', data: 'Hello world' },
+            }],
+          }],
+        });
+
+        const msg = result.messages[0] as OpenAI.ChatCompletionUserMessageParam;
+        const content = msg.content as OpenAI.ChatCompletionContentPart[];
+        expect(content[0]).toEqual({ type: 'text', text: 'Hello world' });
+      });
+    });
+
+    describe('assistant thinking blocks', () => {
+      it('converts thinking blocks to reasoning and reasoning_details on assistant message', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 16000,
+          messages: [
+            { role: 'user', content: 'Solve this' },
+            {
+              role: 'assistant',
+              content: [
+                { type: 'thinking', thinking: 'Let me reason...', signature: 'sig_abc' },
+                { type: 'text', text: 'The answer is 42.' },
+              ],
+            },
+            { role: 'user', content: 'Thanks' },
+          ],
+        });
+
+        const msg = result.messages[1] as any;
+        expect(msg.role).toBe('assistant');
+        expect(msg.content).toBe('The answer is 42.');
+        expect(msg.reasoning).toBe('Let me reason...');
+        expect(msg.reasoning_details).toEqual([
+          { type: 'reasoning.text', text: 'Let me reason...', signature: 'sig_abc', format: 'anthropic-claude-v1', index: 0 },
+        ]);
+      });
+    });
+
+    describe('web_search tool conversion', () => {
+      it('converts web_search_20250305 tool to web_search_options', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Search for something' }],
+          tools: [
+            { name: 'web_search', type: 'web_search_20250305', max_uses: 3 },
+          ],
+        });
+
+        expect(result.tools).toBeUndefined();
+        expect((result as any).web_search_options).toBeDefined();
+        expect((result as any).web_search_options.max_uses).toBe(3);
+      });
+
+      it('separates function tools from web_search tools', () => {
+        const result = converter.convertRequest({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1024,
+          messages: [{ role: 'user', content: 'Hi' }],
+          tools: [
+            { name: 'get_weather', input_schema: { type: 'object' } },
+            { name: 'web_search', type: 'web_search_20250305' },
+          ],
+        });
+
+        expect(result.tools).toHaveLength(1);
+        const tool = result.tools![0] as OpenAI.ChatCompletionFunctionTool;
+        expect(tool.function.name).toBe('get_weather');
+        expect((result as any).web_search_options).toBeDefined();
+      });
+    });
+
     describe('params mapping', () => {
       it('maps temperature, top_p, max_tokens, stop_sequences', () => {
         const result = converter.convertRequest({
