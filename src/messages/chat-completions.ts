@@ -26,9 +26,7 @@ export class MessagesToChatCompletionConverter {
 
   // --- Request conversion ---
 
-  convertRequest(
-    params: Anthropic.MessageCreateParams,
-  ): OpenAI.ChatCompletionCreateParams {
+  convertRequest(params: Anthropic.MessageCreateParams): OpenAI.ChatCompletionCreateParams {
     const messages: OpenAIMessage[] = [];
 
     if (params.system) {
@@ -91,7 +89,8 @@ export class MessagesToChatCompletionConverter {
       result.user = params.metadata.user_id;
     }
     if (params.service_tier != null) {
-      (result as any).service_tier = params.service_tier === 'standard_only' ? 'default' : params.service_tier;
+      (result as any).service_tier =
+        params.service_tier === 'standard_only' ? 'default' : params.service_tier;
     }
     if (params.stream === true) {
       (result as any).stream = true;
@@ -102,9 +101,7 @@ export class MessagesToChatCompletionConverter {
 
   // --- Response conversion ---
 
-  convertResponse(
-    message: Anthropic.Message,
-  ): OpenAI.ChatCompletion {
+  convertResponse(message: Anthropic.Message): OpenAI.ChatCompletion {
     const textParts: string[] = [];
     const thinkingParts: string[] = [];
     const reasoningDetails: Array<Record<string, unknown>> = [];
@@ -186,9 +183,7 @@ export class MessagesToChatCompletionConverter {
     };
   }
 
-  private convertUsage(
-    usage: Anthropic.Usage,
-  ): OpenAI.CompletionUsage {
+  private convertUsage(usage: Anthropic.Usage): OpenAI.CompletionUsage {
     const cacheRead = usage.cache_read_input_tokens ?? 0;
     const ephemeral5m = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0;
     const ephemeral1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
@@ -213,9 +208,7 @@ export class MessagesToChatCompletionConverter {
 
   // --- Stream conversion ---
 
-  convertStream(
-    event: Anthropic.RawMessageStreamEvent,
-  ): OpenAI.ChatCompletionChunk | null {
+  convertStream(event: Anthropic.RawMessageStreamEvent): OpenAI.ChatCompletionChunk | null {
     switch (event.type) {
       case 'message_start':
         return this.handleMessageStart(event);
@@ -265,9 +258,7 @@ export class MessagesToChatCompletionConverter {
     };
   }
 
-  private handleMessageStart(
-    event: Anthropic.RawMessageStartEvent,
-  ): OpenAI.ChatCompletionChunk {
+  private handleMessageStart(event: Anthropic.RawMessageStartEvent): OpenAI.ChatCompletionChunk {
     const state = this.streamState;
     state.id = event.message.id;
     state.model = event.message.model;
@@ -392,9 +383,7 @@ export class MessagesToChatCompletionConverter {
     return this.makeChunk({ content: '' });
   }
 
-  private handleMessageDelta(
-    event: Anthropic.RawMessageDeltaEvent,
-  ): OpenAI.ChatCompletionChunk {
+  private handleMessageDelta(event: Anthropic.RawMessageDeltaEvent): OpenAI.ChatCompletionChunk {
     const state = this.streamState;
     const usage = event.usage;
     state.outputTokens = usage.output_tokens;
@@ -441,10 +430,7 @@ export class MessagesToChatCompletionConverter {
     };
   }
 
-  private convertUserMessage(
-    messages: OpenAIMessage[],
-    msg: Anthropic.MessageParam,
-  ): void {
+  private convertUserMessage(messages: OpenAIMessage[], msg: Anthropic.MessageParam): void {
     if (typeof msg.content === 'string') {
       messages.push({ role: 'user', content: msg.content });
       return;
@@ -477,14 +463,15 @@ export class MessagesToChatCompletionConverter {
 
     if (toolResults.length > 0) {
       for (const tr of toolResults) {
-        const content = typeof tr.content === 'string'
-          ? tr.content
-          : tr.content
+        const content =
+          typeof tr.content === 'string'
             ? tr.content
-                .filter((b): b is Anthropic.TextBlockParam => b.type === 'text')
-                .map((b) => b.text)
-                .join('\n')
-            : '';
+            : tr.content
+              ? tr.content
+                  .filter((b): b is Anthropic.TextBlockParam => b.type === 'text')
+                  .map((b) => b.text)
+                  .join('\n')
+              : '';
         messages.push({
           role: 'tool',
           tool_call_id: tr.tool_use_id,
@@ -558,10 +545,7 @@ export class MessagesToChatCompletionConverter {
     return { type: 'text', text: '[Unsupported document source]' };
   }
 
-  private convertAssistantMessage(
-    messages: OpenAIMessage[],
-    msg: Anthropic.MessageParam,
-  ): void {
+  private convertAssistantMessage(messages: OpenAIMessage[], msg: Anthropic.MessageParam): void {
     if (typeof msg.content === 'string') {
       messages.push({ role: 'assistant', content: msg.content });
       return;
@@ -619,9 +603,10 @@ export class MessagesToChatCompletionConverter {
     messages.push(assistantMsg);
   }
 
-  private convertTools(
-    tools: Anthropic.ToolUnion[],
-  ): { tools: OpenAI.ChatCompletionTool[]; webSearchOptions?: Record<string, unknown> } {
+  private convertTools(tools: Anthropic.ToolUnion[]): {
+    tools: OpenAI.ChatCompletionTool[];
+    webSearchOptions?: Record<string, unknown>;
+  } {
     const functionTools: OpenAI.ChatCompletionTool[] = [];
     let webSearchOptions: Record<string, unknown> | undefined;
 
@@ -635,7 +620,10 @@ export class MessagesToChatCompletionConverter {
             parameters: (t as Anthropic.Tool).input_schema as unknown as Record<string, unknown>,
           },
         });
-      } else if ('type' in t && (t.type === 'web_search_20250305' || t.type === 'web_search_20260209')) {
+      } else if (
+        'type' in t &&
+        (t.type === 'web_search_20250305' || t.type === 'web_search_20260209')
+      ) {
         const ws = t as Anthropic.WebSearchTool20250305;
         webSearchOptions = {};
         if (ws.max_uses != null) {
@@ -650,12 +638,14 @@ export class MessagesToChatCompletionConverter {
     return { tools: functionTools, webSearchOptions };
   }
 
-  private convertToolChoice(
-    choice: Anthropic.ToolChoice,
-  ): { toolChoice: OpenAI.ChatCompletionToolChoiceOption; parallelToolCalls?: boolean } {
-    const parallelToolCalls = 'disable_parallel_tool_use' in choice && choice.disable_parallel_tool_use === true
-      ? false
-      : undefined;
+  private convertToolChoice(choice: Anthropic.ToolChoice): {
+    toolChoice: OpenAI.ChatCompletionToolChoiceOption;
+    parallelToolCalls?: boolean;
+  } {
+    const parallelToolCalls =
+      'disable_parallel_tool_use' in choice && choice.disable_parallel_tool_use === true
+        ? false
+        : undefined;
 
     switch (choice.type) {
       case 'auto':
@@ -693,9 +683,7 @@ export class MessagesToChatCompletionConverter {
     return { type: 'text' };
   }
 
-  private convertThinking(
-    thinking: Anthropic.ThinkingConfigParam,
-  ): string | null {
+  private convertThinking(thinking: Anthropic.ThinkingConfigParam): string | null {
     if (thinking.type === 'disabled') return 'none';
     if (thinking.type === 'enabled') {
       const budget = (thinking as Anthropic.ThinkingConfigEnabled).budget_tokens;
