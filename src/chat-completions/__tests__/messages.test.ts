@@ -117,7 +117,11 @@ describe('ChatCompletionToMessagesConverter', () => {
           {
             role: 'user',
             content: [
-              { type: 'tool_result', tool_use_id: 'call_123', content: [{ type: 'text', text: '72°F' }] },
+              {
+                type: 'tool_result',
+                tool_use_id: 'call_123',
+                content: [{ type: 'text', text: '72°F' }],
+              },
             ],
           },
         ]);
@@ -132,7 +136,11 @@ describe('ChatCompletionToMessagesConverter', () => {
               role: 'assistant',
               content: 'Let me check.',
               tool_calls: [
-                { id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{}' } },
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'get_weather', arguments: '{}' },
+                },
               ],
             },
           ],
@@ -171,8 +179,16 @@ describe('ChatCompletionToMessagesConverter', () => {
         expect(result.messages[2]).toEqual({
           role: 'user',
           content: [
-            { type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: 'result1' }] },
-            { type: 'tool_result', tool_use_id: 'c2', content: [{ type: 'text', text: 'result2' }] },
+            {
+              type: 'tool_result',
+              tool_use_id: 'c1',
+              content: [{ type: 'text', text: 'result1' }],
+            },
+            {
+              type: 'tool_result',
+              tool_use_id: 'c2',
+              content: [{ type: 'text', text: 'result2' }],
+            },
           ],
         });
       });
@@ -232,7 +248,10 @@ describe('ChatCompletionToMessagesConverter', () => {
         const input: OpenAI.ChatCompletionCreateParams = {
           model: 'gpt-4o',
           messages: [{ role: 'user', content: 'Hi' }],
-          temperature: 0.7, top_p: 0.9, max_tokens: 1000, stop: ['END', 'STOP'],
+          temperature: 0.7,
+          top_p: 0.9,
+          max_tokens: 1000,
+          stop: ['END', 'STOP'],
         };
 
         const result = converter.convertRequest(input);
@@ -245,21 +264,26 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('maps max_completion_tokens to max_tokens', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }], max_completion_tokens: 500,
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
+          max_completion_tokens: 500,
         });
         expect(result.max_tokens).toBe(500);
       });
 
       it('maps stop as string to stop_sequences array', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }], stop: 'END',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
+          stop: 'END',
         });
         expect(result.stop_sequences).toEqual(['END']);
       });
 
       it('defaults max_tokens to 4096 when not provided', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
         });
         expect(result.max_tokens).toBe(4096);
       });
@@ -270,24 +294,39 @@ describe('ChatCompletionToMessagesConverter', () => {
         const result = converter.convertRequest({
           model: 'gpt-4o',
           messages: [{ role: 'user', content: 'Hi' }],
-          tools: [{
-            type: 'function',
-            function: {
-              name: 'get_weather', description: 'Get weather info',
-              parameters: { type: 'object', properties: { location: { type: 'string' } }, required: ['location'] },
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'get_weather',
+                description: 'Get weather info',
+                parameters: {
+                  type: 'object',
+                  properties: { location: { type: 'string' } },
+                  required: ['location'],
+                },
+              },
             },
-          }],
+          ],
         });
 
-        expect(result.tools).toEqual([{
-          name: 'get_weather', description: 'Get weather info',
-          input_schema: { type: 'object', properties: { location: { type: 'string' } }, required: ['location'] },
-        }]);
+        expect(result.tools).toEqual([
+          {
+            name: 'get_weather',
+            description: 'Get weather info',
+            input_schema: {
+              type: 'object',
+              properties: { location: { type: 'string' } },
+              required: ['location'],
+            },
+          },
+        ]);
       });
 
       it('maps tool_choice "auto"', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
           tool_choice: 'auto',
         });
@@ -296,7 +335,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('maps tool_choice "required" to {type: "any"}', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
           tool_choice: 'required',
         });
@@ -305,15 +345,20 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('maps tool_choice "none"', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }], tool_choice: 'none',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
+          tool_choice: 'none',
         });
         expect(result.tool_choice).toEqual({ type: 'none' });
       });
 
       it('maps named tool_choice', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
-          tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
+          tools: [
+            { type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } },
+          ],
           tool_choice: { type: 'function', function: { name: 'get_weather' } },
         });
         expect(result.tool_choice).toEqual({ type: 'tool', name: 'get_weather' });
@@ -323,20 +368,28 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('response_format mapping', () => {
       it('maps json_schema response_format to output_config', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           response_format: {
             type: 'json_schema',
-            json_schema: { name: 'response', schema: { type: 'object', properties: { answer: { type: 'string' } } } },
+            json_schema: {
+              name: 'response',
+              schema: { type: 'object', properties: { answer: { type: 'string' } } },
+            },
           },
         });
         expect(result.output_config).toEqual({
-          format: { type: 'json_schema', schema: { type: 'object', properties: { answer: { type: 'string' } } } },
+          format: {
+            type: 'json_schema',
+            schema: { type: 'object', properties: { answer: { type: 'string' } } },
+          },
         });
       });
 
       it('maps json_object response_format to output_config', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           response_format: { type: 'json_object' },
         });
         expect(result.output_config).toEqual({
@@ -346,7 +399,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('does not set output_config for text format', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           response_format: { type: 'text' },
         });
         expect(result.output_config).toEqual({});
@@ -356,7 +410,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('reasoning_effort mapping', () => {
       it('maps "high" reasoning_effort to thinking enabled', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           reasoning_effort: 'high',
         } as any);
         expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 10240 });
@@ -364,7 +419,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('maps "low" reasoning_effort to thinking enabled with small budget', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           reasoning_effort: 'low',
         } as any);
         expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 2048 });
@@ -372,7 +428,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('maps "none" reasoning_effort to thinking disabled', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           reasoning_effort: 'none',
         } as any);
         expect(result.thinking).toEqual({ type: 'disabled' });
@@ -382,7 +439,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('user mapping', () => {
       it('maps user to metadata.user_id', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           user: 'user-123',
         });
         expect(result.metadata).toEqual({ user_id: 'user-123' });
@@ -392,7 +450,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('parallel_tool_calls mapping', () => {
       it('maps parallel_tool_calls=false to disable_parallel_tool_use=true', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
           tool_choice: 'auto',
           parallel_tool_calls: false,
@@ -402,7 +461,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('does not set disable_parallel_tool_use when parallel_tool_calls is true', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           tools: [{ type: 'function', function: { name: 'fn', parameters: { type: 'object' } } }],
           tool_choice: 'auto',
           parallel_tool_calls: true,
@@ -414,7 +474,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('stream mapping', () => {
       it('passes stream=true through', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           stream: true,
         } as any);
         expect((result as any).stream).toBe(true);
@@ -422,7 +483,8 @@ describe('ChatCompletionToMessagesConverter', () => {
 
       it('does not set stream when not provided', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
         });
         expect((result as any).stream).toBeUndefined();
       });
@@ -431,7 +493,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('service_tier mapping', () => {
       it('maps service_tier "auto" through', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           service_tier: 'auto',
         } as any);
         expect(result.service_tier).toBe('auto');
@@ -441,7 +504,8 @@ describe('ChatCompletionToMessagesConverter', () => {
     describe('reasoning_effort mapping (additional)', () => {
       it('maps "medium" reasoning_effort to thinking enabled with budget 5120', () => {
         const result = converter.convertRequest({
-          model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }],
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'Hi' }],
           reasoning_effort: 'medium',
         } as any);
         expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 5120 });
@@ -454,8 +518,18 @@ describe('ChatCompletionToMessagesConverter', () => {
   describe('convertResponse', () => {
     it('converts a basic text response', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'chatcmpl-123', object: 'chat.completion', created: 1700000000, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: 'Hello!', refusal: null }, finish_reason: 'stop', logprobs: null }],
+        id: 'chatcmpl-123',
+        object: 'chat.completion',
+        created: 1700000000,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Hello!', refusal: null },
+            finish_reason: 'stop',
+            logprobs: null,
+          },
+        ],
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       };
 
@@ -471,98 +545,203 @@ describe('ChatCompletionToMessagesConverter', () => {
 
     it('converts a tool call response', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'chatcmpl-456', object: 'chat.completion', created: 1700000000, model: 'gpt-4o',
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant', content: null, refusal: null,
-            tool_calls: [{ id: 'call_abc', type: 'function', function: { name: 'get_weather', arguments: '{"location":"SF"}' } }],
+        id: 'chatcmpl-456',
+        object: 'chat.completion',
+        created: 1700000000,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              refusal: null,
+              tool_calls: [
+                {
+                  id: 'call_abc',
+                  type: 'function',
+                  function: { name: 'get_weather', arguments: '{"location":"SF"}' },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+            logprobs: null,
           },
-          finish_reason: 'tool_calls', logprobs: null,
-        }],
+        ],
       };
 
       const result = converter.convertResponse(input);
 
       expect(result.stop_reason).toBe('tool_use');
       expect(result.content).toEqual([
-        { type: 'tool_use', id: 'call_abc', name: 'get_weather', input: { location: 'SF' }, caller: { type: 'direct' } },
+        {
+          type: 'tool_use',
+          id: 'call_abc',
+          name: 'get_weather',
+          input: { location: 'SF' },
+          caller: { type: 'direct' },
+        },
       ]);
     });
 
     it('converts mixed content + tool calls', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'chatcmpl-789', object: 'chat.completion', created: 1700000000, model: 'gpt-4o',
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant', content: 'Let me check.', refusal: null,
-            tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{}' } }],
+        id: 'chatcmpl-789',
+        object: 'chat.completion',
+        created: 1700000000,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: 'Let me check.',
+              refusal: null,
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'get_weather', arguments: '{}' },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+            logprobs: null,
           },
-          finish_reason: 'tool_calls', logprobs: null,
-        }],
+        ],
       };
 
       const result = converter.convertResponse(input);
 
       expect(result.content).toEqual([
         { type: 'text', text: 'Let me check.', citations: null },
-        { type: 'tool_use', id: 'call_1', name: 'get_weather', input: {}, caller: { type: 'direct' } },
+        {
+          type: 'tool_use',
+          id: 'call_1',
+          name: 'get_weather',
+          input: {},
+          caller: { type: 'direct' },
+        },
       ]);
     });
 
     it('maps finish_reason "length" to "max_tokens"', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: 'truncated', refusal: null }, finish_reason: 'length', logprobs: null }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'truncated', refusal: null },
+            finish_reason: 'length',
+            logprobs: null,
+          },
+        ],
       };
       expect(converter.convertResponse(input).stop_reason).toBe('max_tokens');
     });
 
     it('maps finish_reason "content_filter" to "refusal"', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: '', refusal: null }, finish_reason: 'content_filter', logprobs: null }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: '', refusal: null },
+            finish_reason: 'content_filter',
+            logprobs: null,
+          },
+        ],
       };
       expect(converter.convertResponse(input).stop_reason).toBe('refusal');
     });
 
     it('handles null content with no tool calls', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: null, refusal: null }, finish_reason: 'stop', logprobs: null }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: null, refusal: null },
+            finish_reason: 'stop',
+            logprobs: null,
+          },
+        ],
       };
-      expect(converter.convertResponse(input).content).toEqual([{ type: 'text', text: '', citations: null }]);
+      expect(converter.convertResponse(input).content).toEqual([
+        { type: 'text', text: '', citations: null },
+      ]);
     });
 
     it('converts reasoning to thinking block', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{
-          index: 0,
-          message: { role: 'assistant', content: 'Answer is 42.', refusal: null, reasoning: 'Let me think...' } as any,
-          finish_reason: 'stop', logprobs: null,
-        }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: 'Answer is 42.',
+              refusal: null,
+              reasoning: 'Let me think...',
+            } as any,
+            finish_reason: 'stop',
+            logprobs: null,
+          },
+        ],
       };
       const result = converter.convertResponse(input);
-      expect(result.content[0]).toEqual({ type: 'thinking', thinking: 'Let me think...', signature: '' });
+      expect(result.content[0]).toEqual({
+        type: 'thinking',
+        thinking: 'Let me think...',
+        signature: '',
+      });
       expect(result.content[1]).toEqual({ type: 'text', text: 'Answer is 42.', citations: null });
     });
 
     it('converts annotations to web_search_tool_result', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant', content: 'Search result.', refusal: null,
-            annotations: [{ type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 10 } }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: 'Search result.',
+              refusal: null,
+              annotations: [
+                {
+                  type: 'url_citation',
+                  url_citation: {
+                    title: 'Example',
+                    url: 'https://example.com',
+                    start_index: 0,
+                    end_index: 10,
+                  },
+                },
+              ],
+            },
+            finish_reason: 'stop',
+            logprobs: null,
           },
-          finish_reason: 'stop', logprobs: null,
-        }],
+        ],
       };
       const result = converter.convertResponse(input);
-      const wsBlock = result.content.find(b => b.type === 'web_search_tool_result') as any;
+      const wsBlock = result.content.find((b) => b.type === 'web_search_tool_result') as any;
       expect(wsBlock).toBeDefined();
       expect(wsBlock.content[0].title).toBe('Example');
       expect(wsBlock.content[0].url).toBe('https://example.com');
@@ -570,17 +749,42 @@ describe('ChatCompletionToMessagesConverter', () => {
 
     it('maps function_call finish_reason to tool_use', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: null, refusal: null }, finish_reason: 'function_call', logprobs: null }],
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: null, refusal: null },
+            finish_reason: 'function_call',
+            logprobs: null,
+          },
+        ],
       };
       expect(converter.convertResponse(input).stop_reason).toBe('tool_use');
     });
 
     it('converts usage with cache details', () => {
       const input: OpenAI.ChatCompletion = {
-        id: 'id', object: 'chat.completion', created: 0, model: 'gpt-4o',
-        choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', refusal: null }, finish_reason: 'stop', logprobs: null }],
-        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, prompt_tokens_details: { cached_tokens: 30 } },
+        id: 'id',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4o',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Hi', refusal: null },
+            finish_reason: 'stop',
+            logprobs: null,
+          },
+        ],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          prompt_tokens_details: { cached_tokens: 30 },
+        },
       };
       const result = converter.convertResponse(input);
       expect(result.usage.input_tokens).toBe(100);
@@ -592,13 +796,18 @@ describe('ChatCompletionToMessagesConverter', () => {
   // ===== convertStream =====
 
   describe('convertStream', () => {
-    function makeChunk(overrides: Partial<OpenAI.ChatCompletionChunk> & {
-      delta?: Partial<OpenAI.ChatCompletionChunk.Choice.Delta>;
-      finish_reason?: OpenAI.ChatCompletionChunk.Choice['finish_reason'];
-    } = {}): OpenAI.ChatCompletionChunk {
+    function makeChunk(
+      overrides: Partial<OpenAI.ChatCompletionChunk> & {
+        delta?: Partial<OpenAI.ChatCompletionChunk.Choice.Delta>;
+        finish_reason?: OpenAI.ChatCompletionChunk.Choice['finish_reason'];
+      } = {},
+    ): OpenAI.ChatCompletionChunk {
       const { delta = {}, finish_reason = null, ...rest } = overrides;
       return {
-        id: 'chatcmpl-123', object: 'chat.completion.chunk', created: 1700000000, model: 'gpt-4o',
+        id: 'chatcmpl-123',
+        object: 'chat.completion.chunk',
+        created: 1700000000,
+        model: 'gpt-4o',
         choices: [{ index: 0, delta, finish_reason }],
         ...rest,
       };
@@ -646,7 +855,7 @@ describe('ChatCompletionToMessagesConverter', () => {
         c.convertStream(makeChunk({ delta: { content: 'Hi' } }));
 
         const events = c.convertStream(makeChunk({ finish_reason: 'stop' }));
-        const types = events.map(e => e.type);
+        const types = events.map((e) => e.type);
 
         expect(types).toContain('content_block_stop');
         expect(types).toContain('message_delta');
@@ -658,7 +867,9 @@ describe('ChatCompletionToMessagesConverter', () => {
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
         const events = c.convertStream(makeChunk({ finish_reason: 'tool_calls' }));
-        const msgDelta = events.find(e => e.type === 'message_delta') as Anthropic.RawMessageDeltaEvent;
+        const msgDelta = events.find(
+          (e) => e.type === 'message_delta',
+        ) as Anthropic.RawMessageDeltaEvent;
 
         expect(msgDelta.delta.stop_reason).toBe('tool_use');
       });
@@ -668,7 +879,9 @@ describe('ChatCompletionToMessagesConverter', () => {
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
         const events = c.convertStream(makeChunk({ finish_reason: 'length' }));
-        const msgDelta = events.find(e => e.type === 'message_delta') as Anthropic.RawMessageDeltaEvent;
+        const msgDelta = events.find(
+          (e) => e.type === 'message_delta',
+        ) as Anthropic.RawMessageDeltaEvent;
 
         expect(msgDelta.delta.stop_reason).toBe('max_tokens');
       });
@@ -679,11 +892,22 @@ describe('ChatCompletionToMessagesConverter', () => {
         const c = new ChatCompletionToMessagesConverter();
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
-        const events = c.convertStream(makeChunk({
-          delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] },
-        }));
+        const events = c.convertStream(
+          makeChunk({
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'get_weather', arguments: '' },
+                },
+              ],
+            },
+          }),
+        );
 
-        const startEvents = events.filter(e => e.type === 'content_block_start');
+        const startEvents = events.filter((e) => e.type === 'content_block_start');
         expect(startEvents.length).toBe(1);
         const startEvent = startEvents[0] as Anthropic.RawContentBlockStartEvent;
         expect(startEvent.content_block.type).toBe('tool_use');
@@ -693,13 +917,26 @@ describe('ChatCompletionToMessagesConverter', () => {
       it('emits input_json_delta for tool call arguments', () => {
         const c = new ChatCompletionToMessagesConverter();
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
-        c.convertStream(makeChunk({
-          delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] },
-        }));
+        c.convertStream(
+          makeChunk({
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'get_weather', arguments: '' },
+                },
+              ],
+            },
+          }),
+        );
 
-        const events = c.convertStream(makeChunk({
-          delta: { tool_calls: [{ index: 0, function: { arguments: '{"loc' } }] },
-        }));
+        const events = c.convertStream(
+          makeChunk({
+            delta: { tool_calls: [{ index: 0, function: { arguments: '{"loc' } }] },
+          }),
+        );
 
         expect(events.length).toBe(1);
         expect(events[0].type).toBe('content_block_delta');
@@ -715,11 +952,22 @@ describe('ChatCompletionToMessagesConverter', () => {
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
         c.convertStream(makeChunk({ delta: { content: 'Let me check.' } }));
 
-        const events = c.convertStream(makeChunk({
-          delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'fn', arguments: '' } }] },
-        }));
+        const events = c.convertStream(
+          makeChunk({
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'fn', arguments: '' },
+                },
+              ],
+            },
+          }),
+        );
 
-        const types = events.map(e => e.type);
+        const types = events.map((e) => e.type);
         expect(types).toContain('content_block_stop');
         expect(types).toContain('content_block_start');
       });
@@ -730,16 +978,22 @@ describe('ChatCompletionToMessagesConverter', () => {
         const c = new ChatCompletionToMessagesConverter();
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
 
-        const events = c.convertStream(makeChunk({
-          delta: { reasoning: 'Let me think...' } as any,
-        }));
+        const events = c.convertStream(
+          makeChunk({
+            delta: { reasoning: 'Let me think...' } as any,
+          }),
+        );
 
-        const types = events.map(e => e.type);
+        const types = events.map((e) => e.type);
         expect(types).toContain('content_block_start');
         expect(types).toContain('content_block_delta');
-        const startEvent = events.find(e => e.type === 'content_block_start') as Anthropic.RawContentBlockStartEvent;
+        const startEvent = events.find(
+          (e) => e.type === 'content_block_start',
+        ) as Anthropic.RawContentBlockStartEvent;
         expect(startEvent.content_block.type).toBe('thinking');
-        const deltaEvent = events.find(e => e.type === 'content_block_delta') as Anthropic.RawContentBlockDeltaEvent;
+        const deltaEvent = events.find(
+          (e) => e.type === 'content_block_delta',
+        ) as Anthropic.RawContentBlockDeltaEvent;
         expect(deltaEvent.delta.type).toBe('thinking_delta');
         expect((deltaEvent.delta as Anthropic.ThinkingDelta).thinking).toBe('Let me think...');
       });
@@ -751,7 +1005,7 @@ describe('ChatCompletionToMessagesConverter', () => {
 
         const events = c.convertStream(makeChunk({ delta: { content: 'Answer' } }));
 
-        const types = events.map(e => e.type);
+        const types = events.map((e) => e.type);
         expect(types[0]).toBe('content_block_stop');
         expect(types).toContain('content_block_start');
         expect(types).toContain('content_block_delta');
@@ -764,14 +1018,30 @@ describe('ChatCompletionToMessagesConverter', () => {
         c.convertStream(makeChunk({ delta: { role: 'assistant' } }));
         c.convertStream(makeChunk({ delta: { content: 'Results:' } }));
 
-        const events = c.convertStream(makeChunk({
-          delta: { annotations: [{ type: 'url_citation', url_citation: { title: 'Example', url: 'https://example.com', start_index: 0, end_index: 5 } }] } as any,
-        }));
+        const events = c.convertStream(
+          makeChunk({
+            delta: {
+              annotations: [
+                {
+                  type: 'url_citation',
+                  url_citation: {
+                    title: 'Example',
+                    url: 'https://example.com',
+                    start_index: 0,
+                    end_index: 5,
+                  },
+                },
+              ],
+            } as any,
+          }),
+        );
 
-        const types = events.map(e => e.type);
+        const types = events.map((e) => e.type);
         expect(types).toContain('content_block_stop');
         expect(types).toContain('content_block_start');
-        const startEvent = events.find(e => e.type === 'content_block_start') as Anthropic.RawContentBlockStartEvent;
+        const startEvent = events.find(
+          (e) => e.type === 'content_block_start',
+        ) as Anthropic.RawContentBlockStartEvent;
         expect(startEvent.content_block.type).toBe('web_search_tool_result');
         expect((startEvent.content_block as any).content[0].title).toBe('Example');
       });

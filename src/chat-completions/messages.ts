@@ -26,9 +26,7 @@ export class ChatCompletionToMessagesConverter {
 
   // --- Request conversion ---
 
-  convertRequest(
-    params: OpenAI.ChatCompletionCreateParams,
-  ): Anthropic.MessageCreateParams {
+  convertRequest(params: OpenAI.ChatCompletionCreateParams): Anthropic.MessageCreateParams {
     const systemBlocks: Anthropic.TextBlockParam[] = [];
     const messages: AnthropicMessage[] = [];
 
@@ -67,7 +65,7 @@ export class ChatCompletionToMessagesConverter {
     }
     if (params.stop != null) {
       const stop = params.stop;
-      result.stop_sequences = typeof stop === 'string' ? [stop] : stop as string[];
+      result.stop_sequences = typeof stop === 'string' ? [stop] : (stop as string[]);
     }
     if (params.tools) {
       result.tools = this.convertTools(params.tools);
@@ -102,9 +100,7 @@ export class ChatCompletionToMessagesConverter {
 
   // --- Response conversion ---
 
-  convertResponse(
-    response: OpenAI.ChatCompletion,
-  ): Anthropic.Message {
+  convertResponse(response: OpenAI.ChatCompletion): Anthropic.Message {
     const choice = response.choices[0];
     const msg = choice?.message;
 
@@ -172,9 +168,7 @@ export class ChatCompletionToMessagesConverter {
     };
   }
 
-  private convertUsage(
-    usage?: OpenAI.CompletionUsage,
-  ): Anthropic.Usage {
+  private convertUsage(usage?: OpenAI.CompletionUsage): Anthropic.Usage {
     const promptTokens = usage?.prompt_tokens ?? 0;
     const completionTokens = usage?.completion_tokens ?? 0;
     const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
@@ -187,9 +181,7 @@ export class ChatCompletionToMessagesConverter {
       cache_creation_input_tokens: 0,
       cache_creation: null,
       inference_geo: null,
-      server_tool_use: webSearch > 0
-        ? { web_search_requests: webSearch } as any
-        : null,
+      server_tool_use: webSearch > 0 ? ({ web_search_requests: webSearch } as any) : null,
       service_tier: 'standard',
     };
   }
@@ -200,9 +192,7 @@ export class ChatCompletionToMessagesConverter {
 
   // --- Stream conversion ---
 
-  convertStream(
-    chunk: OpenAI.ChatCompletionChunk,
-  ): Anthropic.RawMessageStreamEvent[] {
+  convertStream(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
     const events: Anthropic.RawMessageStreamEvent[] = [];
     const choice = chunk.choices[0];
@@ -239,7 +229,6 @@ export class ChatCompletionToMessagesConverter {
           container: null,
         },
       });
-
     }
 
     // Tool call deltas
@@ -315,7 +304,9 @@ export class ChatCompletionToMessagesConverter {
       });
     } else {
       // Annotations delta → web_search_tool_result
-      const annotations = (delta as any).annotations as OpenAI.ChatCompletionMessage.Annotation[] | undefined;
+      const annotations = (delta as any).annotations as
+        | OpenAI.ChatCompletionMessage.Annotation[]
+        | undefined;
       if (annotations && annotations.length > 0) {
         this.transitionBlock(state, events, 'web_search_tool_result');
         const searchResults = annotations.map((a) => ({
@@ -431,9 +422,7 @@ export class ChatCompletionToMessagesConverter {
     }
   }
 
-  private convertImageUrl(
-    part: OpenAI.ChatCompletionContentPartImage,
-  ): Anthropic.ImageBlockParam {
+  private convertImageUrl(part: OpenAI.ChatCompletionContentPartImage): Anthropic.ImageBlockParam {
     const url = part.image_url.url;
     const dataUriMatch = url.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
 
@@ -494,9 +483,10 @@ export class ChatCompletionToMessagesConverter {
     const toolResult: Anthropic.ToolResultBlockParam = {
       type: 'tool_result',
       tool_use_id: msg.tool_call_id,
-      content: typeof msg.content === 'string'
-        ? [{ type: 'text', text: msg.content }]
-        : msg.content.map((p) => ({ type: 'text' as const, text: p.text })),
+      content:
+        typeof msg.content === 'string'
+          ? [{ type: 'text', text: msg.content }]
+          : msg.content.map((p) => ({ type: 'text' as const, text: p.text })),
     };
 
     const last = messages[messages.length - 1];
@@ -511,9 +501,7 @@ export class ChatCompletionToMessagesConverter {
     messages.push({ role: 'user', content: [toolResult] });
   }
 
-  private convertTools(
-    tools: OpenAI.ChatCompletionTool[],
-  ): Anthropic.Tool[] {
+  private convertTools(tools: OpenAI.ChatCompletionTool[]): Anthropic.Tool[] {
     return tools
       .filter((t): t is OpenAI.ChatCompletionFunctionTool => t.type === 'function')
       .map((t) => ({
@@ -572,9 +560,7 @@ export class ChatCompletionToMessagesConverter {
     return {};
   }
 
-  private convertReasoningEffort(
-    effort: string | null,
-  ): Anthropic.ThinkingConfigParam {
+  private convertReasoningEffort(effort: string | null): Anthropic.ThinkingConfigParam {
     if (!effort || effort === 'none' || effort === 'minimal') {
       return { type: 'disabled' };
     }
