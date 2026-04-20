@@ -165,6 +165,110 @@ describe("ResponsesToChatCompletionConverter", () => {
         },
       });
     });
+
+    it("passes parallel_tool_calls through", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        parallel_tool_calls: false,
+      } as any);
+      expect((result as any).parallel_tool_calls).toBe(false);
+    });
+
+    it("passes prompt_cache_key and prompt_cache_retention through", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        prompt_cache_key: "key_123",
+        prompt_cache_retention: "24h",
+      } as any);
+      expect((result as any).prompt_cache_key).toBe("key_123");
+      expect((result as any).prompt_cache_retention).toBe("24h");
+    });
+
+    it("maps include logprobs to top_logprobs", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        include: ["message.output_text.logprobs"],
+      } as any);
+      expect((result as any).top_logprobs).toBe(20);
+    });
+
+    it("maps text.verbosity to verbosity", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        text: { format: { type: "text" }, verbosity: "low" },
+      } as any);
+      expect((result as any).verbosity).toBe("low");
+    });
+
+    it("converts web_search tools to web_search_options", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tools: [{ type: "web_search_preview", search_context_size: "medium" }],
+      } as any);
+      expect(result.tools).toBeUndefined();
+      expect((result as any).web_search_options).toBeDefined();
+      expect((result as any).web_search_options.search_context_size).toBe("medium");
+    });
+
+    it("merges consecutive function_call items into one assistant message", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { role: "user", content: "Do two things" },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "fn1",
+            arguments: "{}",
+            status: "completed",
+          },
+          {
+            type: "function_call",
+            id: "fc_2",
+            call_id: "call_2",
+            name: "fn2",
+            arguments: "{}",
+            status: "completed",
+          },
+          { type: "function_call_output", id: "fco_1", call_id: "call_1", output: "r1" },
+          { type: "function_call_output", id: "fco_2", call_id: "call_2", output: "r2" },
+        ],
+      });
+
+      expect(result.messages[1]).toEqual({
+        role: "assistant",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "fn1", arguments: "{}" } },
+          { id: "call_2", type: "function", function: { name: "fn2", arguments: "{}" } },
+        ],
+      });
+      expect(result.messages[2]).toEqual({ role: "tool", tool_call_id: "call_1", content: "r1" });
+      expect(result.messages[3]).toEqual({ role: "tool", tool_call_id: "call_2", content: "r2" });
+    });
+
+    it("converts reasoning input items to assistant with reasoning_content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { role: "user", content: "Think hard" },
+          {
+            type: "reasoning",
+            id: "r_1",
+            summary: [{ type: "summary_text", text: "Deep thought..." }],
+          },
+        ],
+      } as any);
+
+      const msg = result.messages[1] as any;
+      expect(msg.role).toBe("assistant");
+      expect(msg.reasoning_content).toBe("Deep thought...");
+    });
   });
 
   describe("convertResponse", () => {
