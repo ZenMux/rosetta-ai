@@ -590,6 +590,7 @@ describe('MessagesToChatCompletionConverter', () => {
         expect(result!.usage?.prompt_tokens).toBe(10);
         expect(result!.usage?.completion_tokens).toBe(5);
         expect(result!.usage?.total_tokens).toBe(15);
+        expect(result!.usage?.completion_tokens_details).toEqual({ reasoning_tokens: 0 });
       });
     });
 
@@ -625,8 +626,11 @@ describe('MessagesToChatCompletionConverter', () => {
         });
 
         expect(result).not.toBeNull();
-        const tc = result!.choices[0].delta.tool_calls![0];
+        const delta = result!.choices[0].delta;
+        expect(delta.content).toBe('');
+        const tc = delta.tool_calls![0];
         expect(tc.index).toBe(0);
+        expect(tc.type).toBe('function');
         expect(tc.function!.arguments).toBe('{"loc');
       });
 
@@ -664,6 +668,29 @@ describe('MessagesToChatCompletionConverter', () => {
         const result = c.convertStream({ type: 'content_block_stop', index: 0 });
         expect(result).not.toBeNull();
         expect(result!.choices[0].delta.content).toBe('');
+      });
+    });
+
+    describe('text in content_block_start', () => {
+      it('emits content chunk when text block has initial non-empty text', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+        const result = c.convertStream({
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'text', text: 'Hello', citations: null },
+        });
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].delta.content).toBe('Hello');
+      });
+
+      it('returns null when text block is empty', () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStream(messageStart());
+        const result = c.convertStream({
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'text', text: '', citations: null },
+        });
+        expect(result).toBeNull();
       });
     });
 

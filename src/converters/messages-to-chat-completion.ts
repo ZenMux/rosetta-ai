@@ -281,6 +281,13 @@ export class MessagesToChatCompletionConverter {
   ): OpenAI.ChatCompletionChunk | null {
     const block = event.content_block;
 
+    if (block.type === 'text') {
+      if (block.text && block.text.trim()) {
+        return this.makeChunk({ content: block.text });
+      }
+      return null;
+    }
+
     if (block.type === 'tool_use' || block.type === 'server_tool_use') {
       this.streamState.toolCallCounter++;
       const index = this.streamState.toolCallCounter;
@@ -329,8 +336,9 @@ export class MessagesToChatCompletionConverter {
     if (delta.type === 'input_json_delta') {
       const toolIndex = this.streamState.toolCallCounter;
       return this.makeChunk({
+        content: '',
         tool_calls: [
-          { index: toolIndex, function: { arguments: delta.partial_json } },
+          { index: toolIndex, type: 'function', function: { arguments: delta.partial_json } },
         ],
       });
     }
@@ -411,6 +419,9 @@ export class MessagesToChatCompletionConverter {
           web_search: state.webSearchRequests,
           cache_creation_input_tokens: state.cacheCreationInputTokens,
         } as any),
+      },
+      completion_tokens_details: {
+        reasoning_tokens: 0,
       },
     };
 
