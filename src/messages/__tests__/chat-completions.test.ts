@@ -1,6 +1,6 @@
 import type OpenAI from 'openai';
 import type Anthropic from '@anthropic-ai/sdk';
-import { MessagesToChatCompletionConverter } from '../messages-to-chat-completion';
+import { MessagesToChatCompletionConverter } from '../chat-completions';
 
 function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Message {
   return {
