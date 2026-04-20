@@ -66,7 +66,7 @@ export class ChatCompletionToResponsesConverter {
     if (params.service_tier != null) {
       result.service_tier = params.service_tier as any;
     }
-    if (params.tools) {
+    if (params.tools || (params as any).web_search_options != null) {
       result.tools = this.convertTools(params);
     }
     if (params.tool_choice != null) {
