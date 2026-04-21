@@ -60,7 +60,7 @@ export class MessagesToResponsesConverter {
         "disable_parallel_tool_use" in params.tool_choice &&
         params.tool_choice.disable_parallel_tool_use === true
       ) {
-        (result as any).parallel_tool_calls = false;
+        result.parallel_tool_calls = false;
       }
     }
     if (params.thinking) {
@@ -100,7 +100,7 @@ export class MessagesToResponsesConverter {
             type: "reasoning",
             id: `rs_${this.generateId()}`,
             summary: [{ type: "summary_text", text: block.thinking }],
-          } as any);
+          });
         }
       }
     }
@@ -115,7 +115,7 @@ export class MessagesToResponsesConverter {
           name: block.name,
           arguments: JSON.stringify(block.input),
           status: "completed",
-        } as any);
+        });
       }
     }
 
@@ -133,8 +133,8 @@ export class MessagesToResponsesConverter {
             if ("url" in c) {
               annotations.push({
                 type: "url_citation",
-                url: (c as any).url,
-                title: (c as any).title ?? "",
+                url: c.url,
+                title: c.title ?? "",
                 start_index: (c as any).start_index ?? 0,
                 end_index: (c as any).end_index ?? 0,
               });
@@ -175,7 +175,7 @@ export class MessagesToResponsesConverter {
         role: "assistant",
         status: this.stopReasonToMessageStatus(message.stop_reason),
         content,
-      } as any);
+      });
     }
 
     const status = this.stopReasonToStatus(message.stop_reason);
@@ -200,8 +200,8 @@ export class MessagesToResponsesConverter {
       tools: [],
       text: { format: { type: "text" } },
       reasoning: null,
-      truncation: null as any,
-      user: undefined as any,
+      truncation: null,
+      user: undefined,
       usage: this.convertUsage(message.usage, webSearchCount),
     } as unknown as RespResponse;
   }
@@ -218,8 +218,8 @@ export class MessagesToResponsesConverter {
         cached_tokens: usage.cache_read_input_tokens ?? 0,
       },
       output_tokens_details: { reasoning_tokens: 0 },
-      ...(webSearchCount > 0 ? { web_search: webSearchCount } as any : {}),
-    } as OpenAI.Responses.ResponseUsage;
+      ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
+    };
   }
 
   // --- Stream conversion ---
@@ -279,7 +279,7 @@ export class MessagesToResponsesConverter {
                 role: "assistant",
                 status: "in_progress",
                 content: [],
-              } as any,
+              },
               output_index: state.outputIndex,
               sequence_number: state.seq++,
             } as unknown as RespStreamEvent);
@@ -303,7 +303,7 @@ export class MessagesToResponsesConverter {
               name: block.name,
               arguments: "",
               status: "in_progress",
-            } as any,
+            },
             output_index: state.outputIndex,
             sequence_number: state.seq++,
           } as unknown as RespStreamEvent);
@@ -314,7 +314,7 @@ export class MessagesToResponsesConverter {
               type: "reasoning",
               id: `rs_${this.generateId()}`,
               summary: [],
-            } as any,
+            },
             output_index: state.outputIndex,
             sequence_number: state.seq++,
           } as unknown as RespStreamEvent);
@@ -393,7 +393,7 @@ export class MessagesToResponsesConverter {
         const resp = this.makeSkeletonResponse();
         const finalStatus = this.stopReasonToStatus(state.stopReason);
         resp.status = finalStatus;
-        (resp as any).usage = {
+        resp.usage = {
           input_tokens: state.inputTokens,
           output_tokens: state.outputTokens,
           total_tokens: state.inputTokens + state.outputTokens,
@@ -433,7 +433,7 @@ export class MessagesToResponsesConverter {
     for (const msg of messages) {
       if (msg.role === "user") {
         if (typeof msg.content === "string") {
-          input.push({ role: "user", type: "message", content: msg.content } as any);
+          input.push({ role: "user", type: "message", content: msg.content });
         } else {
           const parts: any[] = [];
           const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -459,12 +459,12 @@ export class MessagesToResponsesConverter {
               if (src.type === "base64") {
                 parts.push({
                   type: "input_file",
-                  file_data: `data:${(src as any).media_type};base64,${(src as any).data}`,
+                  file_data: `data:${src.media_type};base64,${src.data}`,
                 });
               } else if (src.type === "url") {
-                parts.push({ type: "input_file", file_data: (src as any).url });
+                parts.push({ type: "input_file", file_data: src.url });
               } else if (src.type === "text") {
-                parts.push({ type: "input_text", text: (src as any).data });
+                parts.push({ type: "input_text", text: src.data });
               }
             } else if (block.type === "tool_result") {
               toolResults.push(block as Anthropic.ToolResultBlockParam);
@@ -485,12 +485,12 @@ export class MessagesToResponsesConverter {
               type: "function_call_output",
               call_id: tr.tool_use_id,
               output,
-            } as any);
+            });
           }
 
           // Emit user message if there are content parts
           if (parts.length > 0) {
-            input.push({ role: "user", type: "message", content: parts } as any);
+            input.push({ role: "user", type: "message", content: parts });
           }
         }
       } else if (msg.role === "assistant") {
@@ -514,7 +514,7 @@ export class MessagesToResponsesConverter {
                 call_id: block.id,
                 name: block.name,
                 arguments: JSON.stringify(block.input),
-              } as any);
+              });
             }
           }
         }
@@ -532,13 +532,13 @@ export class MessagesToResponsesConverter {
       if ("input_schema" in t) {
         result.push({
           type: "function",
-          name: (t as Anthropic.Tool).name,
-          description: (t as Anthropic.Tool).description,
-          parameters: (t as Anthropic.Tool).input_schema as any,
-          strict: (t as Anthropic.Tool).strict ?? null,
-        } as any);
-      } else if ("type" in t && ((t as any).type === "web_search_20250305" || (t as any).type === "web_search_20260209")) {
-        result.push({ type: "web_search" } as any);
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema,
+          strict: t.strict ?? null,
+        });
+      } else if ("type" in t && (t.type === "web_search_20250305" || t.type === "web_search_20260209")) {
+        result.push({ type: "web_search" });
       }
     }
     return result;
@@ -564,14 +564,14 @@ export class MessagesToResponsesConverter {
   private convertThinking(
     thinking: Anthropic.ThinkingConfigParam,
   ): OpenAI.Responses.ResponseCreateParams["reasoning"] {
-    if (thinking.type === "disabled") return { effort: "low" } as any;
+    if (thinking.type === "disabled") return { effort: "low" };
     if (thinking.type === "enabled") {
       const budget = (thinking as Anthropic.ThinkingConfigEnabled).budget_tokens;
-      if (budget <= 2048) return { effort: "low" } as any;
-      if (budget <= 5120) return { effort: "medium" } as any;
-      return { effort: "high" } as any;
+      if (budget <= 2048) return { effort: "low" };
+      if (budget <= 5120) return { effort: "medium" };
+      return { effort: "high" };
     }
-    return { effort: "medium" } as any;
+    return { effort: "medium" };
   }
 
   private stopReasonToStatus(
@@ -639,8 +639,8 @@ export class MessagesToResponsesConverter {
       tools: [],
       text: { format: { type: "text" } },
       reasoning: null,
-      truncation: null as any,
-      user: undefined as any,
+      truncation: null,
+      user: undefined,
     } as unknown as RespResponse;
   }
 }
