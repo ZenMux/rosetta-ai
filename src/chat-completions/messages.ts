@@ -88,7 +88,7 @@ export class ChatCompletionToMessagesConverter {
     if (params.service_tier != null) {
       const tier = params.service_tier as string;
       if (tier === "auto" || tier === "standard_only") {
-        result.service_tier = tier as any;
+        result.service_tier = tier;
       }
     }
     if (params.stream === true) {
@@ -172,7 +172,7 @@ export class ChatCompletionToMessagesConverter {
     const promptTokens = usage?.prompt_tokens ?? 0;
     const completionTokens = usage?.completion_tokens ?? 0;
     const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
-    const webSearch = (usage?.prompt_tokens_details as any)?.web_search ?? 0;
+    const webSearch: number = (usage?.prompt_tokens_details as any)?.web_search ?? 0;
 
     return {
       input_tokens: promptTokens,
@@ -181,7 +181,7 @@ export class ChatCompletionToMessagesConverter {
       cache_creation_input_tokens: 0,
       cache_creation: null,
       inference_geo: null,
-      server_tool_use: webSearch > 0 ? ({ web_search_requests: webSearch } as any) : null,
+      server_tool_use: webSearch > 0 ? ({ web_search_requests: webSearch, web_fetch_requests: 0 }) : null,
       service_tier: "standard",
     };
   }
@@ -429,7 +429,7 @@ export class ChatCompletionToMessagesConverter {
       case "image_url":
         return this.convertImageUrl(part);
       default:
-        return { type: "text", text: `[Unsupported content type: ${(part as any).type}]` };
+        return { type: "text", text: `[Unsupported content type: ${part.type}]` };
     }
   }
 
