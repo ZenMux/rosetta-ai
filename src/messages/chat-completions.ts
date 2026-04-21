@@ -69,31 +69,31 @@ export class MessagesToChatCompletionConverter {
         result.tools = tools;
       }
       if (webSearchOptions) {
-        (result as any).web_search_options = webSearchOptions;
+        result.web_search_options = webSearchOptions as any;
       }
     }
     if (params.tool_choice !== undefined) {
       const { toolChoice, parallelToolCalls } = this.convertToolChoice(params.tool_choice);
       result.tool_choice = toolChoice;
       if (parallelToolCalls !== undefined) {
-        (result as any).parallel_tool_calls = parallelToolCalls;
+        result.parallel_tool_calls = parallelToolCalls;
       }
     }
     if (params.output_config) {
       result.response_format = this.convertOutputConfig(params.output_config);
     }
     if (params.thinking) {
-      (result as any).reasoning_effort = this.convertThinking(params.thinking);
+      result.reasoning_effort = this.convertThinking(params.thinking) as any;
     }
     if (params.metadata?.user_id) {
       result.user = params.metadata.user_id;
     }
     if (params.service_tier != null) {
-      (result as any).service_tier =
-        params.service_tier === "standard_only" ? "default" : params.service_tier;
+      result.service_tier =
+        (params.service_tier === "standard_only" ? "default" : params.service_tier) as any;
     }
     if (params.stream === true) {
-      (result as any).stream = true;
+      result.stream = true as any;
     }
 
     return result;

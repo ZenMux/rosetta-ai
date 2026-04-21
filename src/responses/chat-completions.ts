@@ -56,17 +56,17 @@ export class ResponsesToChatCompletionConverter {
     if (params.tool_choice != null) {
       result.tool_choice = this.convertToolChoice(params.tool_choice);
     }
-    if ((params as any).parallel_tool_calls != null) {
-      (result as any).parallel_tool_calls = (params as any).parallel_tool_calls;
+    if (params.parallel_tool_calls != null) {
+      (result as any).parallel_tool_calls = params.parallel_tool_calls;
     }
     if (params.reasoning) {
-      (result as any).reasoning_effort = (params.reasoning as any).effort ?? null;
+      (result as any).reasoning_effort = params.reasoning.effort ?? null;
     }
     if (params.text?.format) {
       result.response_format = this.convertTextFormat(params.text.format);
     }
-    if ((params.text as any)?.verbosity) {
-      (result as any).verbosity = (params.text as any).verbosity;
+    if (params.text?.verbosity) {
+      (result as any).verbosity = params.text.verbosity;
     }
     if (params.metadata) {
       result.metadata = params.metadata;
@@ -74,14 +74,14 @@ export class ResponsesToChatCompletionConverter {
     if (params.service_tier != null) {
       result.service_tier = params.service_tier;
     }
-    if ((params as any).prompt_cache_key) {
-      (result as any).prompt_cache_key = (params as any).prompt_cache_key;
+    if (params.prompt_cache_key) {
+      (result as any).prompt_cache_key = params.prompt_cache_key;
     }
-    if ((params as any).prompt_cache_retention != null) {
-      (result as any).prompt_cache_retention = (params as any).prompt_cache_retention;
+    if (params.prompt_cache_retention != null) {
+      (result as any).prompt_cache_retention = params.prompt_cache_retention;
     }
-    if ((params as any).safety_identifier) {
-      (result as any).safety_identifier = (params as any).safety_identifier;
+    if (params.safety_identifier) {
+      (result as any).safety_identifier = params.safety_identifier;
     }
     if (params.include) {
       for (const inc of params.include) {
@@ -93,8 +93,8 @@ export class ResponsesToChatCompletionConverter {
     }
     if (params.stream === true) {
       (result as any).stream = true;
-      if ((params as any).stream_options) {
-        (result as any).stream_options = (params as any).stream_options;
+      if (params.stream_options) {
+        (result as any).stream_options = params.stream_options;
       }
     }
 
