@@ -12,6 +12,10 @@ interface StreamState {
   outputIndex: number;
   messageStarted: boolean;
   stopReason: Anthropic.StopReason | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  webSearchCount: number;
 }
 
 export class MessagesToResponsesConverter {
@@ -52,6 +56,12 @@ export class MessagesToResponsesConverter {
     }
     if (params.tool_choice) {
       result.tool_choice = this.convertToolChoice(params.tool_choice);
+      if (
+        "disable_parallel_tool_use" in params.tool_choice &&
+        params.tool_choice.disable_parallel_tool_use === true
+      ) {
+        (result as any).parallel_tool_calls = false;
+      }
     }
     if (params.thinking) {
       result.reasoning = this.convertThinking(params.thinking);
@@ -109,10 +119,11 @@ export class MessagesToResponsesConverter {
       }
     }
 
-    // Message (text blocks)
+    // Message (text blocks) + web_search_tool_result annotations
     const textParts: string[] = [];
     const annotations: any[] = [];
     let refusal: string | null = null;
+    let webSearchCount = 0;
 
     for (const block of message.content) {
       if (block.type === "text") {
@@ -128,6 +139,20 @@ export class MessagesToResponsesConverter {
                 end_index: (c as any).end_index ?? 0,
               });
             }
+          }
+        }
+      } else if (block.type === "web_search_tool_result") {
+        webSearchCount++;
+        const content = block.content;
+        if (Array.isArray(content)) {
+          for (const result of content) {
+            annotations.push({
+              type: "url_citation",
+              url: result.url,
+              title: result.title,
+              start_index: 0,
+              end_index: 0,
+            });
           }
         }
       }
@@ -177,16 +202,24 @@ export class MessagesToResponsesConverter {
       reasoning: null,
       truncation: null as any,
       user: undefined as any,
-      usage: {
-        input_tokens: message.usage.input_tokens,
-        output_tokens: message.usage.output_tokens,
-        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
-        input_tokens_details: {
-          cached_tokens: message.usage.cache_read_input_tokens ?? 0,
-        },
-        output_tokens_details: { reasoning_tokens: 0 },
-      },
+      usage: this.convertUsage(message.usage, webSearchCount),
     } as unknown as RespResponse;
+  }
+
+  private convertUsage(
+    usage: Anthropic.Usage,
+    webSearchCount = 0,
+  ): OpenAI.Responses.ResponseUsage {
+    return {
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      total_tokens: usage.input_tokens + usage.output_tokens,
+      input_tokens_details: {
+        cached_tokens: usage.cache_read_input_tokens ?? 0,
+      },
+      output_tokens_details: { reasoning_tokens: 0 },
+      ...(webSearchCount > 0 ? { web_search: webSearchCount } as any : {}),
+    } as OpenAI.Responses.ResponseUsage;
   }
 
   // --- Stream conversion ---
@@ -214,6 +247,10 @@ export class MessagesToResponsesConverter {
         state.id = msg.id;
         state.model = msg.model;
         state.created = Math.floor(Date.now() / 1000);
+
+        const usage = msg.usage;
+        state.inputTokens = usage.input_tokens;
+        state.cacheReadTokens = usage.cache_read_input_tokens ?? 0;
 
         const skeleton = this.makeSkeletonResponse();
         events.push({
@@ -281,6 +318,23 @@ export class MessagesToResponsesConverter {
             output_index: state.outputIndex,
             sequence_number: state.seq++,
           } as unknown as RespStreamEvent);
+        } else if (block.type === "web_search_tool_result") {
+          state.webSearchCount++;
+          const content = block.content;
+          if (Array.isArray(content)) {
+            for (const result of content) {
+              events.push({
+                type: "response.output_text.annotation.added",
+                annotation: {
+                  type: "url_citation",
+                  url: result.url,
+                  title: result.title,
+                  start_index: 0,
+                  end_index: 0,
+                },
+              } as unknown as RespStreamEvent);
+            }
+          }
         }
         break;
       }
@@ -313,6 +367,8 @@ export class MessagesToResponsesConverter {
             delta: delta.thinking,
             sequence_number: state.seq++,
           } as unknown as RespStreamEvent);
+        } else if (delta.type === "signature_delta") {
+          // Signature is Anthropic-internal; no direct Responses equivalent, skip
         }
         break;
       }
@@ -320,14 +376,32 @@ export class MessagesToResponsesConverter {
       case "content_block_stop":
         break;
 
-      case "message_delta":
+      case "message_delta": {
         state.stopReason = event.delta.stop_reason;
+        const usage = event.usage;
+        state.outputTokens = usage.output_tokens;
+        if (usage.input_tokens != null) {
+          state.inputTokens = usage.input_tokens;
+        }
+        if (usage.server_tool_use?.web_search_requests) {
+          state.webSearchCount = usage.server_tool_use.web_search_requests;
+        }
         break;
+      }
 
       case "message_stop": {
         const resp = this.makeSkeletonResponse();
         const finalStatus = this.stopReasonToStatus(state.stopReason);
         resp.status = finalStatus;
+        (resp as any).usage = {
+          input_tokens: state.inputTokens,
+          output_tokens: state.outputTokens,
+          total_tokens: state.inputTokens + state.outputTokens,
+          input_tokens_details: {
+            cached_tokens: state.cacheReadTokens,
+          },
+          output_tokens_details: { reasoning_tokens: 0 },
+        } as OpenAI.Responses.ResponseUsage;
 
         if (finalStatus === "incomplete") {
           events.push({
@@ -537,6 +611,10 @@ export class MessagesToResponsesConverter {
       outputIndex: 0,
       messageStarted: false,
       stopReason: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      webSearchCount: 0,
     };
   }
 
