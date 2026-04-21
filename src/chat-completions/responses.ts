@@ -45,28 +45,28 @@ export class ChatCompletionToResponsesConverter {
     if (params.top_p != null) {
       result.top_p = params.top_p;
     }
-    if ((params as any).parallel_tool_calls != null) {
-      (result as any).parallel_tool_calls = (params as any).parallel_tool_calls;
+    if (params.parallel_tool_calls != null) {
+      (result as any).parallel_tool_calls = params.parallel_tool_calls;
     }
     if (params.metadata != null) {
       result.metadata = params.metadata;
     }
-    if ((params as any).prompt_cache_key != null) {
-      (result as any).prompt_cache_key = (params as any).prompt_cache_key;
+    if (params.prompt_cache_key != null) {
+      (result as any).prompt_cache_key = params.prompt_cache_key;
     }
-    if ((params as any).prompt_cache_retention != null) {
-      (result as any).prompt_cache_retention = (params as any).prompt_cache_retention;
+    if (params.prompt_cache_retention != null) {
+      (result as any).prompt_cache_retention = params.prompt_cache_retention;
     }
-    if ((params as any).reasoning_effort != null) {
-      result.reasoning = { effort: (params as any).reasoning_effort };
+    if (params.reasoning_effort != null) {
+      result.reasoning = { effort: params.reasoning_effort };
     }
-    if ((params as any).top_logprobs != null) {
+    if (params.top_logprobs != null) {
       result.include = ["message.output_text.logprobs"];
     }
     if (params.service_tier != null) {
       result.service_tier = params.service_tier as any;
     }
-    if (params.tools || (params as any).web_search_options != null) {
+    if (params.tools || params.web_search_options != null) {
       result.tools = this.convertTools(params);
     }
     if (params.tool_choice != null) {
@@ -75,7 +75,7 @@ export class ChatCompletionToResponsesConverter {
     if (params.response_format) {
       result.text = this.convertResponseFormat(params.response_format);
     }
-    if (params.stream === true) {
+    if (params.stream) {
       (result as any).stream = true;
     }
 
@@ -471,7 +471,7 @@ export class ChatCompletionToResponsesConverter {
       }
     }
 
-    if ((params as any).web_search_options != null) {
+    if (params.web_search_options != null) {
       tools.push({ type: "web_search" } as any);
     }
 
