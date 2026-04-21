@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
+import { ReasoningEffort } from "openai/resources.js";
 
 type OpenAIMessage = OpenAI.ChatCompletionMessageParam;
 
@@ -69,7 +70,7 @@ export class MessagesToChatCompletionConverter {
         result.tools = tools;
       }
       if (webSearchOptions) {
-        result.web_search_options = webSearchOptions as any;
+        result.web_search_options = webSearchOptions;
       }
     }
     if (params.tool_choice !== undefined) {
@@ -83,17 +84,16 @@ export class MessagesToChatCompletionConverter {
       result.response_format = this.convertOutputConfig(params.output_config);
     }
     if (params.thinking) {
-      result.reasoning_effort = this.convertThinking(params.thinking) as any;
+      result.reasoning_effort = this.convertThinking(params.thinking);
     }
     if (params.metadata?.user_id) {
       result.user = params.metadata.user_id;
     }
     if (params.service_tier != null) {
-      result.service_tier =
-        (params.service_tier === "standard_only" ? "default" : params.service_tier) as any;
+      result.service_tier = params.service_tier === "standard_only" ? "default" : params.service_tier;
     }
     if (params.stream === true) {
-      result.stream = true as any;
+      (result as any).stream = true;
     }
 
     return result;
@@ -201,7 +201,7 @@ export class MessagesToChatCompletionConverter {
           ephemeral_1h_input_tokens: ephemeral1h,
           web_search: webSearch,
           cache_creation_input_tokens: cacheCreation,
-        } as any),
+        }),
       },
     };
   }
@@ -364,7 +364,7 @@ export class MessagesToChatCompletionConverter {
               index: 0,
             },
           ],
-        } as any),
+        }),
       });
     }
 
@@ -381,7 +381,7 @@ export class MessagesToChatCompletionConverter {
               index: 0,
             },
           ],
-        } as any),
+        }),
       });
     }
 
@@ -424,7 +424,7 @@ export class MessagesToChatCompletionConverter {
           ephemeral_1h_input_tokens: state.ephemeral1hTokens,
           web_search: state.webSearchRequests,
           cache_creation_input_tokens: state.cacheCreationInputTokens,
-        } as any),
+        }),
       },
       completion_tokens_details: {
         reasoning_tokens: 0,
@@ -694,7 +694,7 @@ export class MessagesToChatCompletionConverter {
     return { type: "text" };
   }
 
-  private convertThinking(thinking: Anthropic.ThinkingConfigParam): string | null {
+  private convertThinking(thinking: Anthropic.ThinkingConfigParam): ReasoningEffort | null {
     if (thinking.type === "disabled") return "none";
     if (thinking.type === "enabled") {
       const budget = (thinking as Anthropic.ThinkingConfigEnabled).budget_tokens;
