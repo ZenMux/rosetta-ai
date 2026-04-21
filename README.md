@@ -2,13 +2,35 @@
 
 Universal translator between AI provider protocols.
 
-Convert requests, responses, and streaming chunks between OpenAI Chat Completions and Anthropic Messages APIs — with full support for tool calling, multimodal content, extended thinking, web search, and streaming.
+Convert between OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages APIs — with full support for tool calling, multimodal content, extended thinking, web search, and streaming.
 
 ## Install
 
 ```bash
 npm install rosetta-ai
 ```
+
+## How It Works
+
+Each converter follows the **gateway pattern**: request goes forward (user protocol → backend protocol), while response and stream go backward (backend → user).
+
+```
+User ──request──→ [Converter] ──request──→ Backend
+User ←─response── [Converter] ←─response── Backend
+User ←──stream─── [Converter] ←──stream─── Backend
+```
+
+One converter instance handles the full round-trip for a single gateway route.
+
+## Converters
+
+| Converter | User Protocol | Backend Protocol |
+|---|---|---|
+| `ChatCompletionToMessagesConverter` | OpenAI Chat Completions | Anthropic Messages |
+| `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
+| `ChatCompletionToResponsesConverter` | OpenAI Chat Completions | OpenAI Responses |
+| `ResponsesToChatCompletionConverter` | OpenAI Responses | OpenAI Chat Completions |
+| `MessagesToResponsesConverter` | Anthropic Messages | OpenAI Responses |
 
 ## Usage
 
@@ -19,16 +41,19 @@ import { ChatCompletionToMessagesConverter } from "rosetta-ai";
 
 const converter = new ChatCompletionToMessagesConverter();
 
-// Convert request
+// Request: CC → Messages (forward)
 const anthropicRequest = converter.convertRequest(openaiRequest);
 
-// Convert response
-const anthropicResponse = converter.convertResponse(openaiResponse);
+// Call the backend
+const anthropicResponse = await anthropicClient.messages.create(anthropicRequest);
 
-// Convert stream (create new instance per stream)
-const streamConverter = new ChatCompletionToMessagesConverter();
-for await (const event of streamConverter.convertStream(openaiStream)) {
-  // each event is an Anthropic RawMessageStreamEvent
+// Response: Messages → CC (backward)
+const openaiResponse = converter.convertResponse(anthropicResponse);
+
+// Streaming: Messages stream → CC stream (backward)
+const stream = await anthropicClient.messages.create({ ...anthropicRequest, stream: true });
+for await (const chunk of converter.convertStream(stream)) {
+  // chunk is an OpenAI ChatCompletionChunk
 }
 ```
 
@@ -39,40 +64,114 @@ import { MessagesToChatCompletionConverter } from "rosetta-ai";
 
 const converter = new MessagesToChatCompletionConverter();
 
-// Convert request
+// Request: Messages → CC (forward)
 const openaiRequest = converter.convertRequest(anthropicRequest);
 
-// Convert response
-const openaiResponse = converter.convertResponse(anthropicResponse);
+// Call the backend
+const openaiResponse = await openaiClient.chat.completions.create(openaiRequest);
 
-// Convert stream (create new instance per stream)
-const streamConverter = new MessagesToChatCompletionConverter();
-for await (const chunk of streamConverter.convertStream(anthropicStream)) {
+// Response: CC → Messages (backward)
+const anthropicResponse = converter.convertResponse(openaiResponse);
+
+// Streaming: CC stream → Messages stream (backward)
+const stream = await openaiClient.chat.completions.create({ ...openaiRequest, stream: true });
+for await (const event of converter.convertStream(stream)) {
+  // event is an Anthropic RawMessageStreamEvent
+}
+```
+
+### OpenAI Chat Completions → OpenAI Responses
+
+```typescript
+import { ChatCompletionToResponsesConverter } from "rosetta-ai";
+
+const converter = new ChatCompletionToResponsesConverter();
+
+// Request: CC → Responses (forward)
+const responsesRequest = converter.convertRequest(ccRequest);
+
+// Response: Responses → CC (backward)
+const ccResponse = converter.convertResponse(responsesResponse);
+
+// Streaming: Responses stream → CC stream (backward)
+for await (const chunk of converter.convertStream(responsesStream)) {
   // chunk is an OpenAI ChatCompletionChunk
+}
+```
+
+### OpenAI Responses → OpenAI Chat Completions
+
+```typescript
+import { ResponsesToChatCompletionConverter } from "rosetta-ai";
+
+const converter = new ResponsesToChatCompletionConverter();
+
+// Request: Responses → CC (forward)
+const ccRequest = converter.convertRequest(responsesRequest);
+
+// Response: CC → Responses (backward)
+const responsesResponse = converter.convertResponse(ccResponse);
+
+// Streaming: CC stream → Responses stream (backward)
+for await (const event of converter.convertStream(ccStream)) {
+  // event is a Responses ResponseStreamEvent
+}
+```
+
+### Anthropic Messages → OpenAI Responses
+
+```typescript
+import { MessagesToResponsesConverter } from "rosetta-ai";
+
+const converter = new MessagesToResponsesConverter();
+
+// Request: Messages → Responses (forward)
+const responsesRequest = converter.convertRequest(messagesRequest);
+
+// Response: Responses → Messages (backward)
+const messagesResponse = converter.convertResponse(responsesResponse);
+
+// Streaming: Responses stream → Messages stream (backward)
+for await (const event of converter.convertStream(responsesStream)) {
+  // event is an Anthropic RawMessageStreamEvent
 }
 ```
 
 ## Supported Conversions
 
-### Request Fields
+### Chat Completions ↔ Messages
 
-| OpenAI | Anthropic | Direction |
-|---|---|---|
-| `model` | `model` | ↔ |
-| `messages` (system/developer/user/assistant/tool) | `system` + `messages` (user/assistant with content blocks) | ↔ |
-| `max_tokens` / `max_completion_tokens` | `max_tokens` | ↔ |
-| `temperature` | `temperature` | ↔ |
-| `top_p` | `top_p` | ↔ |
-| `stop` | `stop_sequences` | ↔ |
-| `stream` | `stream` | ↔ |
-| `tools` (function) | `tools` (custom) | ↔ |
-| `tool_choice` (auto/required/none/named) | `tool_choice` (auto/any/none/tool) | ↔ |
-| `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | ↔ |
-| `response_format` (json_schema/json_object) | `output_config.format` | ↔ |
-| `reasoning_effort` | `thinking` (enabled/disabled/adaptive) | ↔ |
-| `user` | `metadata.user_id` | ↔ |
-| `service_tier` | `service_tier` | ↔ |
-| `web_search_options` | `tools` (web_search_20250305) | ↔ |
+| OpenAI Chat Completions | Anthropic Messages |
+|---|---|
+| `model` | `model` |
+| `messages` (system/developer/user/assistant/tool) | `system` + `messages` (user/assistant with content blocks) |
+| `max_tokens` / `max_completion_tokens` | `max_tokens` |
+| `temperature` | `temperature` |
+| `top_p` | `top_p` |
+| `stop` | `stop_sequences` |
+| `tools` (function) | `tools` (custom) |
+| `tool_choice` (auto/required/none/named) | `tool_choice` (auto/any/none/tool) |
+| `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` |
+| `response_format` (json_schema/json_object) | `output_config.format` |
+| `reasoning_effort` | `thinking` (enabled/disabled/adaptive) |
+| `user` | `metadata.user_id` |
+| `service_tier` | `service_tier` |
+| `web_search_options` | `tools` (web_search_20250305) |
+
+### Chat Completions ↔ Responses
+
+| OpenAI Chat Completions | OpenAI Responses |
+|---|---|
+| `messages` | `input` (ResponseInputItem[]) |
+| `system` / `developer` messages | `instructions` |
+| `max_completion_tokens` | `max_output_tokens` |
+| `tools` (function) | `tools` (function) |
+| `tool_choice` | `tool_choice` |
+| `response_format` | `text.format` |
+| `reasoning_effort` | `reasoning.effort` |
+| `web_search_options` | `tools` (web_search) |
+| `parallel_tool_calls` | `parallel_tool_calls` |
+| `prompt_cache_key` / `prompt_cache_retention` | `prompt_cache_key` / `prompt_cache_retention` |
 
 ### Content Types
 
@@ -86,7 +185,7 @@ for await (const chunk of streamConverter.convertStream(anthropicStream)) {
 | `reasoning` / `reasoning_content` | `thinking` blocks |
 | `annotations` (url_citation) | `web_search_tool_result` blocks |
 
-### Response Fields
+### Response / Stream
 
 | OpenAI | Anthropic |
 |---|---|
@@ -94,13 +193,6 @@ for await (const chunk of streamConverter.convertStream(anthropicStream)) {
 | `usage.prompt_tokens` | `usage.input_tokens` |
 | `usage.completion_tokens` | `usage.output_tokens` |
 | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` |
-
-### Streaming
-
-Both converters handle chunk-by-chunk streaming conversion:
-
-- **ChatCompletionToMessagesConverter**: OpenAI `ChatCompletionChunk` → Anthropic `RawMessageStreamEvent[]`
-- **MessagesToChatCompletionConverter**: Anthropic `RawMessageStreamEvent` → OpenAI `ChatCompletionChunk | null`
 
 Streaming includes support for text, tool calls, extended thinking, web search citations, and usage reporting.
 
