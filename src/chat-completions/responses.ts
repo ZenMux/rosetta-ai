@@ -46,16 +46,16 @@ export class ChatCompletionToResponsesConverter {
       result.top_p = params.top_p;
     }
     if (params.parallel_tool_calls != null) {
-      (result as any).parallel_tool_calls = params.parallel_tool_calls;
+      result.parallel_tool_calls = params.parallel_tool_calls;
     }
     if (params.metadata != null) {
       result.metadata = params.metadata;
     }
     if (params.prompt_cache_key != null) {
-      (result as any).prompt_cache_key = params.prompt_cache_key;
+      result.prompt_cache_key = params.prompt_cache_key;
     }
     if (params.prompt_cache_retention != null) {
-      (result as any).prompt_cache_retention = params.prompt_cache_retention;
+      result.prompt_cache_retention = params.prompt_cache_retention;
     }
     if (params.reasoning_effort != null) {
       result.reasoning = { effort: params.reasoning_effort };
@@ -96,7 +96,7 @@ export class ChatCompletionToResponsesConverter {
         type: "reasoning",
         id: `rs_${this.generateId()}`,
         summary: [{ type: "summary_text", text: reasoning }],
-      } as any);
+      });
     }
 
     // Tool calls
@@ -110,7 +110,7 @@ export class ChatCompletionToResponsesConverter {
             name: tc.function.name,
             arguments: tc.function.arguments,
             status: "completed",
-          } as any);
+          });
         }
       }
     }
@@ -143,7 +143,7 @@ export class ChatCompletionToResponsesConverter {
         role: "assistant",
         status: "completed",
         content,
-      } as any);
+      });
     }
 
     const status = this.finishReasonToStatus(choice?.finish_reason);
@@ -169,8 +169,8 @@ export class ChatCompletionToResponsesConverter {
       tools: [],
       text: { format: { type: "text" } },
       reasoning: null,
-      truncation: null as any,
-      user: undefined as any,
+      truncation: null,
+      user: undefined,
       usage: response.usage
         ? {
             input_tokens: response.usage.prompt_tokens,
@@ -218,12 +218,12 @@ export class ChatCompletionToResponsesConverter {
         type: "response.created",
         response: skeleton,
         sequence_number: state.seq++,
-      } as RespStreamEvent);
+      });
       events.push({
         type: "response.in_progress",
         response: skeleton,
         sequence_number: state.seq++,
-      } as RespStreamEvent);
+      });
     }
 
     if (!choice) {
@@ -249,7 +249,7 @@ export class ChatCompletionToResponsesConverter {
             type: "reasoning",
             id: `rs_${this.generateId()}`,
             summary: [],
-          } as any,
+          },
           output_index: state.outputIndex,
           sequence_number: state.seq++,
         } as RespStreamEvent);
@@ -291,7 +291,7 @@ export class ChatCompletionToResponsesConverter {
               name: tc.function.name,
               arguments: "",
               status: "in_progress",
-            } as any,
+            },
             output_index: state.outputIndex + state.toolCallCount - 1,
             sequence_number: state.seq++,
           } as RespStreamEvent);
@@ -325,7 +325,7 @@ export class ChatCompletionToResponsesConverter {
             role: "assistant",
             status: "in_progress",
             content: [],
-          } as any,
+          },
           output_index: msgOutputIndex,
           sequence_number: state.seq++,
         } as RespStreamEvent);
@@ -373,22 +373,22 @@ export class ChatCompletionToResponsesConverter {
     for (const msg of messages) {
       if (msg.role === "system" || msg.role === "developer") {
         if (typeof msg.content === "string") {
-          input.push({ role: msg.role, type: "message", content: msg.content } as any);
+          input.push({ role: msg.role, type: "message", content: msg.content });
         } else {
           input.push({
             role: msg.role,
             type: "message",
-            content: msg.content.map((p: any) => ({ type: "input_text", text: p.text })),
-          } as any);
+            content: msg.content.map(p => ({ type: "input_text", text: p.text })),
+          });
         }
       } else if (msg.role === "user") {
         if (typeof msg.content === "string") {
-          input.push({ role: "user", type: "message", content: msg.content } as any);
+          input.push({ role: "user", type: "message", content: msg.content });
         } else {
           input.push({
             role: "user",
             type: "message",
-            content: msg.content.map((p: any) => {
+            content: msg.content.map(p => {
               if (p.type === "text") return { type: "input_text", text: p.text };
               if (p.type === "image_url")
                 return { type: "input_image", image_url: p.image_url.url, detail: p.image_url.detail ?? "auto" };
@@ -396,7 +396,7 @@ export class ChatCompletionToResponsesConverter {
                 return { type: "input_file", file_data: p.file.file_data, file_id: p.file.file_id, filename: p.file.filename };
               return { type: "input_text", text: "" };
             }),
-          } as any);
+          });
         }
       } else if (msg.role === "assistant") {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -407,7 +407,7 @@ export class ChatCompletionToResponsesConverter {
                 name: tc.function.name,
                 call_id: tc.id,
                 arguments: tc.function.arguments,
-              } as any);
+              });
             }
           }
         } else {
@@ -440,13 +440,13 @@ export class ChatCompletionToResponsesConverter {
             type: "function_call_output",
             call_id: msg.tool_call_id,
             output: msg.content,
-          } as any);
+          });
         } else {
           input.push({
             type: "function_call_output",
             call_id: msg.tool_call_id,
             output: msg.content.map((p: any) => ({ type: "input_text", text: p.text })),
-          } as any);
+          });
         }
       }
     }
@@ -466,13 +466,13 @@ export class ChatCompletionToResponsesConverter {
             description: t.function.description,
             strict: t.function.strict ?? null,
             parameters: t.function.parameters ?? null,
-          } as any);
+          });
         }
       }
     }
 
     if (params.web_search_options != null) {
-      tools.push({ type: "web_search" } as any);
+      tools.push({ type: "web_search" });
     }
 
     return tools;
@@ -486,7 +486,7 @@ export class ChatCompletionToResponsesConverter {
       return "auto";
     }
     if (typeof choice === "object" && choice !== null) {
-      const c = choice as any;
+      const c = choice;
       if (c.type === "function" && c.function?.name) {
         return { type: "function", name: c.function.name };
       }
@@ -573,8 +573,8 @@ export class ChatCompletionToResponsesConverter {
       tools: [],
       text: { format: { type: "text" } },
       reasoning: null,
-      truncation: null as any,
-      user: undefined as any,
+      truncation: null,
+      user: undefined,
     } as unknown as RespResponse;
   }
 
@@ -588,7 +588,7 @@ export class ChatCompletionToResponsesConverter {
     resp.status = finalStatus;
 
     if (usage) {
-      (resp as any).usage = {
+      resp.usage = {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
