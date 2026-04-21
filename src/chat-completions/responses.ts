@@ -64,7 +64,7 @@ export class ChatCompletionToResponsesConverter {
       result.include = ["message.output_text.logprobs"];
     }
     if (params.service_tier != null) {
-      result.service_tier = params.service_tier as any;
+      result.service_tier = params.service_tier;
     }
     if (params.tools || params.web_search_options != null) {
       result.tools = this.convertTools(params);
@@ -505,8 +505,8 @@ export class ChatCompletionToResponsesConverter {
       return {
         format: {
           type: "json_schema",
-          name: (format as any).json_schema.name,
-          schema: (format as any).json_schema.schema ?? {},
+          name: format.json_schema.name,
+          schema: format.json_schema.schema ?? {},
         },
       };
     }
