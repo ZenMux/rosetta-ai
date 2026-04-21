@@ -73,22 +73,22 @@ export class ChatCompletionToMessagesConverter {
     if (params.tool_choice !== undefined) {
       result.tool_choice = this.convertToolChoice(
         params.tool_choice,
-        (params as any).parallel_tool_calls
+        params.parallel_tool_calls
       );
     }
     if (params.response_format) {
       result.output_config = this.convertResponseFormat(params.response_format);
     }
-    if ((params as any).reasoning_effort != null) {
-      result.thinking = this.convertReasoningEffort((params as any).reasoning_effort);
+    if (params.reasoning_effort != null) {
+      result.thinking = this.convertReasoningEffort(params.reasoning_effort as string);
     }
     if (params.user) {
       result.metadata = { user_id: params.user };
     }
-    if ((params as any).service_tier != null) {
-      const tier = (params as any).service_tier;
+    if (params.service_tier != null) {
+      const tier = params.service_tier as string;
       if (tier === "auto" || tier === "standard_only") {
-        result.service_tier = tier;
+        result.service_tier = tier as any;
       }
     }
     if (params.stream === true) {
