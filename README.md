@@ -2,7 +2,7 @@
 
 Universal translator between AI provider protocols.
 
-Convert between OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages APIs — with full support for tool calling, multimodal content, extended thinking, web search, and streaming.
+Convert between OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Google Gemini APIs — with full support for tool calling, multimodal content, extended thinking, web search, grounding, and streaming.
 
 ## Install
 
@@ -27,10 +27,14 @@ One converter instance handles the full round-trip for a single gateway route.
 | Converter | User Protocol | Backend Protocol |
 |---|---|---|
 | `ChatCompletionToMessagesConverter` | OpenAI Chat Completions | Anthropic Messages |
-| `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
 | `ChatCompletionToResponsesConverter` | OpenAI Chat Completions | OpenAI Responses |
-| `ResponsesToChatCompletionConverter` | OpenAI Responses | OpenAI Chat Completions |
+| `ChatCompletionToGeminiConverter` | OpenAI Chat Completions | Google Gemini |
+| `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
 | `MessagesToResponsesConverter` | Anthropic Messages | OpenAI Responses |
+| `MessagesToGeminiConverter` | Anthropic Messages | Google Gemini |
+| `ResponsesToChatCompletionConverter` | OpenAI Responses | OpenAI Chat Completions |
+| `ResponsesToMessagesConverter` | OpenAI Responses | Anthropic Messages |
+| `ResponsesToGeminiConverter` | OpenAI Responses | Google Gemini |
 
 ## Usage
 
@@ -137,6 +141,88 @@ for await (const event of converter.convertStream(responsesStream)) {
 }
 ```
 
+### OpenAI Responses → Anthropic Messages
+
+```typescript
+import { ResponsesToMessagesConverter } from "rosetta-ai";
+
+const converter = new ResponsesToMessagesConverter();
+
+// Request: Responses → Messages (forward)
+const messagesRequest = converter.convertRequest(responsesRequest);
+
+// Response: Messages → Responses (backward)
+const responsesResponse = converter.convertResponse(anthropicResponse);
+
+// Streaming: Messages stream → Responses stream (backward)
+for await (const event of converter.convertStream(messagesStream)) {
+  // event is a Responses ResponseStreamEvent
+}
+```
+
+### OpenAI Chat Completions → Google Gemini
+
+```typescript
+import { ChatCompletionToGeminiConverter } from "rosetta-ai";
+import { GoogleGenAI } from "@google/genai";
+
+const converter = new ChatCompletionToGeminiConverter();
+const genai = new GoogleGenAI({ apiKey: "..." });
+
+// Request: CC → Gemini (forward)
+const geminiRequest = converter.convertRequest(openaiRequest);
+
+// Call the backend
+const geminiResponse = await genai.models.generateContent(geminiRequest);
+
+// Response: Gemini → CC (backward)
+const openaiResponse = converter.convertResponse(geminiResponse);
+
+// Streaming: Gemini stream → CC stream (backward)
+const stream = await genai.models.generateContentStream(geminiRequest);
+for await (const chunk of converter.convertStream(stream)) {
+  // chunk is an OpenAI ChatCompletionChunk
+}
+```
+
+### Anthropic Messages → Google Gemini
+
+```typescript
+import { MessagesToGeminiConverter } from "rosetta-ai";
+
+const converter = new MessagesToGeminiConverter();
+
+// Request: Messages → Gemini (forward)
+const geminiRequest = converter.convertRequest(anthropicRequest);
+
+// Response: Gemini → Messages (backward)
+const anthropicResponse = converter.convertResponse(geminiResponse);
+
+// Streaming: Gemini stream → Messages stream (backward)
+for await (const event of converter.convertStream(geminiStream)) {
+  // event is an Anthropic RawMessageStreamEvent
+}
+```
+
+### OpenAI Responses → Google Gemini
+
+```typescript
+import { ResponsesToGeminiConverter } from "rosetta-ai";
+
+const converter = new ResponsesToGeminiConverter();
+
+// Request: Responses → Gemini (forward)
+const geminiRequest = converter.convertRequest(responsesRequest);
+
+// Response: Gemini → Responses (backward)
+const responsesResponse = converter.convertResponse(geminiResponse);
+
+// Streaming: Gemini stream → Responses stream (backward)
+for await (const event of converter.convertStream(geminiStream)) {
+  // event is a Responses ResponseStreamEvent
+}
+```
+
 ## Supported Conversions
 
 ### Chat Completions ↔ Messages
@@ -172,6 +258,48 @@ for await (const event of converter.convertStream(responsesStream)) {
 | `web_search_options` | `tools` (web_search) |
 | `parallel_tool_calls` | `parallel_tool_calls` |
 | `prompt_cache_key` / `prompt_cache_retention` | `prompt_cache_key` / `prompt_cache_retention` |
+
+### Chat Completions → Gemini
+
+| OpenAI Chat Completions | Google Gemini |
+|---|---|
+| `model` | `model` |
+| `messages` (system/developer) | `config.systemInstruction` |
+| `messages` (user/assistant/tool) | `contents` (user/model roles) |
+| `max_tokens` / `max_completion_tokens` | `config.maxOutputTokens` |
+| `temperature` | `config.temperature` |
+| `top_p` | `config.topP` |
+| `stop` | `config.stopSequences` |
+| `tools` (function) | `config.tools[].functionDeclarations` |
+| `tool_choice` (auto/required/none/named) | `config.toolConfig.functionCallingConfig` (AUTO/ANY/NONE) |
+| `response_format` (json_schema/json_object) | `config.responseMimeType` + `config.responseJsonSchema` |
+| `reasoning_effort` | `config.thinkingConfig` |
+| `web_search_options` | `config.tools` (googleSearch) |
+| `seed` | `config.seed` |
+| `frequency_penalty` / `presence_penalty` | `config.frequencyPenalty` / `config.presencePenalty` |
+| `logprobs` / `top_logprobs` | `config.responseLogprobs` / `config.logprobs` |
+| `tool_calls` on assistant | `functionCall` parts on model content |
+| `tool` role messages | `functionResponse` parts on user content |
+| `image_url` (base64) | `inlineData` |
+| `image_url` (URL) | `fileData` |
+| `file` content part | `inlineData` / `fileData` |
+| `input_audio` | `inlineData` (audio mime) |
+
+### Gemini Response / Stream
+
+| Google Gemini | OpenAI / Anthropic |
+|---|---|
+| `candidates[].finishReason` STOP | `finish_reason: "stop"` / `stop_reason: "end_turn"` |
+| `candidates[].finishReason` MAX_TOKENS | `finish_reason: "length"` / `stop_reason: "max_tokens"` |
+| `candidates[].finishReason` SAFETY | `finish_reason: "content_filter"` / `stop_reason: "refusal"` |
+| `functionCall` parts | `tool_calls` / `tool_use` blocks / `function_call` output items |
+| `thought` parts | `reasoning` / `thinking` blocks / `reasoning` output items |
+| `groundingMetadata.groundingChunks` | `annotations` (url_citation) / `web_search_tool_result` blocks |
+| `usageMetadata.promptTokenCount` | `prompt_tokens` / `input_tokens` |
+| `usageMetadata.candidatesTokenCount` | `completion_tokens` / `output_tokens` |
+| `usageMetadata.cachedContentTokenCount` | `cached_tokens` / `cache_read_input_tokens` |
+| `usageMetadata.thoughtsTokenCount` | `reasoning_tokens` |
+| `usageMetadata.toolUsePromptTokenCount` | added to `prompt_tokens` / `input_tokens` |
 
 ### Content Types
 
