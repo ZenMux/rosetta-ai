@@ -50,23 +50,23 @@ export class ResponsesToChatCompletionConverter {
         result.tools = tools;
       }
       if (webSearchOptions) {
-        (result as any).web_search_options = webSearchOptions;
+        result.web_search_options = webSearchOptions;
       }
     }
     if (params.tool_choice != null) {
       result.tool_choice = this.convertToolChoice(params.tool_choice);
     }
     if (params.parallel_tool_calls != null) {
-      (result as any).parallel_tool_calls = params.parallel_tool_calls;
+      result.parallel_tool_calls = params.parallel_tool_calls;
     }
     if (params.reasoning) {
-      (result as any).reasoning_effort = params.reasoning.effort ?? null;
+      result.reasoning_effort = params.reasoning.effort ?? null;
     }
     if (params.text?.format) {
       result.response_format = this.convertTextFormat(params.text.format);
     }
     if (params.text?.verbosity) {
-      (result as any).verbosity = params.text.verbosity;
+      result.verbosity = params.text.verbosity;
     }
     if (params.metadata) {
       result.metadata = params.metadata;
@@ -75,18 +75,18 @@ export class ResponsesToChatCompletionConverter {
       result.service_tier = params.service_tier;
     }
     if (params.prompt_cache_key) {
-      (result as any).prompt_cache_key = params.prompt_cache_key;
+      result.prompt_cache_key = params.prompt_cache_key;
     }
     if (params.prompt_cache_retention != null) {
-      (result as any).prompt_cache_retention = params.prompt_cache_retention;
+      result.prompt_cache_retention = params.prompt_cache_retention;
     }
     if (params.safety_identifier) {
-      (result as any).safety_identifier = params.safety_identifier;
+      result.safety_identifier = params.safety_identifier;
     }
     if (params.include) {
       for (const inc of params.include) {
         if (inc === "message.output_text.logprobs") {
-          (result as any).top_logprobs = 20;
+          result.top_logprobs = 20;
           break;
         }
       }
@@ -94,7 +94,7 @@ export class ResponsesToChatCompletionConverter {
     if (params.stream === true) {
       (result as any).stream = true;
       if (params.stream_options) {
-        (result as any).stream_options = params.stream_options;
+        result.stream_options = params.stream_options;
       }
     }
 
@@ -138,7 +138,7 @@ export class ResponsesToChatCompletionConverter {
             logprobs: null,
           });
         }
-      } else if ((item as any).type === "web_search_call") {
+      } else if (item.type === "web_search_call") {
         webSearchCount++;
       }
     }
@@ -162,7 +162,7 @@ export class ResponsesToChatCompletionConverter {
       object: "chat.completion",
       created: response.created_at,
       model: response.model as string,
-      service_tier: (response as any).service_tier ?? undefined,
+      service_tier: response.service_tier ?? undefined,
       choices,
       usage: this.convertUsage(response.usage!, webSearchCount),
     };
@@ -245,13 +245,13 @@ export class ResponsesToChatCompletionConverter {
       },
     ];
 
-    if ((reasoning as any).encrypted_content) {
+    if (reasoning.encrypted_content) {
       details.push({
         id: reasoning.id,
         index: "0",
         format: "openai-responses-v1",
         type: "reasoning.encrypted",
-        data: (reasoning as any).encrypted_content,
+        data: reasoning.encrypted_content,
       });
     }
 
@@ -298,7 +298,7 @@ export class ResponsesToChatCompletionConverter {
       case "response.refusal.delta":
         return this.handleRefusalDelta(event);
       case "response.reasoning_summary_text.delta":
-        return this.handleReasoningSummaryDelta(event as any);
+        return this.handleReasoningSummaryDelta(event);
       case "response.completed":
         return this.handleCompleted(event);
       case "response.incomplete":
@@ -345,7 +345,7 @@ export class ResponsesToChatCompletionConverter {
     for (const item of input!) {
       if ("role" in item && "content" in item && typeof item.content === "string") {
         flushToolCalls();
-        const role = (item as any).role;
+        const role = item.role;
         if (role === "user" || role === "system" || role === "developer" || role === "assistant") {
           messages.push({
             role,
@@ -495,7 +495,7 @@ export class ResponsesToChatCompletionConverter {
       return "auto";
     }
     if (typeof choice === "object" && choice !== null) {
-      const c = choice as any;
+      const c = choice;
       if (c.type === "function" && c.name) {
         return { type: "function", function: { name: c.name } };
       }
@@ -551,7 +551,7 @@ export class ResponsesToChatCompletionConverter {
       total_tokens: usage.total_tokens,
       prompt_tokens_details: {
         cached_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
-        ...(webSearchCount > 0 ? { web_search: webSearchCount } as any : {}),
+        ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
       },
       completion_tokens_details: {
         reasoning_tokens: usage.output_tokens_details?.reasoning_tokens ?? 0,
@@ -598,8 +598,8 @@ export class ResponsesToChatCompletionConverter {
     this.streamState.id = resp.id;
     this.streamState.model = resp.model as string;
     this.streamState.created = resp.created_at;
-    if ((resp as any).service_tier) {
-      this.streamState.serviceTier = (resp as any).service_tier;
+    if (resp.service_tier) {
+      this.streamState.serviceTier = resp.service_tier;
     }
     return this.makeChunk({ role: "assistant" });
   }
@@ -672,7 +672,7 @@ export class ResponsesToChatCompletionConverter {
             summary: event.delta,
           },
         ],
-      } as any),
+      }),
     });
   }
 
