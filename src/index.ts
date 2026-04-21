@@ -4,4 +4,5 @@ export { ChatCompletionToMessagesConverter } from "./chat-completions/messages";
 export { ChatCompletionToResponsesConverter } from "./chat-completions/responses";
 export { MessagesToChatCompletionConverter } from "./messages/chat-completions";
 export { MessagesToResponsesConverter } from "./messages/responses";
+export { ResponsesToMessagesConverter } from "./responses/messages";
 export { ResponsesToChatCompletionConverter } from "./responses/chat-completions";
