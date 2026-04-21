@@ -36,6 +36,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@google/genai": "^1.50.1",
     "openai": "^6.27.0"
   },
   "devDependencies": {
