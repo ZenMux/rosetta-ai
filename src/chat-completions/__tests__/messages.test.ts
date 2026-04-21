@@ -2,6 +2,66 @@ import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { ChatCompletionToMessagesConverter } from "../messages";
 
+function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Message {
+  return {
+    id: "msg_123",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-4-20250514",
+    content: [{ type: "text", text: "Hello!", citations: null }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      cache_creation: null,
+      inference_geo: null,
+      server_tool_use: null,
+      service_tier: null,
+    },
+    container: null,
+    ...overrides,
+  };
+}
+
+const baseUsage: Anthropic.Usage = {
+  input_tokens: 10,
+  output_tokens: 0,
+  cache_creation_input_tokens: null,
+  cache_read_input_tokens: null,
+  cache_creation: null,
+  inference_geo: null,
+  server_tool_use: null,
+  service_tier: null,
+};
+
+const baseDeltaUsage: Anthropic.MessageDeltaUsage = {
+  output_tokens: 5,
+  input_tokens: null,
+  cache_creation_input_tokens: null,
+  cache_read_input_tokens: null,
+  server_tool_use: null,
+};
+
+function messageStart(): Anthropic.RawMessageStartEvent {
+  return {
+    type: "message_start",
+    message: {
+      id: "msg_123",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-20250514",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: baseUsage,
+      container: null,
+    },
+  };
+}
+
 describe("ChatCompletionToMessagesConverter", () => {
   const converter = new ChatCompletionToMessagesConverter();
 
@@ -513,537 +573,622 @@ describe("ChatCompletionToMessagesConverter", () => {
     });
   });
 
-  // ===== convertResponse =====
+  // ===== convertResponse (Messages -> CC, backward) =====
 
   describe("convertResponse", () => {
     it("converts a basic text response", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "chatcmpl-123",
-        object: "chat.completion",
-        created: 1700000000,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: "Hello!", refusal: null },
-            finish_reason: "stop",
-            logprobs: null,
-          },
-        ],
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      };
+      const result = converter.convertResponse(makeMessage());
 
-      const result = converter.convertResponse(input);
-
-      expect(result.id).toBe("chatcmpl-123");
-      expect(result.model).toBe("gpt-4o");
-      expect(result.content).toEqual([{ type: "text", text: "Hello!", citations: null }]);
-      expect(result.stop_reason).toBe("end_turn");
-      expect(result.usage.input_tokens).toBe(10);
-      expect(result.usage.output_tokens).toBe(5);
+      expect(result.id).toBe("msg_123");
+      expect(result.model).toBe("claude-sonnet-4-20250514");
+      expect(result.object).toBe("chat.completion");
+      expect(result.choices[0].message.content).toBe("Hello!");
+      expect(result.choices[0].finish_reason).toBe("stop");
+      expect(result.usage?.prompt_tokens).toBe(10);
+      expect(result.usage?.completion_tokens).toBe(5);
+      expect(result.usage?.total_tokens).toBe(15);
     });
 
-    it("converts a tool call response", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "chatcmpl-456",
-        object: "chat.completion",
-        created: 1700000000,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: null,
-              refusal: null,
-              tool_calls: [
-                {
-                  id: "call_abc",
-                  type: "function",
-                  function: { name: "get_weather", arguments: '{"location":"SF"}' },
-                },
-              ],
+    it("converts a tool_use response", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_123",
+              name: "get_weather",
+              input: { location: "SF" },
+              caller: { type: "direct" },
             },
-            finish_reason: "tool_calls",
-            logprobs: null,
-          },
-        ],
-      };
+          ],
+          stop_reason: "tool_use",
+        })
+      );
 
-      const result = converter.convertResponse(input);
-
-      expect(result.stop_reason).toBe("tool_use");
-      expect(result.content).toEqual([
+      expect(result.choices[0].finish_reason).toBe("tool_calls");
+      expect(result.choices[0].message.content).toBeNull();
+      expect(result.choices[0].message.tool_calls).toEqual([
         {
-          type: "tool_use",
-          id: "call_abc",
-          name: "get_weather",
-          input: { location: "SF" },
-          caller: { type: "direct" },
+          id: "toolu_123",
+          type: "function",
+          function: { name: "get_weather", arguments: '{"location":"SF"}' },
         },
       ]);
     });
 
-    it("converts mixed content + tool calls", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "chatcmpl-789",
-        object: "chat.completion",
-        created: 1700000000,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "Let me check.",
-              refusal: null,
-              tool_calls: [
-                {
-                  id: "call_1",
-                  type: "function",
-                  function: { name: "get_weather", arguments: "{}" },
-                },
-              ],
+    it("converts mixed text + tool_use response", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Let me check.", citations: null },
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "get_weather",
+              input: {},
+              caller: { type: "direct" },
             },
-            finish_reason: "tool_calls",
-            logprobs: null,
-          },
-        ],
-      };
+          ],
+          stop_reason: "tool_use",
+        })
+      );
 
-      const result = converter.convertResponse(input);
+      expect(result.choices[0].message.content).toBe("Let me check.");
+      expect(result.choices[0].message.tool_calls).toEqual([
+        { id: "toolu_1", type: "function", function: { name: "get_weather", arguments: "{}" } },
+      ]);
+    });
 
-      expect(result.content).toEqual([
-        { type: "text", text: "Let me check.", citations: null },
+    it('maps stop_reason "end_turn" to "stop"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "end_turn" })).choices[0].finish_reason
+      ).toBe("stop");
+    });
+
+    it('maps stop_reason "max_tokens" to "length"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "max_tokens" })).choices[0]
+          .finish_reason
+      ).toBe("length");
+    });
+
+    it('maps stop_reason "tool_use" to "tool_calls"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "tool_use" })).choices[0].finish_reason
+      ).toBe("tool_calls");
+    });
+
+    it('maps stop_reason "stop_sequence" to "stop"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "stop_sequence" })).choices[0]
+          .finish_reason
+      ).toBe("stop");
+    });
+
+    it("concatenates multiple text blocks without separator", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Hello ", citations: null },
+            { type: "text", text: "world", citations: null },
+          ],
+        })
+      );
+      expect(result.choices[0].message.content).toBe("Hello world");
+    });
+
+    it('maps stop_reason "pause_turn" to "stop"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "pause_turn" })).choices[0]
+          .finish_reason
+      ).toBe("stop");
+    });
+
+    it('maps stop_reason "refusal" to "content_filter"', () => {
+      expect(
+        converter.convertResponse(makeMessage({ stop_reason: "refusal" })).choices[0].finish_reason
+      ).toBe("content_filter");
+    });
+
+    it('maps stop_reason "model_context_window_exceeded" to "length"', () => {
+      expect(
+        converter.convertResponse(
+          makeMessage({ stop_reason: "model_context_window_exceeded" as any })
+        ).choices[0].finish_reason
+      ).toBe("length");
+    });
+
+    it("extracts thinking blocks into reasoning and reasoning_details", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "thinking", thinking: "Let me think...", signature: "sig_abc" } as any,
+            { type: "text", text: "The answer is 42.", citations: null },
+          ],
+        })
+      );
+
+      const msg = result.choices[0].message as any;
+      expect(msg.content).toBe("The answer is 42.");
+      expect(msg.reasoning).toBe("Let me think...");
+      expect(msg.reasoning_details).toEqual([
         {
-          type: "tool_use",
-          id: "call_1",
-          name: "get_weather",
-          input: {},
-          caller: { type: "direct" },
+          type: "reasoning.text",
+          text: "Let me think...",
+          signature: "sig_abc",
+          format: "anthropic-claude-v1",
+          index: 0,
         },
       ]);
     });
 
-    it('maps finish_reason "length" to "max_tokens"', () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: "truncated", refusal: null },
-            finish_reason: "length",
-            logprobs: null,
-          },
-        ],
-      };
-      expect(converter.convertResponse(input).stop_reason).toBe("max_tokens");
-    });
-
-    it('maps finish_reason "content_filter" to "refusal"', () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: "", refusal: null },
-            finish_reason: "content_filter",
-            logprobs: null,
-          },
-        ],
-      };
-      expect(converter.convertResponse(input).stop_reason).toBe("refusal");
-    });
-
-    it("handles null content with no tool calls", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: null, refusal: null },
-            finish_reason: "stop",
-            logprobs: null,
-          },
-        ],
-      };
-      expect(converter.convertResponse(input).content).toEqual([
-        { type: "text", text: "", citations: null },
-      ]);
-    });
-
-    it("converts reasoning to thinking block", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "Answer is 42.",
-              refusal: null,
-              reasoning: "Let me think...",
+    it("converts server_tool_use blocks to tool_calls", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "server_tool_use",
+              id: "srv_1",
+              name: "web_search",
+              input: { query: "test" },
+              caller: { type: "direct" },
             } as any,
-            finish_reason: "stop",
-            logprobs: null,
-          },
-        ],
-      };
-      const result = converter.convertResponse(input);
-      expect(result.content[0]).toEqual({
-        type: "thinking",
-        thinking: "Let me think...",
-        signature: "",
-      });
-      expect(result.content[1]).toEqual({ type: "text", text: "Answer is 42.", citations: null });
+          ],
+        })
+      );
+
+      expect(result.choices[0].message.tool_calls).toEqual([
+        {
+          id: "srv_1",
+          type: "function",
+          function: { name: "web_search", arguments: '{"query":"test"}' },
+        },
+      ]);
     });
 
-    it("converts annotations to web_search_tool_result", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "Search result.",
-              refusal: null,
-              annotations: [
+    it("extracts web_search_tool_result as url_citation annotations", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Based on my search:", citations: null },
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "srv_1",
+              content: [
                 {
-                  type: "url_citation",
-                  url_citation: {
-                    title: "Example",
-                    url: "https://example.com",
-                    start_index: 0,
-                    end_index: 10,
-                  },
+                  type: "web_search_result",
+                  url: "https://example.com",
+                  title: "Example",
+                  encrypted_content: "x",
+                  page_age: null,
                 },
               ],
-            },
-            finish_reason: "stop",
-            logprobs: null,
-          },
-        ],
-      };
-      const result = converter.convertResponse(input);
-      const wsBlock = result.content.find(b => b.type === "web_search_tool_result") as any;
-      expect(wsBlock).toBeDefined();
-      expect(wsBlock.content[0].title).toBe("Example");
-      expect(wsBlock.content[0].url).toBe("https://example.com");
-    });
+              caller: { type: "direct" },
+            } as any,
+          ],
+        })
+      );
 
-    it("maps function_call finish_reason to tool_use", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: null, refusal: null },
-            finish_reason: "function_call",
-            logprobs: null,
+      const msg = result.choices[0].message;
+      expect(msg.annotations).toEqual([
+        {
+          type: "url_citation",
+          url_citation: {
+            title: "Example",
+            url: "https://example.com",
+            start_index: 0,
+            end_index: 0,
           },
-        ],
-      };
-      expect(converter.convertResponse(input).stop_reason).toBe("tool_use");
-    });
-
-    it("converts usage with cache details", () => {
-      const input: OpenAI.ChatCompletion = {
-        id: "id",
-        object: "chat.completion",
-        created: 0,
-        model: "gpt-4o",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: "Hi", refusal: null },
-            finish_reason: "stop",
-            logprobs: null,
-          },
-        ],
-        usage: {
-          prompt_tokens: 100,
-          completion_tokens: 50,
-          total_tokens: 150,
-          prompt_tokens_details: { cached_tokens: 30 },
         },
-      };
-      const result = converter.convertResponse(input);
-      expect(result.usage.input_tokens).toBe(100);
-      expect(result.usage.output_tokens).toBe(50);
-      expect(result.usage.cache_read_input_tokens).toBe(30);
+      ]);
+    });
+
+    it("includes extended usage fields (cache, web_search)", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 30,
+            cache_creation: { ephemeral_5m_input_tokens: 15, ephemeral_1h_input_tokens: 5 } as any,
+            inference_geo: null,
+            server_tool_use: { web_search_requests: 3 } as any,
+            service_tier: null,
+          },
+        })
+      );
+
+      const details = result.usage!.prompt_tokens_details as any;
+      expect(details.cached_tokens).toBe(30);
+      expect(details.ephemeral_5m_input_tokens).toBe(15);
+      expect(details.ephemeral_1h_input_tokens).toBe(5);
+      expect(details.web_search).toBe(3);
+      expect(details.cache_creation_input_tokens).toBe(20);
     });
   });
 
-  // ===== convertStream =====
+  // ===== convertStream (Messages -> CC, backward) =====
 
   describe("convertStream", () => {
-    function makeChunk(
-      overrides: Partial<OpenAI.ChatCompletionChunk> & {
-        delta?: Partial<OpenAI.ChatCompletionChunk.Choice.Delta>;
-        finish_reason?: OpenAI.ChatCompletionChunk.Choice["finish_reason"];
-      } = {}
-    ): OpenAI.ChatCompletionChunk {
-      const { delta = {}, finish_reason = null, ...rest } = overrides;
-      return {
-        id: "chatcmpl-123",
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "gpt-4o",
-        choices: [{ index: 0, delta, finish_reason }],
-        ...rest,
-      };
-    }
-
     describe("text streaming", () => {
-      it("emits message_start on first chunk", () => {
+      it("emits first chunk with role on message_start", () => {
         const c = new ChatCompletionToMessagesConverter();
-        const events = c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        const result = c.convertStreamEvent(messageStart());
 
-        expect(events.length).toBe(1);
-        expect(events[0].type).toBe("message_start");
+        expect(result).not.toBeNull();
+        expect(result!.id).toBe("msg_123");
+        expect(result!.model).toBe("claude-sonnet-4-20250514");
+        expect(result!.choices[0].delta.role).toBe("assistant");
       });
 
-      it("emits content_block_start + content_block_delta for first text chunk", () => {
+      it("returns null for content_block_start (text)", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamEvent(messageStart());
 
-        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+        const result = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "", citations: null },
+        });
 
-        expect(events.length).toBe(2);
-        expect(events[0].type).toBe("content_block_start");
-        expect((events[0] as Anthropic.RawContentBlockStartEvent).content_block.type).toBe("text");
-        expect(events[1].type).toBe("content_block_delta");
-        const d = (events[1] as Anthropic.RawContentBlockDeltaEvent).delta;
-        expect(d.type).toBe("text_delta");
-        expect((d as Anthropic.TextDelta).text).toBe("Hello");
+        expect(result).toBeNull();
       });
 
-      it("emits only content_block_delta for subsequent text chunks", () => {
+      it("emits text content for content_block_delta (text_delta)", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+        c.convertStreamEvent(messageStart());
 
-        const events = c.convertStreamChunk(makeChunk({ delta: { content: " world" } }));
+        const result = c.convertStreamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hello" },
+        });
 
-        expect(events.length).toBe(1);
-        expect(events[0].type).toBe("content_block_delta");
-        expect((events[0] as Anthropic.RawContentBlockDeltaEvent).delta.type).toBe("text_delta");
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].delta.content).toBe("Hello");
       });
 
-      it("emits stop events on finish", () => {
+      it("emits finish_reason on message_delta", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+        c.convertStreamEvent(messageStart());
 
-        const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
-        const types = events.map(e => e.type);
+        const result = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
 
-        expect(types).toContain("content_block_stop");
-        expect(types).toContain("message_delta");
-        expect(types).toContain("message_stop");
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].finish_reason).toBe("stop");
       });
 
-      it('maps finish_reason "tool_calls" to stop_reason "tool_use" in stream', () => {
+      it("emits final usage chunk on message_stop", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamEvent(messageStart());
+        c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
 
-        const events = c.convertStreamChunk(makeChunk({ finish_reason: "tool_calls" }));
-        const msgDelta = events.find(
-          e => e.type === "message_delta"
-        ) as Anthropic.RawMessageDeltaEvent;
+        const result = c.convertStreamEvent({ type: "message_stop" });
 
-        expect(msgDelta.delta.stop_reason).toBe("tool_use");
-      });
-
-      it('maps finish_reason "length" to stop_reason "max_tokens" in stream', () => {
-        const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-
-        const events = c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
-        const msgDelta = events.find(
-          e => e.type === "message_delta"
-        ) as Anthropic.RawMessageDeltaEvent;
-
-        expect(msgDelta.delta.stop_reason).toBe("max_tokens");
+        expect(result).not.toBeNull();
+        expect(result!.choices).toEqual([]);
+        expect(result!.usage?.prompt_tokens).toBe(10);
+        expect(result!.usage?.completion_tokens).toBe(5);
+        expect(result!.usage?.total_tokens).toBe(15);
+        expect(result!.usage?.completion_tokens_details).toEqual({ reasoning_tokens: 0 });
       });
     });
 
     describe("tool call streaming", () => {
-      it("emits content_block_start for tool_use when tool_call starts", () => {
+      it("emits tool_call start on content_block_start (tool_use)", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamEvent(messageStart());
 
-        const events = c.convertStreamChunk(
-          makeChunk({
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_1",
-                  type: "function",
-                  function: { name: "get_weather", arguments: "" },
-                },
-              ],
-            },
-          })
-        );
+        const result = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "get_weather",
+            input: {},
+            caller: { type: "direct" },
+          },
+        });
 
-        const startEvents = events.filter(e => e.type === "content_block_start");
-        expect(startEvents.length).toBe(1);
-        const startEvent = startEvents[0] as Anthropic.RawContentBlockStartEvent;
-        expect(startEvent.content_block.type).toBe("tool_use");
-        expect((startEvent.content_block as any).name).toBe("get_weather");
+        expect(result).not.toBeNull();
+        const tc = result!.choices[0].delta.tool_calls![0];
+        expect(tc.index).toBe(0);
+        expect(tc.id).toBe("toolu_1");
+        expect(tc.type).toBe("function");
+        expect(tc.function!.name).toBe("get_weather");
       });
 
-      it("emits input_json_delta for tool call arguments", () => {
+      it("emits tool_call arguments on content_block_delta (input_json_delta)", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(
-          makeChunk({
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_1",
-                  type: "function",
-                  function: { name: "get_weather", arguments: "" },
-                },
-              ],
-            },
-          })
-        );
+        c.convertStreamEvent(messageStart());
+        c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "get_weather",
+            input: {},
+            caller: { type: "direct" },
+          },
+        });
 
-        const events = c.convertStreamChunk(
-          makeChunk({
-            delta: { tool_calls: [{ index: 0, function: { arguments: '{"loc' } }] },
-          })
-        );
+        const result = c.convertStreamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"loc' },
+        });
 
-        expect(events.length).toBe(1);
-        expect(events[0].type).toBe("content_block_delta");
-        const delta = (events[0] as Anthropic.RawContentBlockDeltaEvent).delta;
-        expect(delta.type).toBe("input_json_delta");
-        expect((delta as Anthropic.InputJSONDelta).partial_json).toBe('{"loc');
+        expect(result).not.toBeNull();
+        const delta = result!.choices[0].delta;
+        expect(delta.content).toBe("");
+        const tc = delta.tool_calls![0];
+        expect(tc.index).toBe(0);
+        expect(tc.type).toBe("function");
+        expect(tc.function!.arguments).toBe('{"loc');
       });
-    });
 
-    describe("text + tool call mixed", () => {
-      it("handles text followed by tool calls", () => {
+      it("maps tool_use stop_reason to tool_calls finish_reason", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(makeChunk({ delta: { content: "Let me check." } }));
+        c.convertStreamEvent(messageStart());
 
-        const events = c.convertStreamChunk(
-          makeChunk({
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_1",
-                  type: "function",
-                  function: { name: "fn", arguments: "" },
-                },
-              ],
-            },
-          })
-        );
+        const result = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "tool_use", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
 
-        const types = events.map(e => e.type);
-        expect(types).toContain("content_block_stop");
-        expect(types).toContain("content_block_start");
+        expect(result!.choices[0].finish_reason).toBe("tool_calls");
+      });
+
+      it("maps max_tokens stop_reason to length finish_reason in stream", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+
+        const result = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+
+        expect(result!.choices[0].finish_reason).toBe("length");
       });
     });
 
-    describe("reasoning streaming", () => {
-      it("emits thinking block events for reasoning delta", () => {
+    describe("content_block_stop", () => {
+      it("emits empty content chunk on content_block_stop", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-
-        const events = c.convertStreamChunk(
-          makeChunk({
-            delta: { reasoning: "Let me think..." } as any,
-          })
-        );
-
-        const types = events.map(e => e.type);
-        expect(types).toContain("content_block_start");
-        expect(types).toContain("content_block_delta");
-        const startEvent = events.find(
-          e => e.type === "content_block_start"
-        ) as Anthropic.RawContentBlockStartEvent;
-        expect(startEvent.content_block.type).toBe("thinking");
-        const deltaEvent = events.find(
-          e => e.type === "content_block_delta"
-        ) as Anthropic.RawContentBlockDeltaEvent;
-        expect(deltaEvent.delta.type).toBe("thinking_delta");
-        expect((deltaEvent.delta as Anthropic.ThinkingDelta).thinking).toBe("Let me think...");
-      });
-
-      it("transitions from reasoning to text with content_block_stop", () => {
-        const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(makeChunk({ delta: { reasoning: "thinking..." } as any }));
-
-        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Answer" } }));
-
-        const types = events.map(e => e.type);
-        expect(types[0]).toBe("content_block_stop");
-        expect(types).toContain("content_block_start");
-        expect(types).toContain("content_block_delta");
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].delta.content).toBe("");
       });
     });
 
-    describe("annotations streaming", () => {
-      it("emits web_search_tool_result for annotations delta", () => {
+    describe("text in content_block_start", () => {
+      it("emits content chunk when text block has initial non-empty text", () => {
         const c = new ChatCompletionToMessagesConverter();
-        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
-        c.convertStreamChunk(makeChunk({ delta: { content: "Results:" } }));
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "Hello", citations: null },
+        });
+        expect(result).not.toBeNull();
+        expect(result!.choices[0].delta.content).toBe("Hello");
+      });
 
-        const events = c.convertStreamChunk(
-          makeChunk({
-            delta: {
-              annotations: [
-                {
-                  type: "url_citation",
-                  url_citation: {
-                    title: "Example",
-                    url: "https://example.com",
-                    start_index: 0,
-                    end_index: 5,
-                  },
-                },
-              ],
-            } as any,
-          })
-        );
+      it("returns null when text block is empty", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "", citations: null },
+        });
+        expect(result).toBeNull();
+      });
+    });
 
-        const types = events.map(e => e.type);
-        expect(types).toContain("content_block_stop");
-        expect(types).toContain("content_block_start");
-        const startEvent = events.find(
-          e => e.type === "content_block_start"
-        ) as Anthropic.RawContentBlockStartEvent;
-        expect(startEvent.content_block.type).toBe("web_search_tool_result");
-        expect((startEvent.content_block as any).content[0].title).toBe("Example");
+    describe("thinking streaming", () => {
+      it("emits reasoning chunk for thinking_delta", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+
+        const result = c.convertStreamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Let me think..." } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const delta = result!.choices[0].delta as any;
+        expect(delta.reasoning).toBe("Let me think...");
+        expect(delta.reasoning_details).toEqual([
+          {
+            type: "reasoning.text",
+            text: "Let me think...",
+            format: "anthropic-claude-v1",
+            index: 0,
+          },
+        ]);
+      });
+
+      it("emits reasoning_details with signature for signature_delta", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+
+        const result = c.convertStreamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "signature_delta", signature: "sig_xyz" } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const delta = result!.choices[0].delta as any;
+        expect(delta.reasoning).toBeNull();
+        expect(delta.reasoning_details).toEqual([
+          { type: "reasoning.text", signature: "sig_xyz", format: "anthropic-claude-v1", index: 0 },
+        ]);
+      });
+    });
+
+    describe("server_tool_use streaming", () => {
+      it("treats server_tool_use same as tool_use in content_block_start", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+
+        const result = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "server_tool_use",
+            id: "srv_1",
+            name: "web_search",
+            input: {},
+            caller: { type: "direct" },
+          } as any,
+        });
+
+        expect(result).not.toBeNull();
+        const tc = result!.choices[0].delta.tool_calls![0];
+        expect(tc.id).toBe("srv_1");
+        expect(tc.function!.name).toBe("web_search");
+      });
+    });
+
+    describe("web_search_tool_result streaming", () => {
+      it("collects annotations and emits them on message_delta", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+
+        // content_block_start for web_search_tool_result returns null
+        const startResult = c.convertStreamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "web_search_tool_result",
+            tool_use_id: "srv_1",
+            content: [
+              {
+                type: "web_search_result",
+                url: "https://example.com",
+                title: "Example",
+                encrypted_content: "x",
+                page_age: null,
+              },
+            ],
+            caller: { type: "direct" },
+          } as any,
+        });
+        expect(startResult).toBeNull();
+
+        const deltaResult = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+
+        expect((deltaResult!.choices[0].delta as any).annotations).toEqual([
+          {
+            type: "url_citation",
+            url_citation: {
+              title: "Example",
+              url: "https://example.com",
+              start_index: 0,
+              end_index: 0,
+            },
+          },
+        ]);
+      });
+    });
+
+    describe("extended usage in message_stop", () => {
+      it("includes cache and web_search counts from message_start + message_delta", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent({
+          type: "message_start",
+          message: {
+            id: "msg_x",
+            type: "message",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 100,
+              output_tokens: 0,
+              cache_read_input_tokens: 30,
+              cache_creation_input_tokens: 20,
+              cache_creation: {
+                ephemeral_5m_input_tokens: 15,
+                ephemeral_1h_input_tokens: 5,
+              } as any,
+              inference_geo: null,
+              server_tool_use: null,
+              service_tier: null,
+            },
+            container: null,
+          },
+        });
+        c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          usage: {
+            output_tokens: 50,
+            input_tokens: null,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: { web_search_requests: 3 } as any,
+          },
+        });
+
+        const result = c.convertStreamEvent({ type: "message_stop" });
+
+        expect(result!.usage!.prompt_tokens).toBe(100);
+        expect(result!.usage!.completion_tokens).toBe(50);
+        expect(result!.usage!.total_tokens).toBe(150);
+        const details = result!.usage!.prompt_tokens_details as any;
+        expect(details.cached_tokens).toBe(30);
+        expect(details.ephemeral_5m_input_tokens).toBe(15);
+        expect(details.ephemeral_1h_input_tokens).toBe(5);
+        expect(details.web_search).toBe(3);
+        expect(details.cache_creation_input_tokens).toBe(20);
+      });
+    });
+
+    describe("extended stop_reason mappings", () => {
+      it("maps pause_turn to stop", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "pause_turn", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+        expect(result!.choices[0].finish_reason).toBe("stop");
+      });
+
+      it("maps refusal to content_filter", () => {
+        const c = new ChatCompletionToMessagesConverter();
+        c.convertStreamEvent(messageStart());
+        const result = c.convertStreamEvent({
+          type: "message_delta",
+          delta: { stop_reason: "refusal", stop_sequence: null, container: null },
+          usage: baseDeltaUsage,
+        });
+        expect(result!.choices[0].finish_reason).toBe("content_filter");
       });
     });
 
@@ -1063,54 +1208,46 @@ describe("ChatCompletionToMessagesConverter", () => {
       }
 
       it("converts a full text stream", async () => {
-        const chunks = [
-          makeChunk({ delta: { role: "assistant" } }),
-          makeChunk({ delta: { content: "Hello" } }),
-          makeChunk({ delta: { content: " world" } }),
-          makeChunk({ finish_reason: "stop" }),
+        const events: Anthropic.RawMessageStreamEvent[] = [
+          messageStart(),
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " world" } },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          { type: "message_stop" },
         ];
 
         const c = new ChatCompletionToMessagesConverter();
-        const events = await collect(c.convertStream(toAsync(chunks)));
-        const types = events.map(e => e.type);
+        const chunks = await collect(c.convertStream(toAsync(events)));
 
-        expect(types[0]).toBe("message_start");
-        expect(types).toContain("content_block_start");
-        expect(types.filter(t => t === "content_block_delta").length).toBe(2);
-        expect(types).toContain("content_block_stop");
-        expect(types).toContain("message_delta");
-        expect(types).toContain("message_stop");
+        expect(chunks.length).toBeGreaterThan(0);
+        expect(chunks[0].choices[0].delta.role).toBe("assistant");
+        const textChunks = chunks.filter(ch => ch.choices[0]?.delta?.content && ch.choices[0].delta.content !== "");
+        expect(textChunks.length).toBe(2);
+        const finishChunk = chunks.find(ch => ch.choices[0]?.finish_reason === "stop");
+        expect(finishChunk).toBeDefined();
+        const usageChunk = chunks.find(ch => ch.choices.length === 0 && ch.usage);
+        expect(usageChunk).toBeDefined();
+        expect(usageChunk!.usage!.completion_tokens).toBe(5);
       });
 
-      it("converts a tool call stream", async () => {
-        const chunks = [
-          makeChunk({ delta: { role: "assistant" } }),
-          makeChunk({
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_1",
-                  type: "function",
-                  function: { name: "get_weather", arguments: "" },
-                },
-              ],
-            },
-          }),
-          makeChunk({
-            delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"SF"}' } }] },
-          }),
-          makeChunk({ finish_reason: "tool_calls" }),
+      it("filters out null events (content_block_start with empty text)", async () => {
+        const events: Anthropic.RawMessageStreamEvent[] = [
+          messageStart(),
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          { type: "message_stop" },
         ];
 
         const c = new ChatCompletionToMessagesConverter();
-        const events = await collect(c.convertStream(toAsync(chunks)));
-        const types = events.map(e => e.type);
+        const chunks = await collect(c.convertStream(toAsync(events)));
 
-        expect(types).toContain("message_start");
-        expect(types).toContain("content_block_start");
-        expect(types.filter(t => t === "content_block_delta").length).toBeGreaterThanOrEqual(1);
-        expect(types).toContain("message_stop");
+        // content_block_start with empty text returns null and should be filtered
+        const allDefined = chunks.every(ch => ch != null);
+        expect(allDefined).toBe(true);
       });
     });
   });

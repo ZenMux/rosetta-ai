@@ -271,432 +271,303 @@ describe("ResponsesToChatCompletionConverter", () => {
     });
   });
 
+  // ===== convertResponse (CC → Responses, backward) =====
+
   describe("convertResponse", () => {
-    function makeResponse(
-      overrides: Partial<OpenAI.Responses.Response> = {}
-    ): OpenAI.Responses.Response {
+    function makeCCResponse(
+      overrides: Partial<OpenAI.ChatCompletion> = {}
+    ): OpenAI.ChatCompletion {
       return {
-        id: "resp_123",
-        object: "response",
-        created_at: 1700000000,
+        id: "chatcmpl-123",
+        object: "chat.completion",
+        created: 1700000000,
         model: "gpt-4o",
-        output: [
+        choices: [
           {
-            type: "message",
-            id: "msg_1",
-            role: "assistant",
-            status: "completed",
-            content: [
-              {
-                type: "output_text",
-                text: "Hello!",
-                annotations: [],
-                logprobs: null as any,
-              },
-            ],
-          } as any,
+            index: 0,
+            message: { role: "assistant", content: "Hello!", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
         ],
-        status: "completed",
         usage: {
-          input_tokens: 10,
-          output_tokens: 5,
+          prompt_tokens: 10,
+          completion_tokens: 5,
           total_tokens: 15,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 0 },
         },
-        error: null,
-        incomplete_details: null,
-        instructions: null,
-        metadata: {},
-        temperature: null,
-        top_p: null,
-        max_output_tokens: null,
-        previous_response_id: null,
-        parallel_tool_calls: true,
-        tool_choice: "auto",
-        tools: [],
-        text: { format: { type: "text" } },
-        reasoning: null,
-        truncation: null as any,
-        user: undefined as any,
         ...overrides,
-      } as OpenAI.Responses.Response;
+      };
     }
 
     it("converts a basic text response", () => {
-      const result = converter.convertResponse(makeResponse());
+      const result = converter.convertResponse(makeCCResponse());
 
-      expect(result.id).toBe("resp_123");
+      expect(result.id).toBe("chatcmpl-123");
       expect(result.model).toBe("gpt-4o");
-      expect(result.object).toBe("chat.completion");
-      expect(result.created).toBe(1700000000);
-      expect(result.choices[0].message.content).toBe("Hello!");
-      expect(result.choices[0].finish_reason).toBe("stop");
-      expect(result.usage?.prompt_tokens).toBe(10);
-      expect(result.usage?.completion_tokens).toBe(5);
+      expect(result.object).toBe("response");
+      expect(result.created_at).toBe(1700000000);
+      expect(result.status).toBe("completed");
+      expect(result.usage?.input_tokens).toBe(10);
+      expect(result.usage?.output_tokens).toBe(5);
+
+      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
+      expect(msgOutput).toBeDefined();
+      expect(msgOutput.content[0].type).toBe("output_text");
+      expect(msgOutput.content[0].text).toBe("Hello!");
     });
 
-    it("converts function_call output items to tool_calls", () => {
+    it("converts tool_calls to function_call output items", () => {
       const result = converter.convertResponse(
-        makeResponse({
-          output: [
+        makeCCResponse({
+          choices: [
             {
-              type: "function_call",
-              id: "fc_1",
-              call_id: "call_1",
-              name: "get_weather",
-              arguments: '{"city":"SF"}',
-              status: "completed",
-            } as any,
+              index: 0,
+              message: {
+                role: "assistant",
+                content: null,
+                refusal: null,
+                tool_calls: [
+                  {
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "get_weather", arguments: '{"city":"SF"}' },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+              logprobs: null,
+            },
           ],
-          status: "completed",
         })
       );
 
-      expect(result.choices[0].message.tool_calls).toEqual([
-        {
-          id: "call_1",
-          type: "function",
-          function: { name: "get_weather", arguments: '{"city":"SF"}' },
-        },
-      ]);
-      expect(result.choices[0].finish_reason).toBe("tool_calls");
+      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fcOutput).toBeDefined();
+      expect(fcOutput.name).toBe("get_weather");
+      expect(fcOutput.arguments).toBe('{"city":"SF"}');
+      expect(fcOutput.call_id).toBe("call_1");
+      expect(result.status).toBe("completed");
     });
 
-    it('maps incomplete status with max_output_tokens to "length"', () => {
+    it("maps finish_reason length to incomplete status", () => {
       const result = converter.convertResponse(
-        makeResponse({
-          output: [
+        makeCCResponse({
+          choices: [
             {
-              type: "message",
-              id: "msg_1",
-              role: "assistant",
-              status: "incomplete",
-              content: [{ type: "output_text", text: "Partial", annotations: [], logprobs: null as any }],
-            } as any,
+              index: 0,
+              message: { role: "assistant", content: "Partial", refusal: null },
+              finish_reason: "length",
+              logprobs: null,
+            },
           ],
-          status: "incomplete",
-          incomplete_details: { reason: "max_output_tokens" },
         })
       );
-      expect(result.choices[0].finish_reason).toBe("length");
+
+      expect(result.status).toBe("incomplete");
     });
 
-    it('maps incomplete status with content_filter to "content_filter"', () => {
+    it("converts reasoning to reasoning output item", () => {
       const result = converter.convertResponse(
-        makeResponse({
-          output: [
+        makeCCResponse({
+          choices: [
             {
-              type: "message",
-              id: "msg_1",
-              role: "assistant",
-              status: "incomplete",
-              content: [{ type: "output_text", text: "", annotations: [], logprobs: null as any }],
-            } as any,
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "42",
+                refusal: null,
+                reasoning: "Let me think...",
+              } as any,
+              finish_reason: "stop",
+              logprobs: null,
+            },
           ],
-          status: "incomplete",
-          incomplete_details: { reason: "content_filter" },
         })
       );
-      expect(result.choices[0].finish_reason).toBe("content_filter");
+
+      const reasoningOutput = result.output.find((o: any) => o.type === "reasoning") as any;
+      expect(reasoningOutput).toBeDefined();
+      expect(reasoningOutput.summary[0].text).toBe("Let me think...");
     });
 
-    it("extracts url_citation annotations", () => {
+    it("converts annotations to output_text annotations", () => {
       const result = converter.convertResponse(
-        makeResponse({
-          output: [
+        makeCCResponse({
+          choices: [
             {
-              type: "message",
-              id: "msg_1",
-              role: "assistant",
-              status: "completed",
-              content: [
-                {
-                  type: "output_text",
-                  text: "Result",
-                  annotations: [
-                    {
-                      type: "url_citation",
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "Result",
+                refusal: null,
+                annotations: [
+                  {
+                    type: "url_citation",
+                    url_citation: {
                       title: "Example",
                       url: "https://example.com",
                       start_index: 0,
                       end_index: 6,
                     },
-                  ],
-                  logprobs: null as any,
-                },
-              ],
-            } as any,
+                  },
+                ],
+              },
+              finish_reason: "stop",
+              logprobs: null,
+            },
           ],
         })
       );
 
-      expect(result.choices[0].message.annotations).toEqual([
-        {
-          type: "url_citation",
-          url_citation: {
-            title: "Example",
-            url: "https://example.com",
-            start_index: 0,
-            end_index: 6,
-          },
-        },
-      ]);
+      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
+      expect(msgOutput.content[0].annotations[0].url).toBe("https://example.com");
     });
 
-    it("converts reasoning items", () => {
+    it("converts refusal", () => {
       const result = converter.convertResponse(
-        makeResponse({
-          output: [
+        makeCCResponse({
+          choices: [
             {
-              type: "reasoning",
-              id: "r_1",
-              summary: [{ type: "summary_text", text: "Thinking..." }],
-            } as any,
-            {
-              type: "message",
-              id: "msg_1",
-              role: "assistant",
-              status: "completed",
-              content: [{ type: "output_text", text: "42", annotations: [], logprobs: null }],
-            } as any,
+              index: 0,
+              message: { role: "assistant", content: null, refusal: "I cannot do that" },
+              finish_reason: "stop",
+              logprobs: null,
+            },
           ],
         })
       );
 
-      expect(result.choices[0].message.content).toBe("42");
-      expect((result.choices[0].message as any).reasoning).toBe("Thinking...");
+      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
+      expect(msgOutput.content[0].type).toBe("refusal");
+      expect(msgOutput.content[0].refusal).toBe("I cannot do that");
     });
   });
 
-  describe("convertStreamEvent", () => {
-    function first(
-      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null,
+  // ===== convertStreamChunk (CC → Responses, backward) =====
+
+  describe("convertStreamChunk", () => {
+    function makeChunk(
+      overrides: Partial<OpenAI.ChatCompletionChunk> & {
+        delta?: Partial<OpenAI.ChatCompletionChunk.Choice.Delta>;
+        finish_reason?: OpenAI.ChatCompletionChunk.Choice["finish_reason"];
+      } = {}
     ): OpenAI.ChatCompletionChunk {
-      if (Array.isArray(result)) return result[0];
-      return result!;
+      const { delta = {}, finish_reason = null, ...rest } = overrides;
+      return {
+        id: "chatcmpl-123",
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "gpt-4o",
+        choices: [{ index: 0, delta, finish_reason }],
+        ...rest,
+      };
     }
 
-    function initStream(c: ResponsesToChatCompletionConverter) {
-      c.convertStreamEvent({
-        type: "response.created",
-        response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-        sequence_number: 0,
-      });
-    }
-
-    it("emits role chunk on response.created", () => {
+    it("emits response.created and response.in_progress on first chunk", () => {
       const c = new ResponsesToChatCompletionConverter();
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.created",
-          response: { id: "resp_1", model: "gpt-4o", created_at: 100 } as any,
-          sequence_number: 0,
-        })
+      const events = c.convertStreamChunk(
+        makeChunk({ delta: { role: "assistant" } })
       );
 
-      expect(result.choices[0].delta.role).toBe("assistant");
-      expect(result.id).toBe("resp_1");
+      const types = events.map(e => e.type);
+      expect(types).toContain("response.created");
+      expect(types).toContain("response.in_progress");
     });
 
-    it("emits text delta with role on response.output_text.delta", () => {
+    it("emits output_text.delta for text content", () => {
       const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.output_text.delta",
-          delta: "Hello",
-          item_id: "msg_1",
-          output_index: 0,
-          content_index: 0,
-          sequence_number: 1,
-        } as any)
+      const events = c.convertStreamChunk(
+        makeChunk({ delta: { content: "Hello" } })
       );
 
-      expect(result.choices[0].delta.role).toBe("assistant");
-      expect(result.choices[0].delta.content).toBe("Hello");
+      const textDelta = events.find(e => e.type === "response.output_text.delta") as any;
+      expect(textDelta).toBeDefined();
+      expect(textDelta.delta).toBe("Hello");
     });
 
-    it("emits tool_call start on response.output_item.added (function_call)", () => {
+    it("emits output_item.added for function_call", () => {
       const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.output_item.added",
-          item: {
-            type: "function_call",
-            id: "fc_1",
-            call_id: "call_1",
-            name: "get_weather",
-            arguments: "",
-            status: "in_progress",
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: { name: "get_weather", arguments: "" },
+              },
+            ],
           },
-          output_index: 0,
-          sequence_number: 1,
-        } as any)
-      );
-
-      const tc = result.choices[0].delta.tool_calls![0];
-      expect(tc.id).toBe("call_1");
-      expect(tc.function!.name).toBe("get_weather");
-    });
-
-    it("emits tool_call arguments delta", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-      c.convertStreamEvent({
-        type: "response.output_item.added",
-        item: {
-          type: "function_call",
-          id: "fc_1",
-          call_id: "call_1",
-          name: "fn",
-          arguments: "",
-          status: "in_progress",
-        },
-        output_index: 0,
-        sequence_number: 1,
-      } as any);
-
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.function_call_arguments.delta",
-          delta: '{"city',
-          item_id: "fc_1",
-          output_index: 0,
-          sequence_number: 2,
-        } as any)
-      );
-
-      expect(result.choices[0].delta.tool_calls![0].function!.arguments).toBe('{"city');
-    });
-
-    it("emits tool_calls finish_reason when tool calls present", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-      c.convertStreamEvent({
-        type: "response.output_item.added",
-        item: {
-          type: "function_call",
-          id: "fc_1",
-          call_id: "call_1",
-          name: "fn",
-          arguments: "",
-          status: "in_progress",
-        },
-        output_index: 0,
-        sequence_number: 1,
-      } as any);
-
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.completed",
-          response: {
-            id: "resp_1",
-            status: "completed",
-            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-          } as any,
-          sequence_number: 10,
         })
       );
 
-      expect(result.choices[0].finish_reason).toBe("tool_calls");
+      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded).toBeDefined();
+      expect(itemAdded.item.type).toBe("function_call");
+      expect(itemAdded.item.name).toBe("get_weather");
     });
 
-    it("emits finish_reason stop on response.completed without tool calls", () => {
+    it("emits function_call_arguments.delta for tool arguments", () => {
       const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.completed",
-          response: {
-            id: "resp_1",
-            status: "completed",
-            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-          } as any,
-          sequence_number: 10,
-        })
-      );
-
-      expect(result.choices[0].finish_reason).toBe("stop");
-    });
-
-    it("handles reasoning_summary_text.delta", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.reasoning_summary_text.delta",
-          delta: "Thinking...",
-          item_id: "rs_1",
-          output_index: 0,
-          summary_index: 0,
-          sequence_number: 1,
-        } as any)
-      );
-
-      expect((result.choices[0].delta as any).reasoning).toBe("Thinking...");
-    });
-
-    it("tracks web_search_call.completed count", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-
-      const r1 = c.convertStreamEvent({
-        type: "response.web_search_call.completed",
-      } as any);
-      expect(r1).toBeNull();
-
-      // webSearchCount is tracked internally; verified via usage in completed event
-    });
-
-    it("collects annotations from output_text.annotation.added", () => {
-      const c = new ResponsesToChatCompletionConverter();
-      initStream(c);
-
-      c.convertStreamEvent({
-        type: "response.output_text.annotation.added",
-        annotation: {
-          type: "url_citation",
-          url: "https://example.com",
-          title: "Example",
-          start_index: 0,
-          end_index: 5,
-        },
-      } as any);
-
-      const result = first(
-        c.convertStreamEvent({
-          type: "response.completed",
-          response: { id: "resp_1", status: "completed" } as any,
-          sequence_number: 10,
-        })
-      );
-
-      expect((result.choices[0].delta as any).annotations).toEqual([
-        {
-          type: "url_citation",
-          url_citation: {
-            type: "url_citation",
-            url: "https://example.com",
-            title: "Example",
-            start_index: 0,
-            end_index: 5,
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: { name: "fn", arguments: "" },
+              },
+            ],
           },
-        },
-      ]);
+        })
+      );
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: { tool_calls: [{ index: 0, function: { arguments: '{"x' } }] },
+        })
+      );
+
+      const argsDelta = events.find(
+        e => e.type === "response.function_call_arguments.delta"
+      ) as any;
+      expect(argsDelta).toBeDefined();
+      expect(argsDelta.delta).toBe('{"x');
     });
 
-    it("returns null for unknown events", () => {
+    it("emits response.completed on finish", () => {
       const c = new ResponsesToChatCompletionConverter();
-      const result = c.convertStreamEvent({
-        type: "response.output_text.done",
-      } as any);
-      expect(result).toBeNull();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          finish_reason: "stop",
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        } as any)
+      );
+
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.status).toBe("completed");
+    });
+
+    it("emits response.incomplete on length finish", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
+
+      const incomplete = events.find(e => e.type === "response.incomplete") as any;
+      expect(incomplete).toBeDefined();
     });
   });
 });

@@ -4,18 +4,15 @@ import { ReasoningEffort } from "openai/resources.js";
 
 type OpenAIMessage = OpenAI.ChatCompletionMessageParam;
 
+type BlockType = "text" | "tool_use" | "thinking" | "web_search_tool_result" | null;
+
 interface StreamState {
+  messageStarted: boolean;
+  currentBlockIndex: number;
+  currentBlockType: BlockType;
   id: string;
   model: string;
-  toolCallCounter: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationInputTokens: number;
-  ephemeral5mTokens: number;
-  ephemeral1hTokens: number;
-  webSearchRequests: number;
-  annotations: OpenAI.ChatCompletionMessage.Annotation[];
+  toolCallIndexMap: Map<number, number>;
 }
 
 export class MessagesToChatCompletionConverter {
@@ -25,7 +22,7 @@ export class MessagesToChatCompletionConverter {
     this.streamState = this.createStreamState();
   }
 
-  // --- Request conversion ---
+  // --- Request conversion (Messages → CC, forward) ---
 
   convertRequest(params: Anthropic.MessageCreateParams): OpenAI.ChatCompletionCreateParams {
     const messages: OpenAIMessage[] = [];
@@ -99,347 +96,331 @@ export class MessagesToChatCompletionConverter {
     return result;
   }
 
-  // --- Response conversion ---
+  // --- Response conversion (CC → Messages, backward) ---
 
-  convertResponse(message: Anthropic.Message): OpenAI.ChatCompletion {
-    const textParts: string[] = [];
-    const thinkingParts: string[] = [];
-    const reasoningDetails: Array<Record<string, unknown>> = [];
-    const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
-    const annotations: OpenAI.ChatCompletionMessage.Annotation[] = [];
+  convertResponse(response: OpenAI.ChatCompletion): Anthropic.Message {
+    const choice = response.choices[0];
+    const msg = choice?.message;
 
-    for (const block of message.content) {
-      if (block.type === "text") {
-        textParts.push(block.text);
-      } else if (block.type === "thinking") {
-        thinkingParts.push(block.thinking);
-        reasoningDetails.push({
-          type: "reasoning.text",
-          text: block.thinking,
-          signature: block.signature,
-          format: "anthropic-claude-v1",
-          index: 0,
-        });
-      } else if (block.type === "tool_use" || block.type === "server_tool_use") {
-        toolCalls.push({
-          id: block.id,
-          type: "function",
-          function: {
-            name: block.name,
-            arguments: JSON.stringify(block.input),
-          },
-        });
-      } else if (block.type === "web_search_tool_result") {
-        const content = block.content;
-        if (Array.isArray(content)) {
-          for (const result of content) {
-            annotations.push({
-              type: "url_citation",
-              url_citation: {
-                title: result.title,
-                url: result.url,
-                start_index: 0,
-                end_index: 0,
-              },
-            });
-          }
+    const content: Anthropic.ContentBlock[] = [];
+
+    // reasoning -> thinking block
+    const reasoning = (msg as any)?.reasoning || (msg as any)?.reasoning_content;
+    if (reasoning) {
+      content.push({
+        type: "thinking",
+        thinking: reasoning,
+        signature: "",
+      });
+    }
+
+    // annotations -> web_search_tool_result
+    if (msg?.annotations && msg.annotations.length > 0) {
+      const searchResults = msg.annotations.map(a => ({
+        type: "web_search_result" as const,
+        title: a.url_citation.title,
+        url: a.url_citation.url,
+        encrypted_content: "",
+        page_age: null,
+      }));
+      content.push({
+        type: "web_search_tool_result",
+        content: searchResults,
+        tool_use_id: `websearch_${this.generateId()}`,
+        caller: { type: "direct" },
+      });
+    }
+
+    if (msg?.content) {
+      content.push({ type: "text", text: msg.content, citations: null });
+    }
+
+    if (msg?.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (tc.type === "function") {
+          content.push({
+            type: "tool_use",
+            id: tc.id,
+            name: tc.function.name,
+            input: JSON.parse(tc.function.arguments || "{}"),
+            caller: { type: "direct" },
+          });
         }
       }
     }
 
-    const assistantMessage: OpenAI.ChatCompletionMessage = {
+    if (content.length === 0) {
+      content.push({ type: "text", text: "", citations: null });
+    }
+
+    return {
+      id: response.id,
+      type: "message",
       role: "assistant",
-      content: textParts.length > 0 ? textParts.join("") : null,
-      refusal: null,
-    };
-
-    if (thinkingParts.length > 0) {
-      Object.assign(assistantMessage, {
-        reasoning: thinkingParts.join(""),
-        reasoning_details: reasoningDetails,
-      });
-    }
-    if (toolCalls.length > 0) {
-      assistantMessage.tool_calls = toolCalls;
-    }
-    if (annotations.length > 0) {
-      assistantMessage.annotations = annotations;
-    }
-
-    return {
-      id: message.id,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: message.model,
-      choices: [
-        {
-          index: 0,
-          message: assistantMessage,
-          finish_reason: this.mapStopReasonToFinishReason(message.stop_reason),
-          logprobs: null,
-        },
-      ],
-      usage: this.convertUsage(message.usage),
+      model: response.model as Anthropic.Model,
+      content,
+      stop_reason: this.mapFinishReasonToStopReason(choice?.finish_reason),
+      stop_sequence: null,
+      usage: this.convertUsage(response.usage),
+      container: null,
     };
   }
 
-  private convertUsage(usage: Anthropic.Usage): OpenAI.CompletionUsage {
-    const cacheRead = usage.cache_read_input_tokens ?? 0;
-    const ephemeral5m = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0;
-    const ephemeral1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
-    const webSearch = usage.server_tool_use?.web_search_requests ?? 0;
-    const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+  private convertUsage(usage?: OpenAI.CompletionUsage): Anthropic.Usage {
+    const promptTokens = usage?.prompt_tokens ?? 0;
+    const completionTokens = usage?.completion_tokens ?? 0;
+    const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const webSearch: number = (usage?.prompt_tokens_details as any)?.web_search ?? 0;
 
     return {
-      prompt_tokens: usage.input_tokens,
-      completion_tokens: usage.output_tokens,
-      total_tokens: usage.input_tokens + usage.output_tokens,
-      prompt_tokens_details: {
-        cached_tokens: cacheRead,
-        ...({
-          ephemeral_5m_input_tokens: ephemeral5m,
-          ephemeral_1h_input_tokens: ephemeral1h,
-          web_search: webSearch,
-          cache_creation_input_tokens: cacheCreation,
-        }),
-      },
+      input_tokens: promptTokens,
+      output_tokens: completionTokens,
+      cache_read_input_tokens: cached || null,
+      cache_creation_input_tokens: 0,
+      cache_creation: null,
+      inference_geo: null,
+      server_tool_use: webSearch > 0 ? ({ web_search_requests: webSearch, web_fetch_requests: 0 }) : null,
+      service_tier: "standard",
     };
   }
 
-  // --- Stream conversion ---
+  private generateId(): string {
+    return Math.random().toString(36).substring(2, 15);
+  }
+
+  // --- Stream conversion (CC → Messages, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<Anthropic.RawMessageStreamEvent>,
-  ): AsyncIterable<OpenAI.ChatCompletionChunk> {
-    for await (const event of stream) {
-      const chunk = this.convertStreamEvent(event);
-      if (chunk) {
-        yield chunk;
+    stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
+  ): AsyncIterable<Anthropic.RawMessageStreamEvent> {
+    for await (const chunk of stream) {
+      const events = this.convertStreamChunk(chunk);
+      for (const event of events) {
+        yield event;
       }
     }
   }
 
-  convertStreamEvent(event: Anthropic.RawMessageStreamEvent): OpenAI.ChatCompletionChunk | null {
-    switch (event.type) {
-      case "message_start":
-        return this.handleMessageStart(event);
-      case "content_block_start":
-        return this.handleContentBlockStart(event);
-      case "content_block_delta":
-        return this.handleContentBlockDelta(event);
-      case "content_block_stop":
-        return this.handleContentBlockStop(event);
-      case "message_delta":
-        return this.handleMessageDelta(event);
-      case "message_stop":
-        return this.handleMessageStop();
-      default:
-        return null;
-    }
-  }
-
-  // --- Private helpers ---
-
-  private createStreamState(): StreamState {
-    return {
-      id: "",
-      model: "",
-      toolCallCounter: -1,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationInputTokens: 0,
-      ephemeral5mTokens: 0,
-      ephemeral1hTokens: 0,
-      webSearchRequests: 0,
-      annotations: [],
-    };
-  }
-
-  private makeChunk(
-    delta: OpenAI.ChatCompletionChunk.Choice.Delta,
-    finish_reason: OpenAI.ChatCompletionChunk.Choice["finish_reason"] = null
-  ): OpenAI.ChatCompletionChunk {
-    return {
-      id: this.streamState.id,
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
-      model: this.streamState.model,
-      choices: [{ index: 0, delta, finish_reason }],
-    };
-  }
-
-  private handleMessageStart(event: Anthropic.RawMessageStartEvent): OpenAI.ChatCompletionChunk {
+  convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
-    state.id = event.message.id;
-    state.model = event.message.model;
+    const events: Anthropic.RawMessageStreamEvent[] = [];
+    const choice = chunk.choices[0];
+    if (!choice) return events;
 
-    const usage = event.message.usage;
-    state.inputTokens = usage.input_tokens;
-    state.cacheReadTokens = usage.cache_read_input_tokens ?? 0;
-    state.cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
-    state.ephemeral5mTokens = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0;
-    state.ephemeral1hTokens = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+    state.id = chunk.id;
+    state.model = chunk.model;
 
-    return this.makeChunk({ role: "assistant" });
-  }
+    const delta = choice.delta;
 
-  private handleContentBlockStart(
-    event: Anthropic.RawContentBlockStartEvent
-  ): OpenAI.ChatCompletionChunk | null {
-    const block = event.content_block;
-
-    if (block.type === "text") {
-      if (block.text && block.text.trim()) {
-        return this.makeChunk({ content: block.text });
-      }
-      return null;
-    }
-
-    if (block.type === "tool_use" || block.type === "server_tool_use") {
-      this.streamState.toolCallCounter++;
-      const index = this.streamState.toolCallCounter;
-      return this.makeChunk({
-        tool_calls: [
-          {
-            index,
-            id: block.id,
-            type: "function",
-            function: { name: block.name, arguments: "" },
+    // First chunk with role - emit message_start
+    if (!state.messageStarted && delta.role === "assistant") {
+      state.messageStarted = true;
+      events.push({
+        type: "message_start",
+        message: {
+          id: chunk.id,
+          type: "message",
+          role: "assistant",
+          model: chunk.model as Anthropic.Model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            cache_creation: null,
+            inference_geo: null,
+            server_tool_use: null,
+            service_tier: null,
           },
-        ],
+          container: null,
+        },
       });
     }
 
-    if (block.type === "web_search_tool_result") {
-      const content = block.content;
-      if (Array.isArray(content)) {
-        for (const result of content) {
-          this.streamState.annotations.push({
-            type: "url_citation",
-            url_citation: {
-              title: result.title,
-              url: result.url,
-              start_index: 0,
-              end_index: 0,
+    // Tool call deltas
+    if (delta.tool_calls && delta.tool_calls.length) {
+      for (const tc of delta.tool_calls) {
+        if (tc.id && tc.function?.name) {
+          this.transitionBlock(state, events, "tool_use");
+          state.toolCallIndexMap.set(tc.index, state.currentBlockIndex);
+
+          events.push({
+            type: "content_block_start",
+            index: state.currentBlockIndex,
+            content_block: {
+              type: "tool_use",
+              id: tc.id,
+              name: tc.function.name,
+              input: {},
+              caller: { type: "direct" },
+            },
+          });
+
+          if (tc.function.arguments) {
+            events.push({
+              type: "content_block_delta",
+              index: state.currentBlockIndex,
+              delta: {
+                type: "input_json_delta",
+                partial_json: tc.function.arguments,
+              },
+            });
+          }
+        } else if (tc.function?.arguments) {
+          const blockIndex = state.toolCallIndexMap.get(tc.index) ?? state.currentBlockIndex;
+          events.push({
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: {
+              type: "input_json_delta",
+              partial_json: tc.function.arguments,
             },
           });
         }
       }
-      return null;
-    }
-
-    return null;
-  }
-
-  private handleContentBlockDelta(
-    event: Anthropic.RawContentBlockDeltaEvent
-  ): OpenAI.ChatCompletionChunk | null {
-    const delta = event.delta;
-
-    if (delta.type === "text_delta") {
-      return this.makeChunk({ content: delta.text });
-    }
-
-    if (delta.type === "input_json_delta") {
-      const toolIndex = this.streamState.toolCallCounter;
-      return this.makeChunk({
-        content: "",
-        tool_calls: [
-          { index: toolIndex, type: "function", function: { arguments: delta.partial_json } },
-        ],
+    } else if (this.hasReasoning(delta)) {
+      // Reasoning delta -> thinking block
+      if (state.currentBlockType !== "thinking") {
+        this.transitionBlock(state, events, "thinking");
+        events.push({
+          type: "content_block_start",
+          index: state.currentBlockIndex,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        });
+      }
+      events.push({
+        type: "content_block_delta",
+        index: state.currentBlockIndex,
+        delta: { type: "thinking_delta", thinking: this.getReasoning(delta) },
       });
-    }
-
-    if (delta.type === "thinking_delta") {
-      return this.makeChunk({
-        content: "",
-        ...({
-          reasoning: delta.thinking,
-          reasoning_details: [
-            {
-              type: "reasoning.text",
-              text: delta.thinking,
-              format: "anthropic-claude-v1",
-              index: 0,
-            },
-          ],
-        }),
+    } else if (delta.content) {
+      // Text content delta
+      if (state.currentBlockType !== "text") {
+        this.transitionBlock(state, events, "text");
+        events.push({
+          type: "content_block_start",
+          index: state.currentBlockIndex,
+          content_block: { type: "text", text: "", citations: null },
+        });
+      }
+      events.push({
+        type: "content_block_delta",
+        index: state.currentBlockIndex,
+        delta: { type: "text_delta", text: delta.content },
       });
+    } else {
+      // Annotations delta -> web_search_tool_result
+      const annotations = (delta as any).annotations as
+        | OpenAI.ChatCompletionMessage.Annotation[]
+        | undefined;
+      if (annotations && annotations.length > 0) {
+        this.transitionBlock(state, events, "web_search_tool_result");
+        const searchResults = annotations.map(a => ({
+          type: "web_search_result" as const,
+          title: a.url_citation.title,
+          url: a.url_citation.url,
+          encrypted_content: "",
+          page_age: null,
+        }));
+        events.push({
+          type: "content_block_start",
+          index: state.currentBlockIndex,
+          content_block: {
+            type: "web_search_tool_result",
+            content: searchResults,
+            tool_use_id: `websearch_${this.generateId()}`,
+            caller: { type: "direct" },
+          },
+        });
+      }
     }
 
-    if (delta.type === "signature_delta") {
-      return this.makeChunk({
-        content: "",
-        ...({
-          reasoning: null,
-          reasoning_details: [
-            {
-              type: "reasoning.text",
-              signature: delta.signature,
-              format: "anthropic-claude-v1",
-              index: 0,
-            },
-          ],
-        }),
+    // Finish reason - emit stop events
+    if (choice.finish_reason) {
+      if (state.currentBlockType !== null) {
+        events.push({
+          type: "content_block_stop",
+          index: state.currentBlockIndex,
+        });
+      }
+
+      events.push({
+        type: "message_delta",
+        delta: {
+          stop_reason: this.mapFinishReasonToStopReason(choice.finish_reason),
+          stop_sequence: null,
+          container: null,
+        },
+        usage: {
+          output_tokens: 0,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
       });
+
+      events.push({ type: "message_stop" });
     }
 
-    return null;
+    return events;
   }
 
-  private handleContentBlockStop(
-    _event: Anthropic.RawContentBlockStopEvent
-  ): OpenAI.ChatCompletionChunk {
-    return this.makeChunk({ content: "" });
-  }
+  // --- Stream helpers ---
 
-  private handleMessageDelta(event: Anthropic.RawMessageDeltaEvent): OpenAI.ChatCompletionChunk {
-    const state = this.streamState;
-    const usage = event.usage;
-    state.outputTokens = usage.output_tokens;
-    if (usage.input_tokens != null) {
-      state.inputTokens = usage.input_tokens;
-    }
-    state.webSearchRequests = usage.server_tool_use?.web_search_requests ?? state.webSearchRequests;
-
-    const delta: OpenAI.ChatCompletionChunk.Choice.Delta = { content: "" };
-    if (state.annotations.length > 0) {
-      (delta as any).annotations = state.annotations;
-    }
-
-    return this.makeChunk(delta, this.mapStopReasonToFinishReason(event.delta.stop_reason));
-  }
-
-  private handleMessageStop(): OpenAI.ChatCompletionChunk {
-    const state = this.streamState;
-    const usage: OpenAI.CompletionUsage = {
-      prompt_tokens: state.inputTokens,
-      completion_tokens: state.outputTokens,
-      total_tokens: state.inputTokens + state.outputTokens,
-      prompt_tokens_details: {
-        cached_tokens: state.cacheReadTokens,
-        ...({
-          ephemeral_5m_input_tokens: state.ephemeral5mTokens,
-          ephemeral_1h_input_tokens: state.ephemeral1hTokens,
-          web_search: state.webSearchRequests,
-          cache_creation_input_tokens: state.cacheCreationInputTokens,
-        }),
-      },
-      completion_tokens_details: {
-        reasoning_tokens: 0,
-      },
-    };
-
+  private createStreamState(): StreamState {
     return {
-      id: state.id,
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
-      model: state.model,
-      choices: [],
-      usage,
+      messageStarted: false,
+      currentBlockIndex: -1,
+      currentBlockType: null,
+      id: "",
+      model: "",
+      toolCallIndexMap: new Map(),
     };
   }
+
+  private transitionBlock(
+    state: StreamState,
+    events: Anthropic.RawMessageStreamEvent[],
+    newType: BlockType
+  ): void {
+    if (state.currentBlockType !== null) {
+      events.push({ type: "content_block_stop", index: state.currentBlockIndex });
+    }
+    state.currentBlockIndex++;
+    state.currentBlockType = newType;
+  }
+
+  private hasReasoning(delta: Record<string, any>): boolean {
+    return !!delta["reasoning"] || !!delta["reasoning_content"];
+  }
+
+  private getReasoning(delta: Record<string, any>): string {
+    return delta["reasoning"] || delta["reasoning_content"] || "";
+  }
+
+  private mapFinishReasonToStopReason(
+    reason: OpenAI.ChatCompletion.Choice["finish_reason"] | string | undefined
+  ): Anthropic.Message["stop_reason"] {
+    switch (reason) {
+      case "stop":
+        return "end_turn";
+      case "tool_calls":
+      case "function_call":
+        return "tool_use";
+      case "length":
+        return "max_tokens";
+      case "content_filter":
+        return "refusal";
+      default:
+        return "end_turn";
+    }
+  }
+
+  // --- Request conversion helpers ---
 
   private convertUserMessage(messages: OpenAIMessage[], msg: Anthropic.MessageParam): void {
     if (typeof msg.content === "string") {
@@ -705,25 +686,5 @@ export class MessagesToChatCompletionConverter {
     }
     // adaptive
     return "medium";
-  }
-
-  private mapStopReasonToFinishReason(
-    reason: Anthropic.Message["stop_reason"] | Anthropic.StopReason | null | string
-  ): OpenAI.ChatCompletion.Choice["finish_reason"] {
-    switch (reason) {
-      case "end_turn":
-      case "stop_sequence":
-      case "pause_turn":
-        return "stop";
-      case "tool_use":
-        return "tool_calls";
-      case "max_tokens":
-      case "model_context_window_exceeded":
-        return "length";
-      case "refusal":
-        return "content_filter";
-      default:
-        return "stop";
-    }
   }
 }
