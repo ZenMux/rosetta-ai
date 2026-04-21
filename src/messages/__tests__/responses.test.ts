@@ -186,6 +186,17 @@ describe("MessagesToResponsesConverter", () => {
       expect(result.temperature).toBe(0.7);
       expect(result.top_p).toBe(0.9);
     });
+
+    it("maps disable_parallel_tool_use to parallel_tool_calls", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "Hi" }],
+        tool_choice: { type: "auto", disable_parallel_tool_use: true },
+      });
+
+      expect((result as any).parallel_tool_calls).toBe(false);
+    });
   });
 
   describe("convertResponse", () => {
@@ -272,6 +283,60 @@ describe("MessagesToResponsesConverter", () => {
         makeMessage({ stop_reason: "max_tokens" })
       );
       expect(result.status).toBe("incomplete");
+    });
+
+    it("converts web_search_tool_result to output_text annotations", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Search result:", citations: null },
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "ws_1",
+              content: [
+                {
+                  type: "web_search_result",
+                  url: "https://example.com",
+                  title: "Example",
+                  encrypted_content: "",
+                  page_age: null,
+                },
+              ],
+              caller: { type: "direct" },
+            } as any,
+          ],
+        })
+      );
+
+      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
+      expect(msgOutput.content[0].annotations).toEqual([
+        {
+          type: "url_citation",
+          url: "https://example.com",
+          title: "Example",
+          start_index: 0,
+          end_index: 0,
+        },
+      ]);
+    });
+
+    it("includes cache tokens in usage", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: 30,
+            cache_creation: null,
+            inference_geo: null,
+            server_tool_use: null,
+            service_tier: null,
+          },
+        })
+      );
+
+      expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
     });
   });
 
@@ -460,6 +525,79 @@ describe("MessagesToResponsesConverter", () => {
 
       const incomplete = events.find(e => e.type === "response.incomplete") as any;
       expect(incomplete).toBeDefined();
+    });
+
+    it("includes usage in completed event from message_start + message_delta", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.completed") as any;
+
+      expect(completed.response.usage).toBeDefined();
+      expect(completed.response.usage.input_tokens).toBe(10);
+      expect(completed.response.usage.output_tokens).toBe(5);
+      expect(completed.response.usage.total_tokens).toBe(15);
+    });
+
+    it("emits annotation events for web_search_tool_result in stream", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(messageStart());
+
+      const events = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "ws_1",
+          content: [
+            {
+              type: "web_search_result",
+              url: "https://example.com",
+              title: "Example",
+              encrypted_content: "",
+              page_age: null,
+            },
+          ],
+          caller: { type: "direct" },
+        } as any,
+      });
+
+      const annEvent = events.find(
+        e => e.type === "response.output_text.annotation.added"
+      ) as any;
+      expect(annEvent).toBeDefined();
+      expect(annEvent.annotation.url).toBe("https://example.com");
+    });
+
+    it("handles signature_delta without error", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" } as any,
+      });
+
+      const events = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "sig_abc" } as any,
+      });
+
+      // signature_delta is Anthropic-internal, should not produce events
+      expect(events.length).toBe(0);
     });
   });
 });
