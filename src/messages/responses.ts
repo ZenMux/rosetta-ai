@@ -7,15 +7,13 @@ type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 interface StreamState {
   id: string;
   model: string;
-  created: number;
-  seq: number;
-  outputIndex: number;
-  messageStarted: boolean;
-  stopReason: Anthropic.StopReason | null;
+  currentBlockIndex: number;
+  currentBlockType: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   webSearchCount: number;
+  stopReason: Anthropic.StopReason | null;
 }
 
 export class MessagesToResponsesConverter {
@@ -25,7 +23,7 @@ export class MessagesToResponsesConverter {
     this.streamState = this.createStreamState();
   }
 
-  // --- Request conversion ---
+  // --- Request conversion (Messages → Responses, forward) ---
 
   convertRequest(
     params: Anthropic.MessageCreateParams,
@@ -85,148 +83,100 @@ export class MessagesToResponsesConverter {
     return result;
   }
 
-  // --- Response conversion ---
+  // --- Response conversion (Responses → Messages, backward) ---
 
-  convertResponse(message: Anthropic.Message): RespResponse {
-    const output: OpenAI.Responses.ResponseOutputItem[] = [];
-    let hasThinking = false;
+  convertResponse(response: RespResponse): Anthropic.Message {
+    const content: Anthropic.ContentBlock[] = [];
+    let webSearchCount = 0;
 
-    // Reasoning (thinking blocks)
-    for (const block of message.content) {
-      if (block.type === "thinking") {
-        if (!hasThinking) {
-          hasThinking = true;
-          output.push({
-            type: "reasoning",
-            id: `rs_${this.generateId()}`,
-            summary: [{ type: "summary_text", text: block.thinking }],
-          });
-        }
+    for (const item of response.output) {
+      if (item.type === "reasoning") {
+        const ri = item as OpenAI.Responses.ResponseReasoningItem;
+        const summaryText = ri.summary
+          ?.map(s => s.text)
+          .join("") ?? "";
+        content.push({
+          type: "thinking",
+          thinking: summaryText,
+          signature: "",
+        });
+      } else if (item.type === "web_search_call") {
+        webSearchCount++;
       }
     }
 
-    // Tool calls (tool_use / server_tool_use)
-    for (const block of message.content) {
-      if (block.type === "tool_use" || block.type === "server_tool_use") {
-        output.push({
-          type: "function_call",
-          id: `fc_${this.generateId()}`,
-          call_id: block.id,
-          name: block.name,
-          arguments: JSON.stringify(block.input),
-          status: "completed",
+    // Tool calls (function_call items)
+    for (const item of response.output) {
+      if (item.type === "function_call") {
+        const fc = item as OpenAI.Responses.ResponseFunctionToolCall;
+        let parsedInput: Record<string, unknown>;
+        try {
+          parsedInput = JSON.parse(fc.arguments);
+        } catch {
+          parsedInput = {};
+        }
+        content.push({
+          type: "tool_use",
+          id: fc.call_id,
+          name: fc.name,
+          input: parsedInput,
+          caller: { type: "direct" },
         });
       }
     }
 
-    // Message (text blocks) + web_search_tool_result annotations
-    const textParts: string[] = [];
-    const annotations: any[] = [];
-    let refusal: string | null = null;
-    let webSearchCount = 0;
-
-    for (const block of message.content) {
-      if (block.type === "text") {
-        textParts.push(block.text);
-        if (block.citations) {
-          for (const c of block.citations) {
-            if ("url" in c) {
-              annotations.push({
-                type: "url_citation",
-                url: c.url,
-                title: c.title ?? "",
-                start_index: (c as any).start_index ?? 0,
-                end_index: (c as any).end_index ?? 0,
-              });
-            }
-          }
-        }
-      } else if (block.type === "web_search_tool_result") {
-        webSearchCount++;
-        const content = block.content;
-        if (Array.isArray(content)) {
-          for (const result of content) {
-            annotations.push({
-              type: "url_citation",
-              url: result.url,
-              title: result.title,
-              start_index: 0,
-              end_index: 0,
+    // Text / refusal from message items + web search annotations
+    for (const item of response.output) {
+      if (item.type === "message") {
+        const msg = item as OpenAI.Responses.ResponseOutputMessage;
+        for (const part of msg.content) {
+          if (part.type === "output_text") {
+            content.push({
+              type: "text",
+              text: part.text,
+              citations: null,
             });
           }
         }
       }
     }
 
-    if (textParts.length > 0 || refusal) {
-      const content: any[] = [];
-      if (refusal) {
-        content.push({ type: "refusal", refusal });
-      } else {
-        content.push({
-          type: "output_text",
-          text: textParts.join(""),
-          annotations,
-        });
-      }
-      output.push({
-        type: "message",
-        id: `msg_${this.generateId()}`,
-        role: "assistant",
-        status: this.stopReasonToMessageStatus(message.stop_reason),
-        content,
-      });
+    if (content.length === 0) {
+      content.push({ type: "text", text: "", citations: null });
     }
 
-    const status = this.stopReasonToStatus(message.stop_reason);
+    const stopReason = this.statusToStopReason(response.status, response.output);
+    const usage = response.usage;
 
     return {
-      id: message.id,
-      object: "response",
-      created_at: Math.floor(Date.now() / 1000),
-      model: message.model as string,
-      output,
-      status,
-      error: null,
-      incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
-      instructions: null,
-      metadata: {},
-      temperature: null,
-      top_p: null,
-      max_output_tokens: null,
-      previous_response_id: null,
-      parallel_tool_calls: true,
-      tool_choice: "auto",
-      tools: [],
-      text: { format: { type: "text" } },
-      reasoning: null,
-      truncation: null,
-      user: undefined,
-      usage: this.convertUsage(message.usage, webSearchCount),
-    } as unknown as RespResponse;
-  }
-
-  private convertUsage(
-    usage: Anthropic.Usage,
-    webSearchCount = 0,
-  ): OpenAI.Responses.ResponseUsage {
-    return {
-      input_tokens: usage.input_tokens,
-      output_tokens: usage.output_tokens,
-      total_tokens: usage.input_tokens + usage.output_tokens,
-      input_tokens_details: {
-        cached_tokens: usage.cache_read_input_tokens ?? 0,
+      id: response.id,
+      type: "message",
+      role: "assistant",
+      model: response.model as Anthropic.Model,
+      content,
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage: {
+        input_tokens: usage?.input_tokens ?? 0,
+        output_tokens: usage?.output_tokens ?? 0,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
+        cache_creation: null,
+        inference_geo: null,
+        server_tool_use: webSearchCount > 0
+          ? { web_search_requests: webSearchCount, web_fetch_requests: 0 } as any
+          : null,
+        service_tier: null,
       },
-      output_tokens_details: { reasoning_tokens: 0 },
-      ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
+      container: null,
     };
   }
 
-  // --- Stream conversion ---
+  // --- Stream conversion (Responses → Messages, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<Anthropic.RawMessageStreamEvent>,
-  ): AsyncIterable<RespStreamEvent> {
+    stream: AsyncIterable<RespStreamEvent>,
+  ): AsyncIterable<Anthropic.RawMessageStreamEvent> {
     for await (const event of stream) {
       const events = this.convertStreamEvent(event);
       for (const e of events) {
@@ -236,186 +186,181 @@ export class MessagesToResponsesConverter {
   }
 
   convertStreamEvent(
-    event: Anthropic.RawMessageStreamEvent,
-  ): RespStreamEvent[] {
+    event: RespStreamEvent,
+  ): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
-    const events: RespStreamEvent[] = [];
+    const events: Anthropic.RawMessageStreamEvent[] = [];
 
     switch (event.type) {
-      case "message_start": {
-        const msg = event.message;
-        state.id = msg.id;
-        state.model = msg.model;
-        state.created = Math.floor(Date.now() / 1000);
+      case "response.created": {
+        const resp = (event as OpenAI.Responses.ResponseCreatedEvent).response;
+        state.id = resp.id;
+        state.model = resp.model as string;
 
-        const usage = msg.usage;
-        state.inputTokens = usage.input_tokens;
-        state.cacheReadTokens = usage.cache_read_input_tokens ?? 0;
-
-        const skeleton = this.makeSkeletonResponse();
         events.push({
-          type: "response.created",
-          response: skeleton,
-          sequence_number: state.seq++,
-        } as unknown as RespStreamEvent);
-        events.push({
-          type: "response.in_progress",
-          response: skeleton,
-          sequence_number: state.seq++,
-        } as unknown as RespStreamEvent);
-        break;
-      }
-
-      case "content_block_start": {
-        const block = event.content_block;
-        if (block.type === "text") {
-          if (!state.messageStarted) {
-            state.messageStarted = true;
-            events.push({
-              type: "response.output_item.added",
-              item: {
-                type: "message",
-                id: `msg_${this.generateId()}`,
-                role: "assistant",
-                status: "in_progress",
-                content: [],
-              },
-              output_index: state.outputIndex,
-              sequence_number: state.seq++,
-            } as unknown as RespStreamEvent);
-            events.push({
-              type: "response.content_part.added",
-              item_id: `msg_${this.generateId()}`,
-              output_index: state.outputIndex,
-              content_index: 0,
-              part: { type: "output_text", text: "", annotations: [] },
-              sequence_number: state.seq++,
-            } as unknown as RespStreamEvent);
-          }
-        } else if (block.type === "tool_use" || block.type === "server_tool_use") {
-          state.outputIndex++;
-          events.push({
-            type: "response.output_item.added",
-            item: {
-              type: "function_call",
-              id: `fc_${this.generateId()}`,
-              call_id: block.id,
-              name: block.name,
-              arguments: "",
-              status: "in_progress",
+          type: "message_start",
+          message: {
+            id: state.id,
+            type: "message",
+            role: "assistant",
+            model: state.model as Anthropic.Model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+              cache_creation: null,
+              inference_geo: null,
+              server_tool_use: null,
+              service_tier: null,
             },
-            output_index: state.outputIndex,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else if (block.type === "thinking") {
-          events.push({
-            type: "response.output_item.added",
-            item: {
-              type: "reasoning",
-              id: `rs_${this.generateId()}`,
-              summary: [],
-            },
-            output_index: state.outputIndex,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else if (block.type === "web_search_tool_result") {
-          state.webSearchCount++;
-          const content = block.content;
-          if (Array.isArray(content)) {
-            for (const result of content) {
-              events.push({
-                type: "response.output_text.annotation.added",
-                annotation: {
-                  type: "url_citation",
-                  url: result.url,
-                  title: result.title,
-                  start_index: 0,
-                  end_index: 0,
-                },
-              } as unknown as RespStreamEvent);
-            }
-          }
-        }
-        break;
-      }
-
-      case "content_block_delta": {
-        const delta = event.delta;
-        if (delta.type === "text_delta") {
-          events.push({
-            type: "response.output_text.delta",
-            item_id: `msg_${this.generateId()}`,
-            output_index: state.messageStarted ? 0 : state.outputIndex,
-            content_index: 0,
-            delta: delta.text,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else if (delta.type === "input_json_delta") {
-          events.push({
-            type: "response.function_call_arguments.delta",
-            item_id: `fc_${this.generateId()}`,
-            output_index: state.outputIndex,
-            delta: delta.partial_json,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else if (delta.type === "thinking_delta") {
-          events.push({
-            type: "response.reasoning_summary_text.delta",
-            item_id: `rs_${this.generateId()}`,
-            output_index: state.outputIndex,
-            summary_index: 0,
-            delta: delta.thinking,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else if (delta.type === "signature_delta") {
-          // Signature is Anthropic-internal; no direct Responses equivalent, skip
-        }
-        break;
-      }
-
-      case "content_block_stop":
-        break;
-
-      case "message_delta": {
-        state.stopReason = event.delta.stop_reason;
-        const usage = event.usage;
-        state.outputTokens = usage.output_tokens;
-        if (usage.input_tokens != null) {
-          state.inputTokens = usage.input_tokens;
-        }
-        if (usage.server_tool_use?.web_search_requests) {
-          state.webSearchCount = usage.server_tool_use.web_search_requests;
-        }
-        break;
-      }
-
-      case "message_stop": {
-        const resp = this.makeSkeletonResponse();
-        const finalStatus = this.stopReasonToStatus(state.stopReason);
-        resp.status = finalStatus;
-        resp.usage = {
-          input_tokens: state.inputTokens,
-          output_tokens: state.outputTokens,
-          total_tokens: state.inputTokens + state.outputTokens,
-          input_tokens_details: {
-            cached_tokens: state.cacheReadTokens,
+            container: null,
           },
-          output_tokens_details: { reasoning_tokens: 0 },
-        } as OpenAI.Responses.ResponseUsage;
+        });
+        break;
+      }
 
-        if (finalStatus === "incomplete") {
+      case "response.output_item.added": {
+        const addedEvent = event as OpenAI.Responses.ResponseOutputItemAddedEvent;
+        const item = addedEvent.item;
+
+        if (item.type === "reasoning") {
+          state.currentBlockIndex++;
+          state.currentBlockType = "thinking";
           events.push({
-            type: "response.incomplete",
-            response: resp,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
-        } else {
+            type: "content_block_start",
+            index: state.currentBlockIndex,
+            content_block: { type: "thinking", thinking: "", signature: "" },
+          });
+        } else if (item.type === "function_call") {
+          state.currentBlockIndex++;
+          state.currentBlockType = "tool_use";
+          const fc = item as OpenAI.Responses.ResponseFunctionToolCall;
           events.push({
-            type: "response.completed",
-            response: resp,
-            sequence_number: state.seq++,
-          } as unknown as RespStreamEvent);
+            type: "content_block_start",
+            index: state.currentBlockIndex,
+            content_block: {
+              type: "tool_use",
+              id: fc.call_id,
+              name: fc.name,
+              input: {},
+              caller: { type: "direct" },
+            },
+          });
+        } else if (item.type === "message") {
+          state.currentBlockIndex++;
+          state.currentBlockType = "text";
+          events.push({
+            type: "content_block_start",
+            index: state.currentBlockIndex,
+            content_block: { type: "text", text: "", citations: null },
+          });
         }
+        break;
+      }
+
+      case "response.reasoning_summary_text.delta": {
+        const reasoningEvent = event as any;
+        events.push({
+          type: "content_block_delta",
+          index: state.currentBlockType === "thinking" ? state.currentBlockIndex : 0,
+          delta: { type: "thinking_delta", thinking: reasoningEvent.delta } as any,
+        });
+        break;
+      }
+
+      case "response.output_text.delta": {
+        const textEvent = event as OpenAI.Responses.ResponseTextDeltaEvent;
+        events.push({
+          type: "content_block_delta",
+          index: state.currentBlockIndex,
+          delta: { type: "text_delta", text: textEvent.delta },
+        });
+        break;
+      }
+
+      case "response.function_call_arguments.delta": {
+        const fcEvent = event as OpenAI.Responses.ResponseFunctionCallArgumentsDeltaEvent;
+        events.push({
+          type: "content_block_delta",
+          index: state.currentBlockIndex,
+          delta: { type: "input_json_delta", partial_json: fcEvent.delta },
+        });
+        break;
+      }
+
+      case "response.output_item.done": {
+        events.push({
+          type: "content_block_stop",
+          index: state.currentBlockIndex,
+        });
+        break;
+      }
+
+      case "response.web_search_call.completed": {
+        state.webSearchCount++;
+        break;
+      }
+
+      case "response.completed": {
+        const completedEvent = event as OpenAI.Responses.ResponseCompletedEvent;
+        const resp = completedEvent.response;
+        const usage = resp.usage;
+        const stopReason = this.statusToStopReason(resp.status, resp.output);
+
+        events.push({
+          type: "message_delta",
+          delta: { stop_reason: stopReason, stop_sequence: null, container: null },
+          usage: {
+            output_tokens: usage?.output_tokens ?? 0,
+            input_tokens: usage?.input_tokens ?? null,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
+            server_tool_use: state.webSearchCount > 0
+              ? { web_search_requests: state.webSearchCount } as any
+              : null,
+          },
+        });
+        events.push({ type: "message_stop" });
+        break;
+      }
+
+      case "response.incomplete": {
+        const incompleteEvent = event as OpenAI.Responses.ResponseIncompleteEvent;
+        const resp = incompleteEvent.response;
+        const usage = resp.usage;
+
+        events.push({
+          type: "message_delta",
+          delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+          usage: {
+            output_tokens: usage?.output_tokens ?? 0,
+            input_tokens: usage?.input_tokens ?? null,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: null,
+          },
+        });
+        events.push({ type: "message_stop" });
+        break;
+      }
+
+      case "response.failed": {
+        events.push({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          usage: {
+            output_tokens: 0,
+            input_tokens: null,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: null,
+          },
+        });
+        events.push({ type: "message_stop" });
         break;
       }
     }
@@ -423,7 +368,7 @@ export class MessagesToResponsesConverter {
     return events;
   }
 
-  // --- Private helpers ---
+  // --- Private: request helpers ---
 
   private convertMessages(
     messages: Anthropic.MessageParam[],
@@ -574,73 +519,41 @@ export class MessagesToResponsesConverter {
     return { effort: "medium" };
   }
 
-  private stopReasonToStatus(
-    reason: Anthropic.StopReason | null,
-  ): RespResponse["status"] {
-    switch (reason) {
-      case "end_turn":
-      case "stop_sequence":
-      case "tool_use":
-        return "completed";
-      case "max_tokens":
-        return "incomplete";
-      case "refusal":
-        return "failed";
+  // --- Private: response helpers ---
+
+  private statusToStopReason(
+    status: RespResponse["status"],
+    output?: OpenAI.Responses.ResponseOutputItem[],
+  ): Anthropic.StopReason {
+    if (output) {
+      const hasToolCall = output.some(item => item.type === "function_call");
+      if (hasToolCall) return "tool_use";
+    }
+    switch (status) {
+      case "completed":
+        return "end_turn";
+      case "incomplete":
+        return "max_tokens";
+      case "failed":
+        return "end_turn";
       default:
-        return "completed";
+        return "end_turn";
     }
   }
 
-  private stopReasonToMessageStatus(
-    reason: Anthropic.StopReason | null,
-  ): "completed" | "incomplete" {
-    if (reason === "max_tokens") return "incomplete";
-    return "completed";
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15);
-  }
+  // --- Private: stream helpers ---
 
   private createStreamState(): StreamState {
     return {
       id: "",
       model: "",
-      created: 0,
-      seq: 0,
-      outputIndex: 0,
-      messageStarted: false,
-      stopReason: null,
+      currentBlockIndex: -1,
+      currentBlockType: null,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       webSearchCount: 0,
+      stopReason: null,
     };
-  }
-
-  private makeSkeletonResponse(): RespResponse {
-    return {
-      id: this.streamState.id,
-      object: "response",
-      created_at: this.streamState.created,
-      model: this.streamState.model,
-      output: [],
-      status: "in_progress",
-      error: null,
-      incomplete_details: null,
-      instructions: null,
-      metadata: {},
-      temperature: null,
-      top_p: null,
-      max_output_tokens: null,
-      previous_response_id: null,
-      parallel_tool_calls: true,
-      tool_choice: "auto",
-      tools: [],
-      text: { format: { type: "text" } },
-      reasoning: null,
-      truncation: null,
-      user: undefined,
-    } as unknown as RespResponse;
   }
 }

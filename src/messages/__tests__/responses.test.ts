@@ -199,405 +199,436 @@ describe("MessagesToResponsesConverter", () => {
     });
   });
 
+  // ===== convertResponse (Responses → Messages, backward) =====
+
   describe("convertResponse", () => {
-    function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Message {
+    function makeResponse(
+      overrides: Partial<OpenAI.Responses.Response> = {}
+    ): OpenAI.Responses.Response {
       return {
-        id: "msg_123",
-        type: "message",
-        role: "assistant",
+        id: "resp_123",
+        object: "response",
+        created_at: 1700000000,
         model: "claude-sonnet-4-20250514",
-        content: [{ type: "text", text: "Hello!", citations: null }],
-        stop_reason: "end_turn",
-        stop_sequence: null,
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: "Hello!",
+                annotations: [],
+                logprobs: null as any,
+              },
+            ],
+          } as any,
+        ],
+        status: "completed",
         usage: {
           input_tokens: 10,
           output_tokens: 5,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          cache_creation: null,
-          inference_geo: null,
-          server_tool_use: null,
-          service_tier: null,
+          total_tokens: 15,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
         },
-        container: null,
+        error: null,
+        incomplete_details: null,
+        instructions: null,
+        metadata: {},
+        temperature: null,
+        top_p: null,
+        max_output_tokens: null,
+        previous_response_id: null,
+        parallel_tool_calls: true,
+        tool_choice: "auto",
+        tools: [],
+        text: { format: { type: "text" } },
+        reasoning: null,
+        truncation: null as any,
+        user: undefined as any,
         ...overrides,
-      };
+      } as OpenAI.Responses.Response;
     }
 
     it("converts a basic text response", () => {
-      const result = converter.convertResponse(makeMessage());
+      const result = converter.convertResponse(makeResponse());
 
-      expect(result.id).toBe("msg_123");
+      expect(result.id).toBe("resp_123");
       expect(result.model).toBe("claude-sonnet-4-20250514");
-      expect(result.object).toBe("response");
-      expect(result.status).toBe("completed");
-      expect(result.usage?.input_tokens).toBe(10);
-      expect(result.usage?.output_tokens).toBe(5);
+      expect(result.type).toBe("message");
+      expect(result.role).toBe("assistant");
+      expect(result.stop_reason).toBe("end_turn");
+      expect(result.usage.input_tokens).toBe(10);
+      expect(result.usage.output_tokens).toBe(5);
 
-      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
-      expect(msgOutput).toBeDefined();
-      expect(msgOutput.content[0].text).toBe("Hello!");
+      const textBlock = result.content.find((b: any) => b.type === "text") as any;
+      expect(textBlock).toBeDefined();
+      expect(textBlock.text).toBe("Hello!");
     });
 
-    it("converts tool_use to function_call output items", () => {
+    it("converts function_call to tool_use", () => {
       const result = converter.convertResponse(
-        makeMessage({
-          content: [
+        makeResponse({
+          output: [
             {
-              type: "tool_use",
-              id: "toolu_1",
+              type: "function_call",
+              id: "fc_1",
+              call_id: "call_1",
               name: "get_weather",
-              input: { city: "SF" },
-              caller: { type: "direct" },
-            },
+              arguments: '{"city":"SF"}',
+              status: "completed",
+            } as any,
           ],
-          stop_reason: "tool_use",
+          status: "completed",
         })
       );
 
-      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
-      expect(fcOutput).toBeDefined();
-      expect(fcOutput.name).toBe("get_weather");
-      expect(fcOutput.call_id).toBe("toolu_1");
-      expect(fcOutput.arguments).toBe('{"city":"SF"}');
-      expect(result.status).toBe("completed");
+      const toolBlock = result.content.find((b: any) => b.type === "tool_use") as any;
+      expect(toolBlock).toBeDefined();
+      expect(toolBlock.name).toBe("get_weather");
+      expect(toolBlock.id).toBe("call_1");
+      expect(toolBlock.input).toEqual({ city: "SF" });
+      expect(result.stop_reason).toBe("tool_use");
     });
 
-    it("converts thinking to reasoning output item", () => {
+    it("converts reasoning to thinking block", () => {
       const result = converter.convertResponse(
-        makeMessage({
-          content: [
-            { type: "thinking", thinking: "Let me think...", signature: "sig" } as any,
-            { type: "text", text: "42", citations: null },
-          ],
-        })
-      );
-
-      const reasoning = result.output.find((o: any) => o.type === "reasoning") as any;
-      expect(reasoning).toBeDefined();
-      expect(reasoning.summary[0].text).toBe("Let me think...");
-    });
-
-    it("maps max_tokens to incomplete status", () => {
-      const result = converter.convertResponse(
-        makeMessage({ stop_reason: "max_tokens" })
-      );
-      expect(result.status).toBe("incomplete");
-    });
-
-    it("converts web_search_tool_result to output_text annotations", () => {
-      const result = converter.convertResponse(
-        makeMessage({
-          content: [
-            { type: "text", text: "Search result:", citations: null },
+        makeResponse({
+          output: [
             {
-              type: "web_search_tool_result",
-              tool_use_id: "ws_1",
-              content: [
-                {
-                  type: "web_search_result",
-                  url: "https://example.com",
-                  title: "Example",
-                  encrypted_content: "",
-                  page_age: null,
-                },
-              ],
-              caller: { type: "direct" },
+              type: "reasoning",
+              id: "r_1",
+              summary: [{ type: "summary_text", text: "Let me think..." }],
+            } as any,
+            {
+              type: "message",
+              id: "msg_1",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "42", annotations: [], logprobs: null }],
             } as any,
           ],
         })
       );
 
-      const msgOutput = result.output.find((o: any) => o.type === "message") as any;
-      expect(msgOutput.content[0].annotations).toEqual([
-        {
-          type: "url_citation",
-          url: "https://example.com",
-          title: "Example",
-          start_index: 0,
-          end_index: 0,
-        },
-      ]);
+      const thinkingBlock = result.content.find((b: any) => b.type === "thinking") as any;
+      expect(thinkingBlock).toBeDefined();
+      expect(thinkingBlock.thinking).toBe("Let me think...");
+
+      const textBlock = result.content.find((b: any) => b.type === "text") as any;
+      expect(textBlock.text).toBe("42");
+    });
+
+    it("maps incomplete status to max_tokens", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+        })
+      );
+      expect(result.stop_reason).toBe("max_tokens");
     });
 
     it("includes cache tokens in usage", () => {
       const result = converter.convertResponse(
-        makeMessage({
+        makeResponse({
           usage: {
             input_tokens: 100,
             output_tokens: 50,
-            cache_creation_input_tokens: null,
-            cache_read_input_tokens: 30,
-            cache_creation: null,
-            inference_geo: null,
-            server_tool_use: null,
-            service_tier: null,
+            total_tokens: 150,
+            input_tokens_details: { cached_tokens: 30 },
+            output_tokens_details: { reasoning_tokens: 0 },
           },
         })
       );
 
-      expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
+      expect(result.usage.input_tokens).toBe(100);
+      expect(result.usage.output_tokens).toBe(50);
+      expect(result.usage.cache_read_input_tokens).toBe(30);
+    });
+
+    it("converts empty output to empty text content", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          output: [],
+        })
+      );
+
+      expect(result.content.length).toBe(1);
+      expect(result.content[0].type).toBe("text");
+      expect((result.content[0] as any).text).toBe("");
     });
   });
 
-  describe("convertStreamEvent", () => {
-    const baseUsage: Anthropic.Usage = {
-      input_tokens: 10,
-      output_tokens: 0,
-      cache_creation_input_tokens: null,
-      cache_read_input_tokens: null,
-      cache_creation: null,
-      inference_geo: null,
-      server_tool_use: null,
-      service_tier: null,
-    };
+  // ===== convertStreamEvent (Responses → Messages, backward) =====
 
-    function messageStart(): Anthropic.RawMessageStartEvent {
+  describe("convertStreamEvent", () => {
+    function responseCreated(): OpenAI.Responses.ResponseStreamEvent {
       return {
-        type: "message_start",
-        message: {
-          id: "msg_123",
-          type: "message",
-          role: "assistant",
+        type: "response.created",
+        response: {
+          id: "resp_123",
           model: "claude-sonnet-4-20250514",
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: baseUsage,
-          container: null,
-        },
+          created_at: 1700000000,
+          output: [],
+          status: "in_progress",
+        } as any,
+        sequence_number: 0,
       };
     }
 
-    it("emits response.created + response.in_progress on message_start", () => {
+    it("emits message_start on response.created", () => {
       const c = new MessagesToResponsesConverter();
-      const events = c.convertStreamEvent(messageStart());
-      const types = events.map(e => e.type);
+      const events = c.convertStreamEvent(responseCreated());
 
-      expect(types).toContain("response.created");
-      expect(types).toContain("response.in_progress");
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("message_start");
+      const msg = (events[0] as Anthropic.RawMessageStartEvent).message;
+      expect(msg.id).toBe("resp_123");
+      expect(msg.model).toBe("claude-sonnet-4-20250514");
     });
 
-    it("emits output_item.added + content_part.added on text content_block_start", () => {
+    it("emits content_block_start for text message output item", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
 
       const events = c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "text", text: "", citations: null },
-      });
+        type: "response.output_item.added",
+        item: {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          status: "in_progress",
+          content: [],
+        },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
-      expect(events.find(e => e.type === "response.output_item.added")).toBeDefined();
-      expect(events.find(e => e.type === "response.content_part.added")).toBeDefined();
+      const startEvent = events.find(e => e.type === "content_block_start") as any;
+      expect(startEvent).toBeDefined();
+      expect(startEvent.content_block.type).toBe("text");
     });
 
-    it("emits output_text.delta on text_delta", () => {
+    it("emits text_delta on response.output_text.delta", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
       c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "text", text: "", citations: null },
-      });
+        type: "response.output_item.added",
+        item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
       const events = c.convertStreamEvent({
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "text_delta", text: "Hello" },
-      });
+        type: "response.output_text.delta",
+        delta: "Hello",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        sequence_number: 2,
+      } as any);
 
-      const textDelta = events.find(e => e.type === "response.output_text.delta") as any;
+      const textDelta = events.find(e => e.type === "content_block_delta") as any;
       expect(textDelta).toBeDefined();
-      expect(textDelta.delta).toBe("Hello");
+      expect(textDelta.delta.type).toBe("text_delta");
+      expect(textDelta.delta.text).toBe("Hello");
     });
 
-    it("emits output_item.added for tool_use", () => {
+    it("emits content_block_start for function_call (tool_use)", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
 
       const events = c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: {
-          type: "tool_use",
-          id: "toolu_1",
+        type: "response.output_item.added",
+        item: {
+          type: "function_call",
+          id: "fc_1",
+          call_id: "toolu_1",
           name: "get_weather",
-          input: {},
-          caller: { type: "direct" },
+          arguments: "",
+          status: "in_progress",
         },
-      });
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
-      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
-      expect(itemAdded).toBeDefined();
-      expect(itemAdded.item.type).toBe("function_call");
-      expect(itemAdded.item.name).toBe("get_weather");
+      const startEvent = events.find(e => e.type === "content_block_start") as any;
+      expect(startEvent).toBeDefined();
+      expect(startEvent.content_block.type).toBe("tool_use");
+      expect(startEvent.content_block.name).toBe("get_weather");
+      expect(startEvent.content_block.id).toBe("toolu_1");
     });
 
-    it("emits function_call_arguments.delta on input_json_delta", () => {
+    it("emits input_json_delta on response.function_call_arguments.delta", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
       c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: {
-          type: "tool_use",
-          id: "toolu_1",
-          name: "fn",
-          input: {},
-          caller: { type: "direct" },
-        },
-      });
+        type: "response.output_item.added",
+        item: { type: "function_call", id: "fc_1", call_id: "toolu_1", name: "fn", arguments: "", status: "in_progress" },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
       const events = c.convertStreamEvent({
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "input_json_delta", partial_json: '{"x' },
-      });
+        type: "response.function_call_arguments.delta",
+        delta: '{"city',
+        item_id: "fc_1",
+        output_index: 0,
+        sequence_number: 2,
+      } as any);
 
-      const argsDelta = events.find(
-        e => e.type === "response.function_call_arguments.delta"
-      ) as any;
+      const argsDelta = events.find(e => e.type === "content_block_delta") as any;
       expect(argsDelta).toBeDefined();
-      expect(argsDelta.delta).toBe('{"x');
+      expect(argsDelta.delta.type).toBe("input_json_delta");
+      expect(argsDelta.delta.partial_json).toBe('{"city');
     });
 
-    it("emits reasoning_summary_text.delta on thinking_delta", () => {
+    it("emits thinking events for reasoning", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
       c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "thinking", thinking: "", signature: "" } as any,
-      });
+        type: "response.output_item.added",
+        item: { type: "reasoning", id: "rs_1", summary: [] },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
 
       const events = c.convertStreamEvent({
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "thinking_delta", thinking: "Hmm..." } as any,
-      });
+        type: "response.reasoning_summary_text.delta",
+        delta: "Hmm...",
+        item_id: "rs_1",
+        output_index: 0,
+        summary_index: 0,
+        sequence_number: 2,
+      } as any);
 
-      const reasoningDelta = events.find(
-        e => e.type === "response.reasoning_summary_text.delta"
-      ) as any;
-      expect(reasoningDelta).toBeDefined();
-      expect(reasoningDelta.delta).toBe("Hmm...");
+      const thinkingDelta = events.find(e => e.type === "content_block_delta") as any;
+      expect(thinkingDelta).toBeDefined();
+      expect(thinkingDelta.delta.type).toBe("thinking_delta");
+      expect(thinkingDelta.delta.thinking).toBe("Hmm...");
     });
 
-    it("emits response.completed on message_stop", () => {
+    it("emits content_block_start for reasoning output item", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
-      c.convertStreamEvent({
-        type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
-        usage: {
-          output_tokens: 5,
-          input_tokens: null,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          server_tool_use: null,
-        },
-      });
-
-      const events = c.convertStreamEvent({ type: "message_stop" });
-
-      const completed = events.find(e => e.type === "response.completed") as any;
-      expect(completed).toBeDefined();
-      expect(completed.response.status).toBe("completed");
-    });
-
-    it("emits response.incomplete on max_tokens stop", () => {
-      const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
-      c.convertStreamEvent({
-        type: "message_delta",
-        delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
-        usage: {
-          output_tokens: 5,
-          input_tokens: null,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          server_tool_use: null,
-        },
-      });
-
-      const events = c.convertStreamEvent({ type: "message_stop" });
-
-      const incomplete = events.find(e => e.type === "response.incomplete") as any;
-      expect(incomplete).toBeDefined();
-    });
-
-    it("includes usage in completed event from message_start + message_delta", () => {
-      const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
-      c.convertStreamEvent({
-        type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
-        usage: {
-          output_tokens: 5,
-          input_tokens: null,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          server_tool_use: null,
-        },
-      });
-
-      const events = c.convertStreamEvent({ type: "message_stop" });
-      const completed = events.find(e => e.type === "response.completed") as any;
-
-      expect(completed.response.usage).toBeDefined();
-      expect(completed.response.usage.input_tokens).toBe(10);
-      expect(completed.response.usage.output_tokens).toBe(5);
-      expect(completed.response.usage.total_tokens).toBe(15);
-    });
-
-    it("emits annotation events for web_search_tool_result in stream", () => {
-      const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
+      c.convertStreamEvent(responseCreated());
 
       const events = c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: {
-          type: "web_search_tool_result",
-          tool_use_id: "ws_1",
-          content: [
-            {
-              type: "web_search_result",
-              url: "https://example.com",
-              title: "Example",
-              encrypted_content: "",
-              page_age: null,
-            },
-          ],
-          caller: { type: "direct" },
+        type: "response.output_item.added",
+        item: { type: "reasoning", id: "rs_1", summary: [] },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
+
+      const startEvent = events.find(e => e.type === "content_block_start") as any;
+      expect(startEvent).toBeDefined();
+      expect(startEvent.content_block.type).toBe("thinking");
+    });
+
+    it("emits message_delta + message_stop on response.completed", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+
+      const events = c.convertStreamEvent({
+        type: "response.completed",
+        response: {
+          id: "resp_123",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
         } as any,
+        sequence_number: 10,
       });
 
-      const annEvent = events.find(
-        e => e.type === "response.output_text.annotation.added"
-      ) as any;
-      expect(annEvent).toBeDefined();
-      expect(annEvent.annotation.url).toBe("https://example.com");
+      const types = events.map(e => e.type);
+      expect(types).toContain("message_delta");
+      expect(types).toContain("message_stop");
+
+      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.delta.stop_reason).toBe("end_turn");
     });
 
-    it("handles signature_delta without error", () => {
+    it("emits max_tokens stop_reason on response.incomplete", () => {
       const c = new MessagesToResponsesConverter();
-      c.convertStreamEvent(messageStart());
-      c.convertStreamEvent({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "thinking", thinking: "", signature: "" } as any,
-      });
+      c.convertStreamEvent(responseCreated());
 
       const events = c.convertStreamEvent({
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "signature_delta", signature: "sig_abc" } as any,
+        type: "response.incomplete",
+        response: {
+          id: "resp_123",
+          status: "incomplete",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        } as any,
+        sequence_number: 10,
       });
 
-      // signature_delta is Anthropic-internal, should not produce events
-      expect(events.length).toBe(0);
+      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.delta.stop_reason).toBe("max_tokens");
+      expect(events.find(e => e.type === "message_stop")).toBeDefined();
+    });
+
+    it("emits end_turn on response.failed", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+
+      const events = c.convertStreamEvent({
+        type: "response.failed",
+        response: { id: "resp_123", status: "failed", output: [] } as any,
+        sequence_number: 10,
+      });
+
+      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.delta.stop_reason).toBe("end_turn");
+    });
+
+    it("includes usage in completed event", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+
+      const events = c.convertStreamEvent({
+        type: "response.completed",
+        response: {
+          id: "resp_123",
+          status: "completed",
+          output: [],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            input_tokens_details: { cached_tokens: 3 },
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        } as any,
+        sequence_number: 10,
+      });
+
+      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.usage.output_tokens).toBe(5);
+    });
+
+    it("emits tool_use stop_reason when function_call is in output", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+
+      const events = c.convertStreamEvent({
+        type: "response.completed",
+        response: {
+          id: "resp_123",
+          status: "completed",
+          output: [
+            { type: "function_call", id: "fc_1", call_id: "toolu_1", name: "fn", arguments: "{}", status: "completed" },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        } as any,
+        sequence_number: 10,
+      });
+
+      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.delta.stop_reason).toBe("tool_use");
     });
   });
 });
