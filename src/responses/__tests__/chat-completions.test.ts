@@ -274,9 +274,7 @@ describe("ResponsesToChatCompletionConverter", () => {
   // ===== convertResponse (CC → Responses, backward) =====
 
   describe("convertResponse", () => {
-    function makeCCResponse(
-      overrides: Partial<OpenAI.ChatCompletion> = {}
-    ): OpenAI.ChatCompletion {
+    function makeCCResponse(overrides: Partial<OpenAI.ChatCompletion> = {}): OpenAI.ChatCompletion {
       return {
         id: "chatcmpl-123",
         object: "chat.completion",
@@ -465,9 +463,7 @@ describe("ResponsesToChatCompletionConverter", () => {
 
     it("emits response.created and response.in_progress on first chunk", () => {
       const c = new ResponsesToChatCompletionConverter();
-      const events = c.convertStreamChunk(
-        makeChunk({ delta: { role: "assistant" } })
-      );
+      const events = c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
       const types = events.map(e => e.type);
       expect(types).toContain("response.created");
@@ -478,9 +474,7 @@ describe("ResponsesToChatCompletionConverter", () => {
       const c = new ResponsesToChatCompletionConverter();
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-      const events = c.convertStreamChunk(
-        makeChunk({ delta: { content: "Hello" } })
-      );
+      const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
 
       const textDelta = events.find(e => e.type === "response.output_text.delta") as any;
       expect(textDelta).toBeDefined();
@@ -568,6 +562,235 @@ describe("ResponsesToChatCompletionConverter", () => {
 
       const incomplete = events.find(e => e.type === "response.incomplete") as any;
       expect(incomplete).toBeDefined();
+    });
+
+    it("emits reasoning events for reasoning_content delta", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({ delta: { reasoning_content: "Thinking..." } as any })
+      );
+
+      const reasoningAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(reasoningAdded).toBeDefined();
+      expect(reasoningAdded.item.type).toBe("reasoning");
+
+      const reasoningDelta = events.find(
+        e => e.type === "response.reasoning_summary_text.delta"
+      ) as any;
+      expect(reasoningDelta).toBeDefined();
+      expect(reasoningDelta.delta).toBe("Thinking...");
+    });
+
+    it("emits tool call events", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: { name: "get_weather", arguments: "" },
+              },
+            ],
+          },
+        })
+      );
+
+      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded).toBeDefined();
+      expect(itemAdded.item.type).toBe("function_call");
+      expect(itemAdded.item.name).toBe("get_weather");
+    });
+
+    it("emits function_call_arguments.delta for tool arguments", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_1", type: "function", function: { name: "fn", arguments: "" } },
+            ],
+          },
+        })
+      );
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: { tool_calls: [{ index: 0, function: { arguments: '{"x' } }] },
+        })
+      );
+
+      const argsDelta = events.find(
+        e => e.type === "response.function_call_arguments.delta"
+      ) as any;
+      expect(argsDelta).toBeDefined();
+      expect(argsDelta.delta).toBe('{"x');
+    });
+
+    it("emits text content with message item", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+
+      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded).toBeDefined();
+      expect(itemAdded.item.type).toBe("message");
+
+      const textDelta = events.find(e => e.type === "response.output_text.delta") as any;
+      expect(textDelta).toBeDefined();
+      expect(textDelta.delta).toBe("Hello");
+    });
+
+    it("handles usage-only chunk without choices", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const usageChunk: OpenAI.ChatCompletionChunk = {
+        id: "chatcmpl-123",
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "gpt-4o",
+        choices: [],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      };
+
+      const events = c.convertStreamChunk(usageChunk);
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.usage.input_tokens).toBe(10);
+    });
+
+    it("emits finish with usage when finish_reason and usage in same chunk", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          finish_reason: "stop",
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        } as any)
+      );
+
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+    });
+
+    it("emits finish without usage", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+    });
+  });
+
+  describe("convertRequest - advanced input items", () => {
+    it("converts reasoning input items", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "reasoning",
+            id: "r_1",
+            summary: [{ type: "summary_text", text: "Deep thought" }],
+          },
+        ],
+      } as any);
+
+      const msg = result.messages[0] as any;
+      expect(msg.role).toBe("assistant");
+      expect(msg.reasoning_content).toBe("Deep thought");
+    });
+
+    it("converts assistant message with output_text content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Hello" }],
+          },
+        ],
+      } as any);
+
+      const msg = result.messages[0] as any;
+      expect(msg.role).toBe("assistant");
+      expect(msg.content).toBe("Hello");
+    });
+
+    it("converts input_image content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "https://example.com/img.png" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0] as any;
+      expect(content.content[0].type).toBe("image_url");
+    });
+
+    it("converts input_file content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_file", file_data: "data:application/pdf;base64,abc" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0] as any;
+      expect(content.content[0].type).toBe("file");
+    });
+
+    it("converts named tool_choice", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tool_choice: { type: "function", name: "get_weather" },
+      } as any);
+
+      expect(result.tool_choice).toEqual({ type: "function", function: { name: "get_weather" } });
+    });
+
+    it("maps json_object text format to response_format", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        text: { format: { type: "json_object" } },
+      } as any);
+
+      expect(result.response_format).toEqual({ type: "json_object" });
+    });
+
+    it("maps text format type to response_format", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        text: { format: { type: "text" } },
+      } as any);
+
+      expect(result.response_format).toEqual({ type: "text" });
     });
   });
 });

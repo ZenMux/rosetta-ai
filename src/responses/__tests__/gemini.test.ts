@@ -544,4 +544,153 @@ describe("ResponsesToGeminiConverter", () => {
       expect(types).toContain("response.completed");
     });
   });
+
+  describe("convertRequest - advanced", () => {
+    it("converts include logprobs", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: "Hi",
+        include: ["message.output_text.logprobs"],
+      } as any);
+
+      expect(result.config?.responseLogprobs).toBe(true);
+      expect(result.config?.logprobs).toBe(20);
+    });
+
+    it("converts assistant message input items to model content", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Hello" }],
+          },
+        ],
+      } as any);
+
+      expect((result.contents as any[])[0].role).toBe("model");
+      expect((result.contents as any[])[0].parts[0].text).toBe("Hello");
+    });
+
+    it("converts system message input items to systemInstruction", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [{ role: "system", content: "Be helpful." } as any, { role: "user", content: "Hi" }],
+      });
+
+      expect(result.config?.systemInstruction).toBeDefined();
+    });
+
+    it("converts input_image to inlineData", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "data:image/png;base64,abc123" }],
+          },
+        ],
+      } as any);
+
+      const parts = (result.contents as any[])[0].parts;
+      expect(parts[0].inlineData).toEqual({ mimeType: "image/png", data: "abc123" });
+    });
+
+    it("converts input_image URL to fileData", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "https://example.com/img.png" }],
+          },
+        ],
+      } as any);
+
+      const parts = (result.contents as any[])[0].parts;
+      expect(parts[0].fileData).toEqual({
+        fileUri: "https://example.com/img.png",
+        mimeType: "image/*",
+      });
+    });
+
+    it("converts input_file to inlineData", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_file", file_data: "data:application/pdf;base64,pdfdata" }],
+          },
+        ],
+      } as any);
+
+      const parts = (result.contents as any[])[0].parts;
+      expect(parts[0].inlineData).toEqual({ mimeType: "application/pdf", data: "pdfdata" });
+    });
+
+    it("converts input_file URL to fileData", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_file", file_data: "https://example.com/doc.pdf" }],
+          },
+        ],
+      } as any);
+
+      const parts = (result.contents as any[])[0].parts;
+      expect(parts[0].fileData).toBeDefined();
+    });
+
+    it("merges consecutive function_call_output into same user content", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: [
+          { role: "user", content: "Do things" },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "c1",
+            name: "fn1",
+            arguments: "{}",
+            status: "completed",
+          },
+          {
+            type: "function_call",
+            id: "fc_2",
+            call_id: "c2",
+            name: "fn2",
+            arguments: "{}",
+            status: "completed",
+          },
+          { type: "function_call_output", id: "fco_1", call_id: "c1", output: "r1" },
+          { type: "function_call_output", id: "fco_2", call_id: "c2", output: "r2" },
+        ],
+      });
+
+      const contents = result.contents as any[];
+      const toolResponses = contents.find(
+        (c: any) => c.role === "user" && c.parts?.some((p: any) => p.functionResponse)
+      );
+      expect(toolResponses).toBeDefined();
+      expect(toolResponses.parts.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("handles json_object text format", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: "Hi",
+        text: { format: { type: "json_object" } },
+      } as any);
+
+      expect(result.config?.responseMimeType).toBe("application/json");
+    });
+  });
 });
