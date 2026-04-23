@@ -67,6 +67,15 @@ describe("GeminiToMessagesConverter", () => {
       expect(result.stop_sequences).toEqual(["END"]);
     });
 
+    it("maps topK to top_k", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [{ text: "Hi" }] }],
+        config: { topK: 40 },
+      });
+      expect(result.top_k).toBe(40);
+    });
+
     it("converts model content to assistant message", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
