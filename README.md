@@ -35,6 +35,9 @@ One converter instance handles the full round-trip for a single gateway route.
 | `ResponsesToChatCompletionConverter` | OpenAI Responses | OpenAI Chat Completions |
 | `ResponsesToMessagesConverter` | OpenAI Responses | Anthropic Messages |
 | `ResponsesToGeminiConverter` | OpenAI Responses | Google Gemini |
+| `GeminiToChatCompletionConverter` | Google Gemini | OpenAI Chat Completions |
+| `GeminiToMessagesConverter` | Google Gemini | Anthropic Messages |
+| `GeminiToResponsesConverter` | Google Gemini | OpenAI Responses |
 
 ## Usage
 
@@ -220,6 +223,63 @@ const responsesResponse = converter.convertResponse(geminiResponse);
 // Streaming: Gemini stream → Responses stream (backward)
 for await (const event of converter.convertStream(geminiStream)) {
   // event is a Responses ResponseStreamEvent
+}
+```
+
+### Google Gemini → OpenAI Chat Completions
+
+```typescript
+import { GeminiToChatCompletionConverter } from "rosetta-ai";
+
+const converter = new GeminiToChatCompletionConverter();
+
+// Request: Gemini → CC (forward)
+const ccRequest = converter.convertRequest(geminiRequest);
+
+// Response: CC → Gemini (backward)
+const geminiResponse = converter.convertResponse(ccResponse);
+
+// Streaming: CC stream → Gemini stream (backward)
+for await (const chunk of converter.convertStream(ccStream)) {
+  // chunk is a Google GenerateContentResponse
+}
+```
+
+### Google Gemini → Anthropic Messages
+
+```typescript
+import { GeminiToMessagesConverter } from "rosetta-ai";
+
+const converter = new GeminiToMessagesConverter();
+
+// Request: Gemini → Messages (forward)
+const messagesRequest = converter.convertRequest(geminiRequest);
+
+// Response: Messages → Gemini (backward)
+const geminiResponse = converter.convertResponse(anthropicResponse);
+
+// Streaming: Messages stream → Gemini stream (backward)
+for await (const chunk of converter.convertStream(messagesStream)) {
+  // chunk is a Google GenerateContentResponse
+}
+```
+
+### Google Gemini → OpenAI Responses
+
+```typescript
+import { GeminiToResponsesConverter } from "rosetta-ai";
+
+const converter = new GeminiToResponsesConverter();
+
+// Request: Gemini → Responses (forward)
+const responsesRequest = converter.convertRequest(geminiRequest);
+
+// Response: Responses → Gemini (backward)
+const geminiResponse = converter.convertResponse(responsesResponse);
+
+// Streaming: Responses stream → Gemini stream (backward)
+for await (const chunk of converter.convertStream(responsesStream)) {
+  // chunk is a Google GenerateContentResponse
 }
 ```
 
