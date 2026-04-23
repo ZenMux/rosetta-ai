@@ -2,6 +2,7 @@
 
 export { ChatCompletionToGeminiConverter } from "./chat-completions/gemini";
 export { GeminiToChatCompletionConverter } from "./gemini/chat-completions";
+export { GeminiToMessagesConverter } from "./gemini/messages";
 export { GeminiToResponsesConverter } from "./gemini/responses";
 export { ChatCompletionToMessagesConverter } from "./chat-completions/messages";
 export { ChatCompletionToResponsesConverter } from "./chat-completions/responses";
