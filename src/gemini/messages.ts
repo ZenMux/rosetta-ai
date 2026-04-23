@@ -71,6 +71,9 @@ export class GeminiToMessagesConverter {
     if (config?.topP != null) {
       result.top_p = config.topP;
     }
+    if (config?.topK != null) {
+      result.top_k = config.topK;
+    }
     if (config?.stopSequences != null) {
       result.stop_sequences = config.stopSequences;
     }

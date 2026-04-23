@@ -333,6 +333,17 @@ describe("ResponsesToMessagesConverter", () => {
         source: { type: "url", url: "https://example.com/img.png" },
       });
     });
+
+    it("maps metadata.user_id to metadata", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: "Hi",
+        metadata: { user_id: "user_456" },
+      } as any);
+
+      expect(result.metadata).toBeDefined();
+      expect((result.metadata as any).user_id).toBe("user_456");
+    });
   });
 
   // ===== convertResponse (Messages → Responses, backward) =====

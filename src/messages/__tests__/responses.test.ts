@@ -68,9 +68,7 @@ describe("MessagesToResponsesConverter", () => {
         messages: [
           {
             role: "user",
-            content: [
-              { type: "tool_result", tool_use_id: "toolu_1", content: "72F" },
-            ],
+            content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "72F" }],
           },
         ],
       });
@@ -196,6 +194,17 @@ describe("MessagesToResponsesConverter", () => {
       });
 
       expect((result as any).parallel_tool_calls).toBe(false);
+    });
+
+    it("maps metadata.user_id to metadata", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "Hi" }],
+        metadata: { user_id: "user_123" },
+      });
+
+      expect((result as any).metadata).toEqual({ user_id: "user_123" });
     });
   });
 
@@ -418,7 +427,13 @@ describe("MessagesToResponsesConverter", () => {
       c.convertStreamEvent(responseCreated());
       c.convertStreamEvent({
         type: "response.output_item.added",
-        item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+        item: {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          status: "in_progress",
+          content: [],
+        },
         output_index: 0,
         sequence_number: 1,
       } as any);
@@ -468,7 +483,14 @@ describe("MessagesToResponsesConverter", () => {
       c.convertStreamEvent(responseCreated());
       c.convertStreamEvent({
         type: "response.output_item.added",
-        item: { type: "function_call", id: "fc_1", call_id: "toolu_1", name: "fn", arguments: "", status: "in_progress" },
+        item: {
+          type: "function_call",
+          id: "fc_1",
+          call_id: "toolu_1",
+          name: "fn",
+          arguments: "",
+          status: "in_progress",
+        },
         output_index: 0,
         sequence_number: 1,
       } as any);
@@ -547,7 +569,9 @@ describe("MessagesToResponsesConverter", () => {
       expect(types).toContain("message_delta");
       expect(types).toContain("message_stop");
 
-      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.delta.stop_reason).toBe("end_turn");
     });
 
@@ -566,7 +590,9 @@ describe("MessagesToResponsesConverter", () => {
         sequence_number: 10,
       });
 
-      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.delta.stop_reason).toBe("max_tokens");
       expect(events.find(e => e.type === "message_stop")).toBeDefined();
     });
@@ -581,7 +607,9 @@ describe("MessagesToResponsesConverter", () => {
         sequence_number: 10,
       });
 
-      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.delta.stop_reason).toBe("end_turn");
     });
 
@@ -606,7 +634,9 @@ describe("MessagesToResponsesConverter", () => {
         sequence_number: 10,
       });
 
-      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.usage.output_tokens).toBe(5);
     });
 
@@ -620,14 +650,23 @@ describe("MessagesToResponsesConverter", () => {
           id: "resp_123",
           status: "completed",
           output: [
-            { type: "function_call", id: "fc_1", call_id: "toolu_1", name: "fn", arguments: "{}", status: "completed" },
+            {
+              type: "function_call",
+              id: "fc_1",
+              call_id: "toolu_1",
+              name: "fn",
+              arguments: "{}",
+              status: "completed",
+            },
           ],
           usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
         } as any,
         sequence_number: 10,
       });
 
-      const msgDelta = events.find(e => e.type === "message_delta") as Anthropic.RawMessageDeltaEvent;
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.delta.stop_reason).toBe("tool_use");
     });
   });

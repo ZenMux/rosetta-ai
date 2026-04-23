@@ -69,6 +69,9 @@ export class MessagesToGeminiConverter {
     if (params.top_p != null) {
       config.topP = params.top_p;
     }
+    if (params.top_k != null) {
+      config.topK = params.top_k;
+    }
     if (params.stop_sequences != null) {
       config.stopSequences = params.stop_sequences;
     }

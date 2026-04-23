@@ -210,10 +210,11 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `tool_choice` | `tool_choice` + `parallel_tool_calls` | auto/any/none → auto/required/none |
 | `thinking` | `reasoning` | Budget→effort mapped |
 | `output_config` (json_schema) | `text.format` | |
+| `metadata.user_id` | `metadata.user_id` | |
 | `service_tier` | `service_tier` | |
 | `stream` | `stream` | |
 
-**Not converted:** `stop_sequences`, `top_k`, `metadata`
+**Not converted:** `stop_sequences`, `top_k`
 
 ### Response (Responses → Messages)
 
@@ -245,6 +246,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `max_tokens` | `config.maxOutputTokens` | |
 | `temperature` | `config.temperature` | |
 | `top_p` | `config.topP` | |
+| `top_k` | `config.topK` | |
 | `stop_sequences` | `config.stopSequences` | |
 | `tools` (input_schema) | `config.tools[].functionDeclarations` | parametersJsonSchema |
 | `tools` (web_search) | `config.tools[].googleSearch` | |
@@ -252,7 +254,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `thinking` | `config.thinkingConfig` | disabled→budget:0, enabled→budget passthrough |
 | `output_config` (json_schema) | `config.responseMimeType` + `config.responseJsonSchema` | |
 
-**Not converted:** `top_k`, `metadata`
+**Not converted:** `metadata`
 
 ### Response (Gemini → Messages)
 
@@ -338,10 +340,11 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `tool_choice` + `parallel_tool_calls` | `tool_choice` | auto/required/none → auto/any/none + disable_parallel_tool_use |
 | `reasoning.effort` | `thinking` | Budget mapped |
 | `text.format` (json_schema) | `output_config.format` | |
+| `metadata.user_id` | `metadata.user_id` | |
 | `service_tier` | `service_tier` | auto/standard_only only |
 | `stream` | `stream` | |
 
-**Not converted:** `metadata`, `previous_response_id`, `prompt_cache_key`, `prompt_cache_retention`, `safety_identifier`
+**Not converted:** `previous_response_id`, `prompt_cache_key`, `prompt_cache_retention`, `safety_identifier`
 
 ### Response (Messages → Responses)
 
@@ -452,6 +455,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `config.maxOutputTokens` | `max_tokens` | Default 4096 |
 | `config.temperature` | `temperature` | |
 | `config.topP` | `top_p` | |
+| `config.topK` | `top_k` | |
 | `config.stopSequences` | `stop_sequences` | |
 | `config.tools[].functionDeclarations` | `tools` (input_schema) | |
 | `config.tools[].googleSearch` | `tools` (web_search_20250305) | |
@@ -523,6 +527,7 @@ Which fields are supported when converting **from** a given protocol:
 | System/Instructions | ✅ all | ✅ all | ✅ all | ✅ all |
 | Temperature | ✅ all | ✅ all | ✅ all | ✅ all |
 | Top P | ✅ all | ✅ all | ✅ all | ✅ all |
+| Top K | ✗ | ✅ Gemini | ✗ | ✅ Msgs |
 | Max Tokens | ✅ all | ✅ all | ✅ all | ✅ all |
 | Stop Sequences | ✅ Msgs/Gemini | ✅ CC/Gemini | ✗ (no field) | ✅ CC/Msgs |
 | Tools (function) | ✅ all | ✅ all | ✅ all | ✅ all |
@@ -539,6 +544,7 @@ Which fields are supported when converting **from** a given protocol:
 | Candidate Count (n) | ✅ Gemini | ✗ | ✗ | ✅ CC |
 | Logprobs | ✅ Gemini | ✗ | ✅ Gemini | ✅ CC/Resp |
 | Parallel Tool Calls | ✅ Msgs/Resp | ✅ CC/Resp | ✅ CC | ✗ |
+| Metadata/User | ✅ Msgs | ✅ CC/Resp | ✅ Msgs | ✗ |
 | Service Tier | ✅ Msgs | ✅ CC | ✅ Msgs | ✗ |
 | Cache Keys | ✗ | ✗ | ✅ CC | ✗ |
 | Stream | ✅ all | ✅ all | ✅ all | ✅ all |

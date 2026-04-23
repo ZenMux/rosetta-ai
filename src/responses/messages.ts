@@ -74,6 +74,15 @@ export class ResponsesToMessagesConverter {
         },
       };
     }
+    if (params.metadata) {
+      const userId =
+        typeof params.metadata === "object"
+          ? (params.metadata as Record<string, string>).user_id
+          : undefined;
+      if (userId) {
+        result.metadata = { user_id: userId };
+      }
+    }
     if (params.service_tier != null) {
       const tier = params.service_tier as string;
       if (tier === "auto" || tier === "standard_only") {

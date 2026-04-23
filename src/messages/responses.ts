@@ -25,9 +25,7 @@ export class MessagesToResponsesConverter {
 
   // --- Request conversion (Messages → Responses, forward) ---
 
-  convertRequest(
-    params: Anthropic.MessageCreateParams,
-  ): OpenAI.Responses.ResponseCreateParams {
+  convertRequest(params: Anthropic.MessageCreateParams): OpenAI.Responses.ResponseCreateParams {
     const result: OpenAI.Responses.ResponseCreateParams = {
       model: params.model as string,
       input: this.convertMessages(params.messages),
@@ -73,6 +71,9 @@ export class MessagesToResponsesConverter {
         },
       };
     }
+    if (params.metadata?.user_id) {
+      result.metadata = { user_id: params.metadata.user_id };
+    }
     if (params.service_tier != null) {
       result.service_tier = params.service_tier as any;
     }
@@ -92,9 +93,7 @@ export class MessagesToResponsesConverter {
     for (const item of response.output) {
       if (item.type === "reasoning") {
         const ri = item as OpenAI.Responses.ResponseReasoningItem;
-        const summaryText = ri.summary
-          ?.map(s => s.text)
-          .join("") ?? "";
+        const summaryText = ri.summary?.map(s => s.text).join("") ?? "";
         content.push({
           type: "thinking",
           thinking: summaryText,
@@ -163,9 +162,10 @@ export class MessagesToResponsesConverter {
         cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
         cache_creation: null,
         inference_geo: null,
-        server_tool_use: webSearchCount > 0
-          ? { web_search_requests: webSearchCount, web_fetch_requests: 0 } as any
-          : null,
+        server_tool_use:
+          webSearchCount > 0
+            ? ({ web_search_requests: webSearchCount, web_fetch_requests: 0 } as any)
+            : null,
         service_tier: null,
       },
       container: null,
@@ -175,7 +175,7 @@ export class MessagesToResponsesConverter {
   // --- Stream conversion (Responses → Messages, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<RespStreamEvent>,
+    stream: AsyncIterable<RespStreamEvent>
   ): AsyncIterable<Anthropic.RawMessageStreamEvent> {
     for await (const event of stream) {
       const events = this.convertStreamEvent(event);
@@ -185,9 +185,7 @@ export class MessagesToResponsesConverter {
     }
   }
 
-  convertStreamEvent(
-    event: RespStreamEvent,
-  ): Anthropic.RawMessageStreamEvent[] {
+  convertStreamEvent(event: RespStreamEvent): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
     const events: Anthropic.RawMessageStreamEvent[] = [];
 
@@ -319,9 +317,10 @@ export class MessagesToResponsesConverter {
             input_tokens: usage?.input_tokens ?? null,
             cache_creation_input_tokens: null,
             cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
-            server_tool_use: state.webSearchCount > 0
-              ? { web_search_requests: state.webSearchCount } as any
-              : null,
+            server_tool_use:
+              state.webSearchCount > 0
+                ? ({ web_search_requests: state.webSearchCount } as any)
+                : null,
           },
         });
         events.push({ type: "message_stop" });
@@ -371,7 +370,7 @@ export class MessagesToResponsesConverter {
   // --- Private: request helpers ---
 
   private convertMessages(
-    messages: Anthropic.MessageParam[],
+    messages: Anthropic.MessageParam[]
   ): OpenAI.Responses.ResponseInputItem[] {
     const input: OpenAI.Responses.ResponseInputItem[] = [];
 
@@ -418,14 +417,15 @@ export class MessagesToResponsesConverter {
 
           // Emit tool results as function_call_output items
           for (const tr of toolResults) {
-            const output = typeof tr.content === "string"
-              ? tr.content
-              : tr.content
+            const output =
+              typeof tr.content === "string"
                 ? tr.content
-                    .filter((b): b is Anthropic.TextBlockParam => b.type === "text")
-                    .map(b => b.text)
-                    .join("\n")
-                : "";
+                : tr.content
+                  ? tr.content
+                      .filter((b): b is Anthropic.TextBlockParam => b.type === "text")
+                      .map(b => b.text)
+                      .join("\n")
+                  : "";
             input.push({
               type: "function_call_output",
               call_id: tr.tool_use_id,
@@ -469,9 +469,7 @@ export class MessagesToResponsesConverter {
     return input;
   }
 
-  private convertTools(
-    tools: Anthropic.ToolUnion[],
-  ): OpenAI.Responses.Tool[] {
+  private convertTools(tools: Anthropic.ToolUnion[]): OpenAI.Responses.Tool[] {
     const result: OpenAI.Responses.Tool[] = [];
     for (const t of tools) {
       if ("input_schema" in t) {
@@ -482,7 +480,10 @@ export class MessagesToResponsesConverter {
           parameters: t.input_schema,
           strict: t.strict ?? null,
         });
-      } else if ("type" in t && (t.type === "web_search_20250305" || t.type === "web_search_20260209")) {
+      } else if (
+        "type" in t &&
+        (t.type === "web_search_20250305" || t.type === "web_search_20260209")
+      ) {
         result.push({ type: "web_search" });
       }
     }
@@ -490,7 +491,7 @@ export class MessagesToResponsesConverter {
   }
 
   private convertToolChoice(
-    choice: Anthropic.ToolChoice,
+    choice: Anthropic.ToolChoice
   ): OpenAI.Responses.ResponseCreateParams["tool_choice"] {
     switch (choice.type) {
       case "auto":
@@ -507,7 +508,7 @@ export class MessagesToResponsesConverter {
   }
 
   private convertThinking(
-    thinking: Anthropic.ThinkingConfigParam,
+    thinking: Anthropic.ThinkingConfigParam
   ): OpenAI.Responses.ResponseCreateParams["reasoning"] {
     if (thinking.type === "disabled") return { effort: "low" };
     if (thinking.type === "enabled") {
@@ -523,7 +524,7 @@ export class MessagesToResponsesConverter {
 
   private statusToStopReason(
     status: RespResponse["status"],
-    output?: OpenAI.Responses.ResponseOutputItem[],
+    output?: OpenAI.Responses.ResponseOutputItem[]
   ): Anthropic.StopReason {
     if (output) {
       const hasToolCall = output.some(item => item.type === "function_call");
