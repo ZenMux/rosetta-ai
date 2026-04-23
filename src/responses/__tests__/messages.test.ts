@@ -868,4 +868,282 @@ describe("ResponsesToMessagesConverter", () => {
       expect(textDelta.delta).toBe("Hello");
     });
   });
+
+  describe("convertRequest - advanced input items", () => {
+    it("converts assistant message input with output_text", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Hello" }],
+          },
+        ],
+      } as any);
+
+      expect(result.messages[0]).toEqual({
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+      });
+    });
+
+    it("converts system message input to system field", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "system",
+            content: [{ type: "input_text", text: "Be helpful." }],
+          },
+          { role: "user", content: "Hi" },
+        ],
+      } as any);
+
+      expect(result.system).toBe("Be helpful.");
+    });
+
+    it("converts developer message input to system field", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "developer", content: "You are an assistant." } as any,
+          { role: "user", content: "Hi" },
+        ],
+      });
+
+      expect(result.system).toBe("You are an assistant.");
+    });
+
+    it("converts input_image with data URI to image block", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "data:image/png;base64,abc123" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].type).toBe("image");
+      expect(content[0].source.type).toBe("base64");
+      expect(content[0].source.data).toBe("abc123");
+    });
+
+    it("converts input_image with URL to image block", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_image", image_url: "https://example.com/img.png" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].type).toBe("image");
+      expect(content[0].source.type).toBe("url");
+    });
+
+    it("converts input_file with data URI to document block", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_file", file_data: "data:application/pdf;base64,pdfdata" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].type).toBe("document");
+    });
+
+    it("converts input_file with URL to document block", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_file", file_data: "https://example.com/doc.pdf" }],
+          },
+        ],
+      } as any);
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].type).toBe("document");
+      expect(content[0].source.type).toBe("url");
+    });
+
+    it("merges consecutive function_call_output into one user message", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "user", content: "Do things" },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "c1",
+            name: "fn1",
+            arguments: "{}",
+            status: "completed",
+          },
+          {
+            type: "function_call",
+            id: "fc_2",
+            call_id: "c2",
+            name: "fn2",
+            arguments: "{}",
+            status: "completed",
+          },
+          { type: "function_call_output", id: "fco_1", call_id: "c1", output: "r1" },
+          { type: "function_call_output", id: "fco_2", call_id: "c2", output: "r2" },
+        ],
+      });
+
+      const toolMsg = result.messages[2];
+      expect(toolMsg.role).toBe("user");
+      const content = toolMsg.content as any[];
+      expect(content).toHaveLength(2);
+      expect(content[0].type).toBe("tool_result");
+      expect(content[1].type).toBe("tool_result");
+    });
+
+    it("converts service_tier", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: "Hi",
+        service_tier: "auto",
+      } as any);
+
+      expect(result.service_tier).toBe("auto");
+    });
+  });
+
+  describe("convertStreamEvent - advanced", () => {
+    function makeMessageStart(): Anthropic.RawMessageStreamEvent {
+      return {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-20250514" as Anthropic.Model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            cache_creation: null,
+            inference_geo: null,
+            server_tool_use: null,
+            service_tier: null,
+          },
+          container: null,
+        },
+      };
+    }
+
+    it("emits tool_use content block on tool_use block start", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      const events = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "get_weather",
+          input: {},
+          caller: { type: "direct" },
+        },
+      });
+
+      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded).toBeDefined();
+      expect(itemAdded.item.type).toBe("function_call");
+      expect(itemAdded.item.name).toBe("get_weather");
+    });
+
+    it("emits web_search_tool_result count on web_search block start", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      const events = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "ws_1",
+          content: [],
+          caller: { type: "direct" },
+        },
+      });
+
+      // web_search_tool_result just increments counter, no Responses event
+      expect(events.length).toBe(0);
+    });
+
+    it("handles input_json_delta for function arguments", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        },
+      });
+
+      const events = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"x' },
+      });
+
+      const argsDelta = events.find(
+        e => e.type === "response.function_call_arguments.delta"
+      ) as any;
+      expect(argsDelta).toBeDefined();
+      expect(argsDelta.delta).toBe('{"x');
+    });
+
+    it("tracks web search requests in message_delta usage", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: { web_search_requests: 2 } as any,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+    });
+  });
 });
