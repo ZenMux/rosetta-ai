@@ -1,6 +1,7 @@
 // rosetta-ai: Universal translator between AI provider protocols
 
 export { ChatCompletionToGeminiConverter } from "./chat-completions/gemini";
+export { GeminiToChatCompletionConverter } from "./gemini/chat-completions";
 export { GeminiToResponsesConverter } from "./gemini/responses";
 export { ChatCompletionToMessagesConverter } from "./chat-completions/messages";
 export { ChatCompletionToResponsesConverter } from "./chat-completions/responses";
