@@ -309,7 +309,9 @@ describe("ChatCompletionToResponsesConverter", () => {
               id: "msg_1",
               role: "assistant",
               status: "incomplete",
-              content: [{ type: "output_text", text: "Partial", annotations: [], logprobs: null as any }],
+              content: [
+                { type: "output_text", text: "Partial", annotations: [], logprobs: null as any },
+              ],
             } as any,
           ],
           status: "incomplete",
@@ -410,7 +412,7 @@ describe("ChatCompletionToResponsesConverter", () => {
 
   describe("convertStreamEvent", () => {
     function first(
-      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null,
+      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null
     ): OpenAI.ChatCompletionChunk {
       if (Array.isArray(result)) return result[0];
       return result!;

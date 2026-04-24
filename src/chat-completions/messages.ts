@@ -74,10 +74,7 @@ export class ChatCompletionToMessagesConverter {
       result.tools = this.convertTools(params.tools);
     }
     if (params.tool_choice !== undefined) {
-      result.tool_choice = this.convertToolChoice(
-        params.tool_choice,
-        params.parallel_tool_calls
-      );
+      result.tool_choice = this.convertToolChoice(params.tool_choice, params.parallel_tool_calls);
     }
     if (params.response_format) {
       result.output_config = this.convertResponseFormat(params.response_format);
@@ -198,12 +195,12 @@ export class ChatCompletionToMessagesConverter {
       total_tokens: usage.input_tokens + usage.output_tokens,
       prompt_tokens_details: {
         cached_tokens: cacheRead,
-        ...({
+        ...{
           ephemeral_5m_input_tokens: ephemeral5m,
           ephemeral_1h_input_tokens: ephemeral1h,
           web_search: webSearch,
           cache_creation_input_tokens: cacheCreation,
-        }),
+        },
       },
     };
   }
@@ -211,7 +208,7 @@ export class ChatCompletionToMessagesConverter {
   // --- Stream conversion (Messages → CC, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<Anthropic.RawMessageStreamEvent>,
+    stream: AsyncIterable<Anthropic.RawMessageStreamEvent>
   ): AsyncIterable<OpenAI.ChatCompletionChunk> {
     for await (const event of stream) {
       const chunk = this.convertStreamEvent(event);
@@ -356,7 +353,7 @@ export class ChatCompletionToMessagesConverter {
     if (delta.type === "thinking_delta") {
       return this.makeChunk({
         content: "",
-        ...({
+        ...{
           reasoning: delta.thinking,
           reasoning_details: [
             {
@@ -366,14 +363,14 @@ export class ChatCompletionToMessagesConverter {
               index: 0,
             },
           ],
-        }),
+        },
       });
     }
 
     if (delta.type === "signature_delta") {
       return this.makeChunk({
         content: "",
-        ...({
+        ...{
           reasoning: null,
           reasoning_details: [
             {
@@ -383,7 +380,7 @@ export class ChatCompletionToMessagesConverter {
               index: 0,
             },
           ],
-        }),
+        },
       });
     }
 
@@ -421,12 +418,12 @@ export class ChatCompletionToMessagesConverter {
       total_tokens: state.inputTokens + state.outputTokens,
       prompt_tokens_details: {
         cached_tokens: state.cacheReadTokens,
-        ...({
+        ...{
           ephemeral_5m_input_tokens: state.ephemeral5mTokens,
           ephemeral_1h_input_tokens: state.ephemeral1hTokens,
           web_search: state.webSearchRequests,
           cache_creation_input_tokens: state.cacheCreationInputTokens,
-        }),
+        },
       },
       completion_tokens_details: {
         reasoning_tokens: 0,

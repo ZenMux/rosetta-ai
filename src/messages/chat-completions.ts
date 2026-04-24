@@ -87,7 +87,8 @@ export class MessagesToChatCompletionConverter {
       result.user = params.metadata.user_id;
     }
     if (params.service_tier != null) {
-      result.service_tier = params.service_tier === "standard_only" ? "default" : params.service_tier;
+      result.service_tier =
+        params.service_tier === "standard_only" ? "default" : params.service_tier;
     }
     if (params.stream === true) {
       (result as any).stream = true;
@@ -179,7 +180,8 @@ export class MessagesToChatCompletionConverter {
       cache_creation_input_tokens: 0,
       cache_creation: null,
       inference_geo: null,
-      server_tool_use: webSearch > 0 ? ({ web_search_requests: webSearch, web_fetch_requests: 0 }) : null,
+      server_tool_use:
+        webSearch > 0 ? { web_search_requests: webSearch, web_fetch_requests: 0 } : null,
       service_tier: "standard",
     };
   }
@@ -191,7 +193,7 @@ export class MessagesToChatCompletionConverter {
   // --- Stream conversion (CC → Messages, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
+    stream: AsyncIterable<OpenAI.ChatCompletionChunk>
   ): AsyncIterable<Anthropic.RawMessageStreamEvent> {
     for await (const chunk of stream) {
       const events = this.convertStreamChunk(chunk);
