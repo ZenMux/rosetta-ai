@@ -91,11 +91,13 @@ export class ChatCompletionToResponsesConverter {
 
     for (const item of response.output) {
       if (item.type === "message") {
-        choices.push(this.convertOutputMessage(
-          item as OpenAI.Responses.ResponseOutputMessage,
-          reasoningItem,
-          response.incomplete_details,
-        ));
+        choices.push(
+          this.convertOutputMessage(
+            item as OpenAI.Responses.ResponseOutputMessage,
+            reasoningItem,
+            response.incomplete_details
+          )
+        );
       } else if (item.type === "function_call") {
         const fc = item as OpenAI.Responses.ResponseFunctionToolCall;
         toolCalls.push({
@@ -151,7 +153,7 @@ export class ChatCompletionToResponsesConverter {
   private convertOutputMessage(
     message: OpenAI.Responses.ResponseOutputMessage,
     reasoning: OpenAI.Responses.ResponseReasoningItem | null,
-    incompleteDetails?: RespResponse["incomplete_details"],
+    incompleteDetails?: RespResponse["incomplete_details"]
   ): OpenAI.ChatCompletion.Choice {
     const content = message.content[0];
     let finishReason = this.messageStatusToFinishReason(message.status);
@@ -211,7 +213,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private convertReasoning(
-    reasoning: OpenAI.Responses.ResponseReasoningItem | null,
+    reasoning: OpenAI.Responses.ResponseReasoningItem | null
   ): Record<string, any> {
     if (!reasoning || !reasoning.summary || reasoning.summary.length === 0) return {};
 
@@ -239,7 +241,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private messageStatusToFinishReason(
-    status: OpenAI.Responses.ResponseOutputMessage["status"],
+    status: OpenAI.Responses.ResponseOutputMessage["status"]
   ): OpenAI.ChatCompletion.Choice["finish_reason"] {
     if (status === "completed") return "stop";
     if (status === "incomplete") return "length";
@@ -249,7 +251,7 @@ export class ChatCompletionToResponsesConverter {
   // --- Stream conversion (Responses → CC, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<RespStreamEvent>,
+    stream: AsyncIterable<RespStreamEvent>
   ): AsyncIterable<OpenAI.ChatCompletionChunk> {
     for await (const event of stream) {
       const result = this.convertStreamEvent(event);
@@ -264,7 +266,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   convertStreamEvent(
-    event: RespStreamEvent,
+    event: RespStreamEvent
   ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null {
     switch (event.type) {
       case "response.created":
@@ -301,9 +303,7 @@ export class ChatCompletionToResponsesConverter {
 
   // --- Private: request helpers ---
 
-  private convertMessages(
-    messages: CCParams["messages"],
-  ): RespInputItem[] {
+  private convertMessages(messages: CCParams["messages"]): RespInputItem[] {
     const input: RespInputItem[] = [];
 
     for (const msg of messages) {
@@ -327,9 +327,18 @@ export class ChatCompletionToResponsesConverter {
             content: msg.content.map(p => {
               if (p.type === "text") return { type: "input_text", text: p.text };
               if (p.type === "image_url")
-                return { type: "input_image", image_url: p.image_url.url, detail: p.image_url.detail ?? "auto" };
+                return {
+                  type: "input_image",
+                  image_url: p.image_url.url,
+                  detail: p.image_url.detail ?? "auto",
+                };
               if (p.type === "file")
-                return { type: "input_file", file_data: p.file.file_data, file_id: p.file.file_id, filename: p.file.filename };
+                return {
+                  type: "input_file",
+                  file_data: p.file.file_data,
+                  file_id: p.file.file_id,
+                  filename: p.file.filename,
+                };
               return { type: "input_text", text: "" };
             }),
           });
@@ -415,7 +424,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private convertToolChoice(
-    choice: CCParams["tool_choice"],
+    choice: CCParams["tool_choice"]
   ): OpenAI.Responses.ResponseCreateParams["tool_choice"] {
     if (typeof choice === "string") {
       if (choice === "auto" || choice === "none" || choice === "required") return choice;
@@ -431,7 +440,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private convertResponseFormat(
-    format: CCParams["response_format"],
+    format: CCParams["response_format"]
   ): OpenAI.Responses.ResponseCreateParams["text"] {
     if (!format) return undefined;
     if (format.type === "text" || format.type === "json_object") {
@@ -453,7 +462,7 @@ export class ChatCompletionToResponsesConverter {
 
   private mapStatus(
     status: RespResponse["status"],
-    incompleteDetails?: RespResponse["incomplete_details"],
+    incompleteDetails?: RespResponse["incomplete_details"]
   ): OpenAI.ChatCompletion.Choice["finish_reason"] {
     switch (status) {
       case "completed":
@@ -470,7 +479,7 @@ export class ChatCompletionToResponsesConverter {
 
   private convertUsage(
     usage: OpenAI.Responses.ResponseUsage,
-    webSearchCount = 0,
+    webSearchCount = 0
   ): OpenAI.CompletionUsage {
     return {
       prompt_tokens: usage.input_tokens,
@@ -505,7 +514,7 @@ export class ChatCompletionToResponsesConverter {
   private makeChunk(
     delta: OpenAI.ChatCompletionChunk.Choice.Delta,
     finish_reason: OpenAI.ChatCompletionChunk.Choice["finish_reason"] = null,
-    usage?: OpenAI.CompletionUsage,
+    usage?: OpenAI.CompletionUsage
   ): OpenAI.ChatCompletionChunk {
     return {
       id: this.streamState.id,
@@ -519,7 +528,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleResponseCreated(
-    event: OpenAI.Responses.ResponseCreatedEvent,
+    event: OpenAI.Responses.ResponseCreatedEvent
   ): OpenAI.ChatCompletionChunk {
     const resp = event.response;
     this.streamState.id = resp.id;
@@ -532,7 +541,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleOutputItemAdded(
-    event: OpenAI.Responses.ResponseOutputItemAddedEvent,
+    event: OpenAI.Responses.ResponseOutputItemAddedEvent
   ): OpenAI.ChatCompletionChunk | null {
     const item = event.item;
     if (item.type === "function_call") {
@@ -556,13 +565,13 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleTextDelta(
-    event: OpenAI.Responses.ResponseTextDeltaEvent,
+    event: OpenAI.Responses.ResponseTextDeltaEvent
   ): OpenAI.ChatCompletionChunk {
     return this.makeChunk({ role: "assistant", content: event.delta });
   }
 
   private handleFunctionCallDelta(
-    event: OpenAI.Responses.ResponseFunctionCallArgumentsDeltaEvent,
+    event: OpenAI.Responses.ResponseFunctionCallArgumentsDeltaEvent
   ): OpenAI.ChatCompletionChunk {
     return this.makeChunk({
       role: "assistant",
@@ -578,18 +587,19 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleRefusalDelta(
-    event: OpenAI.Responses.ResponseRefusalDeltaEvent,
+    event: OpenAI.Responses.ResponseRefusalDeltaEvent
   ): OpenAI.ChatCompletionChunk {
     return this.makeChunk({ refusal: event.delta });
   }
 
-  private handleReasoningSummaryDelta(
-    event: { delta: string; item_id: string },
-  ): OpenAI.ChatCompletionChunk {
+  private handleReasoningSummaryDelta(event: {
+    delta: string;
+    item_id: string;
+  }): OpenAI.ChatCompletionChunk {
     return this.makeChunk({
       role: "assistant",
       content: "",
-      ...({
+      ...{
         reasoning: event.delta,
         reasoning_details: [
           {
@@ -599,17 +609,17 @@ export class ChatCompletionToResponsesConverter {
             summary: event.delta,
           },
         ],
-      }),
+      },
     });
   }
 
   private handleCompleted(
-    event: OpenAI.Responses.ResponseCompletedEvent,
+    event: OpenAI.Responses.ResponseCompletedEvent
   ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] {
     const state = this.streamState;
     const resp = event.response;
     const finishReason = state.hasToolCall
-      ? "tool_calls" as const
+      ? ("tool_calls" as const)
       : this.mapStatus(resp.status, resp.incomplete_details);
 
     const delta: any = { content: null };
@@ -637,7 +647,7 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleIncomplete(
-    event: OpenAI.Responses.ResponseIncompleteEvent,
+    event: OpenAI.Responses.ResponseIncompleteEvent
   ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] {
     const state = this.streamState;
     const resp = event.response;

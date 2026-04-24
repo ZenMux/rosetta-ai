@@ -1210,11 +1210,19 @@ describe("ChatCompletionToMessagesConverter", () => {
       it("converts a full text stream", async () => {
         const events: Anthropic.RawMessageStreamEvent[] = [
           messageStart(),
-          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "", citations: null },
+          },
           { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
           { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " world" } },
           { type: "content_block_stop", index: 0 },
-          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+            usage: baseDeltaUsage,
+          },
           { type: "message_stop" },
         ];
 
@@ -1223,7 +1231,9 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         expect(chunks.length).toBeGreaterThan(0);
         expect(chunks[0].choices[0].delta.role).toBe("assistant");
-        const textChunks = chunks.filter(ch => ch.choices[0]?.delta?.content && ch.choices[0].delta.content !== "");
+        const textChunks = chunks.filter(
+          ch => ch.choices[0]?.delta?.content && ch.choices[0].delta.content !== ""
+        );
         expect(textChunks.length).toBe(2);
         const finishChunk = chunks.find(ch => ch.choices[0]?.finish_reason === "stop");
         expect(finishChunk).toBeDefined();
@@ -1235,10 +1245,18 @@ describe("ChatCompletionToMessagesConverter", () => {
       it("filters out null events (content_block_start with empty text)", async () => {
         const events: Anthropic.RawMessageStreamEvent[] = [
           messageStart(),
-          { type: "content_block_start", index: 0, content_block: { type: "text", text: "", citations: null } },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "", citations: null },
+          },
           { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } },
           { type: "content_block_stop", index: 0 },
-          { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null, container: null }, usage: baseDeltaUsage },
+          {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+            usage: baseDeltaUsage,
+          },
           { type: "message_stop" },
         ];
 

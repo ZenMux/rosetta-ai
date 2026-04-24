@@ -25,7 +25,9 @@ export class ResponsesToChatCompletionConverter {
 
   // --- Request conversion (Responses → CC, forward) ---
 
-  convertRequest(params: OpenAI.Responses.ResponseCreateParams): OpenAI.Chat.Completions.ChatCompletionCreateParams {
+  convertRequest(
+    params: OpenAI.Responses.ResponseCreateParams
+  ): OpenAI.Chat.Completions.ChatCompletionCreateParams {
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 
     if (params.instructions) {
@@ -179,8 +181,7 @@ export class ResponsesToChatCompletionConverter {
       output,
       status,
       error: null,
-      incomplete_details:
-        status === "incomplete" ? { reason: "max_output_tokens" } : null,
+      incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
       instructions: null,
       metadata: {},
       temperature: null,
@@ -200,12 +201,10 @@ export class ResponsesToChatCompletionConverter {
             output_tokens: response.usage.completion_tokens,
             total_tokens: response.usage.total_tokens,
             input_tokens_details: {
-              cached_tokens:
-                response.usage.prompt_tokens_details?.cached_tokens ?? 0,
+              cached_tokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
             },
             output_tokens_details: {
-              reasoning_tokens:
-                response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
+              reasoning_tokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
             },
           }
         : undefined,
@@ -215,7 +214,7 @@ export class ResponsesToChatCompletionConverter {
   // --- Stream conversion (CC → Responses, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
+    stream: AsyncIterable<OpenAI.ChatCompletionChunk>
   ): AsyncIterable<RespStreamEvent> {
     for await (const chunk of stream) {
       const events = this.convertStreamChunk(chunk);
@@ -252,9 +251,7 @@ export class ResponsesToChatCompletionConverter {
     if (!choice) {
       // Usage-only chunk (empty choices) at the end
       if (chunk.usage) {
-        events.push(
-          ...this.emitCompleted(chunk.usage)
-        );
+        events.push(...this.emitCompleted(chunk.usage));
       }
       return events;
     }
@@ -337,9 +334,8 @@ export class ResponsesToChatCompletionConverter {
     if (delta?.content && delta.content !== "") {
       if (!state.messageStarted) {
         state.messageStarted = true;
-        const msgOutputIndex = state.outputIndex +
-          (state.reasoningStarted ? 1 : 0) +
-          state.toolCallCount;
+        const msgOutputIndex =
+          state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
         events.push({
           type: "response.output_item.added",
           item: {
@@ -364,9 +360,7 @@ export class ResponsesToChatCompletionConverter {
       events.push({
         type: "response.output_text.delta",
         item_id: `msg_${this.generateId()}`,
-        output_index: state.outputIndex +
-          (state.reasoningStarted ? 1 : 0) +
-          state.toolCallCount,
+        output_index: state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount,
         content_index: 0,
         delta: delta.content,
         sequence_number: state.seq++,
@@ -390,7 +384,7 @@ export class ResponsesToChatCompletionConverter {
 
   private convertInput(
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    input: OpenAI.Responses.ResponseCreateParams["input"],
+    input: OpenAI.Responses.ResponseCreateParams["input"]
   ): void {
     if (typeof input === "string") {
       messages.push({ role: "user", content: input });
@@ -477,7 +471,7 @@ export class ResponsesToChatCompletionConverter {
   }
 
   private convertInputContent(
-    content: any[],
+    content: any[]
   ): string | OpenAI.Chat.Completions.ChatCompletionContentPart[] {
     if (!Array.isArray(content)) return "";
 
@@ -555,7 +549,7 @@ export class ResponsesToChatCompletionConverter {
   }
 
   private convertToolChoice(
-    choice: OpenAI.Responses.ResponseCreateParams["tool_choice"],
+    choice: OpenAI.Responses.ResponseCreateParams["tool_choice"]
   ): OpenAI.Chat.Completions.ChatCompletionToolChoiceOption {
     if (typeof choice === "string") {
       if (choice === "auto" || choice === "none" || choice === "required") return choice;
@@ -571,7 +565,7 @@ export class ResponsesToChatCompletionConverter {
   }
 
   private convertTextFormat(
-    format: any,
+    format: any
   ): OpenAI.Chat.Completions.ChatCompletionCreateParams["response_format"] {
     if (format.type === "json_schema") {
       return {
@@ -591,9 +585,7 @@ export class ResponsesToChatCompletionConverter {
 
   // --- Private: response helpers ---
 
-  private finishReasonToStatus(
-    reason: string | null | undefined,
-  ): RespResponse["status"] {
+  private finishReasonToStatus(reason: string | null | undefined): RespResponse["status"] {
     switch (reason) {
       case "stop":
       case "tool_calls":
@@ -656,7 +648,7 @@ export class ResponsesToChatCompletionConverter {
 
   private emitCompleted(
     usage?: OpenAI.CompletionUsage,
-    status?: RespResponse["status"],
+    status?: RespResponse["status"]
   ): RespStreamEvent[] {
     const state = this.streamState;
     const finalStatus = status ?? "completed";
