@@ -25,8 +25,7 @@
     "lint:fix": "eslint src --fix",
     "format": "prettier --write src",
     "format:check": "prettier --check src",
-    "prepare": "husky",
-    "prepublishOnly": "npm run build"
+    "prepare": "(husky || true) && npm run build"
   },
   "lint-staged": {
     "src/**/*.ts": [
