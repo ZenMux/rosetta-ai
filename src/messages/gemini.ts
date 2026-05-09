@@ -246,23 +246,19 @@ export class MessagesToGeminiConverter {
 
     for (const part of parts) {
       if (part.thought && part.text) {
-        const newThought = part.text.slice(state.prevThought.length);
-        if (newThought) {
-          if (state.currentBlockType !== "thinking") {
-            this.transitionBlock(state, events, "thinking");
-            events.push({
-              type: "content_block_start",
-              index: state.currentBlockIndex,
-              content_block: { type: "thinking", thinking: "", signature: "" },
-            });
-          }
-          state.prevThought = part.text;
+        if (state.currentBlockType !== "thinking") {
+          this.transitionBlock(state, events, "thinking");
           events.push({
-            type: "content_block_delta",
+            type: "content_block_start",
             index: state.currentBlockIndex,
-            delta: { type: "thinking_delta", thinking: newThought },
+            content_block: { type: "thinking", thinking: "", signature: "" },
           });
         }
+        events.push({
+          type: "content_block_delta",
+          index: state.currentBlockIndex,
+          delta: { type: "thinking_delta", thinking: part.text },
+        });
       } else if (part.functionCall) {
         const fc = part.functionCall;
         const fcId = fc.id ?? fc.name ?? "";
@@ -292,24 +288,20 @@ export class MessagesToGeminiConverter {
             });
           }
         }
-      } else if (part.text != null) {
-        const newText = part.text.slice(state.prevText.length);
-        if (newText) {
-          if (state.currentBlockType !== "text") {
-            this.transitionBlock(state, events, "text");
-            events.push({
-              type: "content_block_start",
-              index: state.currentBlockIndex,
-              content_block: { type: "text", text: "", citations: null },
-            });
-          }
-          state.prevText = part.text;
+      } else if (part.text != null && part.text !== "") {
+        if (state.currentBlockType !== "text") {
+          this.transitionBlock(state, events, "text");
           events.push({
-            type: "content_block_delta",
+            type: "content_block_start",
             index: state.currentBlockIndex,
-            delta: { type: "text_delta", text: newText },
+            content_block: { type: "text", text: "", citations: null },
           });
         }
+        events.push({
+          type: "content_block_delta",
+          index: state.currentBlockIndex,
+          delta: { type: "text_delta", text: part.text },
+        });
       }
     }
 

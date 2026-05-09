@@ -254,39 +254,35 @@ export class ResponsesToGeminiConverter {
 
     for (const part of parts) {
       if (part.thought && part.text) {
-        const newThought = part.text.slice(state.prevThought.length);
-        if (newThought) {
-          if (!state.reasoningStarted) {
-            state.reasoningStarted = true;
-            events.push({
-              type: "response.output_item.added",
-              item: {
-                type: "reasoning",
-                id: `rs_${this.generateId()}`,
-                summary: [],
-              },
-              output_index: state.outputIndex,
-              sequence_number: state.seq++,
-            } as RespStreamEvent);
-            events.push({
-              type: "response.reasoning_summary_part.added",
-              item_id: `rs_${this.generateId()}`,
-              output_index: state.outputIndex,
-              summary_index: 0,
-              part: { type: "summary_text", text: "" },
-              sequence_number: state.seq++,
-            } as RespStreamEvent);
-          }
-          state.prevThought = part.text;
+        if (!state.reasoningStarted) {
+          state.reasoningStarted = true;
           events.push({
-            type: "response.reasoning_summary_text.delta",
+            type: "response.output_item.added",
+            item: {
+              type: "reasoning",
+              id: `rs_${this.generateId()}`,
+              summary: [],
+            },
+            output_index: state.outputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.reasoning_summary_part.added",
             item_id: `rs_${this.generateId()}`,
             output_index: state.outputIndex,
             summary_index: 0,
-            delta: newThought,
+            part: { type: "summary_text", text: "" },
             sequence_number: state.seq++,
           } as RespStreamEvent);
         }
+        events.push({
+          type: "response.reasoning_summary_text.delta",
+          item_id: `rs_${this.generateId()}`,
+          output_index: state.outputIndex,
+          summary_index: 0,
+          delta: part.text,
+          sequence_number: state.seq++,
+        } as RespStreamEvent);
       } else if (part.functionCall) {
         const fc = part.functionCall;
         const fcId = fc.id ?? fc.name ?? "";
@@ -323,46 +319,41 @@ export class ResponsesToGeminiConverter {
             } as RespStreamEvent);
           }
         }
-      } else if (part.text != null) {
-        const newText = part.text.slice(state.prevText.length);
-        if (newText) {
-          if (!state.textMessageStarted) {
-            state.textMessageStarted = true;
-            const msgOutputIndex =
-              state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
+      } else if (part.text != null && part.text !== "") {
+        if (!state.textMessageStarted) {
+          state.textMessageStarted = true;
+          const msgOutputIndex =
+            state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
 
-            events.push({
-              type: "response.output_item.added",
-              item: {
-                type: "message",
-                id: `msg_${this.generateId()}`,
-                role: "assistant",
-                status: "in_progress",
-                content: [],
-              },
-              output_index: msgOutputIndex,
-              sequence_number: state.seq++,
-            } as RespStreamEvent);
-            events.push({
-              type: "response.content_part.added",
-              item_id: `msg_${this.generateId()}`,
-              output_index: msgOutputIndex,
-              content_index: 0,
-              part: { type: "output_text", text: "", annotations: [] },
-              sequence_number: state.seq++,
-            } as RespStreamEvent);
-          }
-          state.prevText = part.text;
           events.push({
-            type: "response.output_text.delta",
+            type: "response.output_item.added",
+            item: {
+              type: "message",
+              id: `msg_${this.generateId()}`,
+              role: "assistant",
+              status: "in_progress",
+              content: [],
+            },
+            output_index: msgOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.content_part.added",
             item_id: `msg_${this.generateId()}`,
-            output_index:
-              state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount,
+            output_index: msgOutputIndex,
             content_index: 0,
-            delta: newText,
+            part: { type: "output_text", text: "", annotations: [] },
             sequence_number: state.seq++,
           } as RespStreamEvent);
         }
+        events.push({
+          type: "response.output_text.delta",
+          item_id: `msg_${this.generateId()}`,
+          output_index: state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount,
+          content_index: 0,
+          delta: part.text,
+          sequence_number: state.seq++,
+        } as RespStreamEvent);
       }
     }
 

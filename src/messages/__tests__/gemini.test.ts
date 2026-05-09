@@ -545,7 +545,7 @@ describe("MessagesToGeminiConverter", () => {
       expect(delta.delta.text).toBe("Hello");
     });
 
-    it("emits incremental text delta", () => {
+    it("emits each incremental text chunk as delta", () => {
       const c = new MessagesToGeminiConverter();
       c.convertStreamChunk(makeChunk());
 
@@ -557,7 +557,7 @@ describe("MessagesToGeminiConverter", () => {
 
       const events = c.convertStreamChunk(
         makeChunk({
-          candidates: [{ content: { role: "model", parts: [{ text: "Hello world" }] } } as any],
+          candidates: [{ content: { role: "model", parts: [{ text: " world" }] } } as any],
         })
       );
 

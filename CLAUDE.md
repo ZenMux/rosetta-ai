@@ -46,7 +46,7 @@ Each directory has the converter files and a `__tests__/` subdirectory. Tests ar
 
 ### Streaming Differences
 
-Anthropic and OpenAI use incremental delta-based streaming (each chunk has only new content). Gemini uses cumulative streaming (each chunk contains all content so far). Converters between these models must track previous state to extract or accumulate deltas.
+All four protocols (Anthropic, OpenAI Chat Completions, OpenAI Responses, Google Gemini via `@google/genai`) use incremental delta-based streaming — each chunk contains only the new content since the last chunk. Converters emit each chunk's text directly without slicing or accumulation.
 
 Stream converters use a private `StreamState` object initialized in the constructor. Each converter instance handles one stream — create a new instance for each request.
 

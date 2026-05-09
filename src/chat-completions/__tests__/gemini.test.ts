@@ -692,7 +692,7 @@ describe("ChatCompletionToGeminiConverter", () => {
       expect(textChunk).toBeDefined();
     });
 
-    it("emits incremental text delta", () => {
+    it("emits each incremental text chunk", () => {
       const c = new ChatCompletionToGeminiConverter();
       c.convertStreamChunk(makeStreamChunk());
 
@@ -710,7 +710,7 @@ describe("ChatCompletionToGeminiConverter", () => {
         makeStreamChunk({
           candidates: [
             {
-              content: { role: "model", parts: [{ text: "Hello world" }] },
+              content: { role: "model", parts: [{ text: " world" }] },
             } as any,
           ],
         })

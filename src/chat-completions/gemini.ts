@@ -249,18 +249,14 @@ export class ChatCompletionToGeminiConverter {
 
     for (const part of parts) {
       if (part.thought && part.text) {
-        const newThought = part.text.slice(state.prevThought.length);
-        if (newThought) {
-          state.prevThought = part.text;
-          events.push(
-            this.makeChunk({
-              content: "",
-              ...{
-                reasoning: newThought,
-              },
-            })
-          );
-        }
+        events.push(
+          this.makeChunk({
+            content: "",
+            ...{
+              reasoning: part.text,
+            },
+          })
+        );
       } else if (part.functionCall) {
         const fc = part.functionCall;
         const fcId = fc.id ?? fc.name ?? "";
@@ -283,12 +279,8 @@ export class ChatCompletionToGeminiConverter {
             })
           );
         }
-      } else if (part.text != null) {
-        const newText = part.text.slice(state.prevText.length);
-        if (newText) {
-          state.prevText = part.text;
-          events.push(this.makeChunk({ content: newText }));
-        }
+      } else if (part.text != null && part.text !== "") {
+        events.push(this.makeChunk({ content: part.text }));
       }
     }
 
