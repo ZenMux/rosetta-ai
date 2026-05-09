@@ -1,6 +1,6 @@
 {
-  "name": "rosetta-ai",
-  "version": "0.0.1",
+  "name": "@zenmux/rosetta-ai",
+  "version": "0.0.2",
   "description": "Universal translator between AI provider protocols",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,7 +33,15 @@
       "prettier --write"
     ]
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZenMux/rosetta-ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZenMux/rosetta-ai/issues"
+  },
+  "homepage": "https://github.com/ZenMux/rosetta-ai#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@google/genai": "^1.50.1",
