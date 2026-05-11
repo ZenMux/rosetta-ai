@@ -161,10 +161,7 @@ export class MessagesToGeminiConverter {
     const hasToolUse = content.some(b => b.type === "tool_use");
     const stopReason = this.mapFinishReasonToStopReason(candidate?.finishReason, hasToolUse);
 
-    const usage = response.usageMetadata;
-    const promptTokens = (usage?.promptTokenCount ?? 0) + (usage?.toolUsePromptTokenCount ?? 0);
-    const thoughtsTokens = usage?.thoughtsTokenCount ?? 0;
-    const candidatesTokens = (usage?.candidatesTokenCount ?? 0) + thoughtsTokens;
+    const usage = this.buildUsage(response.usageMetadata, response.candidates);
 
     return {
       id: response.responseId ?? `msg_${this.generateId()}`,
@@ -174,17 +171,63 @@ export class MessagesToGeminiConverter {
       content,
       stop_reason: stopReason,
       stop_sequence: null,
-      usage: {
-        input_tokens: promptTokens,
-        output_tokens: candidatesTokens,
-        cache_read_input_tokens: usage?.cachedContentTokenCount ?? null,
-        cache_creation_input_tokens: 0,
-        cache_creation: null,
-        inference_geo: null,
-        server_tool_use: null,
-        service_tier: null,
-      },
+      usage,
       container: null,
+    } as any;
+  }
+
+  private buildUsage(metadata: any, candidates?: any[]): any {
+    const m = metadata ?? {};
+    const promptTokenCount = m.promptTokenCount ?? 0;
+    const candidatesTokenCount = m.candidatesTokenCount ?? 0;
+    const totalTokenCount = m.totalTokenCount ?? 0;
+    const cachedContentTokenCount = m.cachedContentTokenCount ?? 0;
+    const thoughtsTokenCount = m.thoughtsTokenCount ?? 0;
+    const toolUsePromptTokenCount = m.toolUsePromptTokenCount ?? 0;
+    const trafficType = m.trafficType ?? null;
+
+    const audioTokens =
+      m.promptTokensDetails?.find((d: any) => d.modality === "AUDIO")?.tokenCount ?? 0;
+    const audioCachedTokens =
+      m.cacheTokensDetails?.find((d: any) => d.modality === "AUDIO")?.tokenCount ?? 0;
+
+    let webSearchCount = 0;
+    let webSearchQueriesCount = 0;
+    for (const c of candidates ?? []) {
+      const queries = c?.groundingMetadata?.webSearchQueries;
+      if (queries && queries.length > 0) {
+        webSearchCount++;
+        webSearchQueriesCount += queries.length;
+      }
+    }
+
+    const promptTokens = promptTokenCount + toolUsePromptTokenCount;
+    const completionTokens = candidatesTokenCount + thoughtsTokenCount;
+
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokenCount,
+      prompt_tokens_details: {
+        cached_tokens: cachedContentTokenCount,
+        audio_tokens: audioTokens,
+        audio_cached_tokens: audioCachedTokens,
+      },
+      completion_tokens_details: {
+        reasoning_tokens: thoughtsTokenCount,
+      },
+      web_search: webSearchCount,
+      web_search_queries: webSearchQueriesCount,
+      tool_use: toolUsePromptTokenCount,
+      trafficType,
+      input_tokens: promptTokens,
+      output_tokens: completionTokens,
+      cache_read_input_tokens: cachedContentTokenCount,
+      cache_creation_input_tokens: 0,
+      server_tool_use: null,
+      service_tier: "standard",
+      audio_input_tokens: audioTokens,
+      audio_cache_read_tokens: audioCachedTokens,
     };
   }
 
@@ -338,14 +381,8 @@ export class MessagesToGeminiConverter {
           stop_sequence: null,
           container: null,
         },
-        usage: {
-          output_tokens: chunk.usageMetadata?.candidatesTokenCount ?? 0,
-          input_tokens: null,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          server_tool_use: null,
-        },
-      });
+        usage: this.buildUsage(chunk.usageMetadata, chunk.candidates),
+      } as any);
 
       events.push({ type: "message_stop" });
     }
