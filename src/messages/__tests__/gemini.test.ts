@@ -502,6 +502,88 @@ describe("MessagesToGeminiConverter", () => {
       expect(result.usage.input_tokens).toBe(110);
       expect(result.usage.output_tokens).toBe(70);
     });
+
+    it("enriches usage with OpenAI-style fields", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          usageMetadata: {
+            promptTokenCount: 100,
+            candidatesTokenCount: 50,
+            totalTokenCount: 180,
+            toolUsePromptTokenCount: 10,
+            thoughtsTokenCount: 20,
+            cachedContentTokenCount: 30,
+          } as any,
+        })
+      );
+
+      const usage = result.usage as any;
+      expect(usage.prompt_tokens).toBe(110);
+      expect(usage.completion_tokens).toBe(70);
+      expect(usage.total_tokens).toBe(180);
+      expect(usage.prompt_tokens_details.cached_tokens).toBe(30);
+      expect(usage.completion_tokens_details.reasoning_tokens).toBe(20);
+      expect(usage.tool_use).toBe(10);
+    });
+
+    it("counts web_search and web_search_queries from groundingMetadata", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "Result" }] },
+              finishReason: "STOP",
+              groundingMetadata: {
+                webSearchQueries: ["query1", "query2", "query3"],
+              },
+            } as any,
+          ],
+        })
+      );
+
+      const usage = result.usage as any;
+      expect(usage.web_search).toBe(1);
+      expect(usage.web_search_queries).toBe(3);
+    });
+
+    it("extracts audio tokens from promptTokensDetails and cacheTokensDetails", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          usageMetadata: {
+            promptTokenCount: 50,
+            candidatesTokenCount: 20,
+            totalTokenCount: 70,
+            promptTokensDetails: [
+              { modality: "TEXT", tokenCount: 30 },
+              { modality: "AUDIO", tokenCount: 20 },
+            ],
+            cacheTokensDetails: [{ modality: "AUDIO", tokenCount: 5 }],
+          } as any,
+        })
+      );
+
+      const usage = result.usage as any;
+      expect(usage.prompt_tokens_details.audio_tokens).toBe(20);
+      expect(usage.prompt_tokens_details.audio_cached_tokens).toBe(5);
+      expect(usage.audio_input_tokens).toBe(20);
+      expect(usage.audio_cache_read_tokens).toBe(5);
+    });
+
+    it("passes trafficType through", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          usageMetadata: {
+            promptTokenCount: 10,
+            candidatesTokenCount: 5,
+            totalTokenCount: 15,
+            trafficType: "ON_DEMAND",
+          } as any,
+        })
+      );
+
+      const usage = result.usage as any;
+      expect(usage.trafficType).toBe("ON_DEMAND");
+    });
   });
 
   // ===== convertStreamChunk (Gemini → Messages, backward) =====
