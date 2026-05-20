@@ -12,9 +12,12 @@ import type {
 
 type BlockType = "text" | "tool_use" | "thinking" | "web_search_tool_result" | null;
 
-type BlockWithThoughtSignature = {
-  thought_signature?: string;
-};
+const GEMINI_THOUGHT_SIGNATURE_PREFIX = "rosetta-ai/gemini-function-call-thought-signature:v1:";
+const ENCODING = { UTF8: "utf8", BASE64URL: "base64url" } as const;
+interface GeminiThoughtSignatureCarrier {
+  tool_use_id: string;
+  signature: string;
+}
 
 interface StreamState {
   id: string;
@@ -148,13 +151,16 @@ export class MessagesToGeminiConverter {
     for (const part of parts) {
       if (part.functionCall) {
         const fc = part.functionCall;
+        const id = fc.id ?? fc.name ?? this.generateId();
+        if (part.thoughtSignature) {
+          content.push(this.createGeminiThoughtSignatureBlock(id, part.thoughtSignature));
+        }
         content.push({
           type: "tool_use",
-          id: fc.id ?? fc.name ?? this.generateId(),
+          id,
           name: fc.name ?? "",
           input: fc.args ?? {},
           caller: { type: "direct" },
-          ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
         });
       }
     }
@@ -309,9 +315,12 @@ export class MessagesToGeminiConverter {
         });
       } else if (part.functionCall) {
         const fc = part.functionCall;
-        const fcId = fc.id ?? fc.name ?? "";
+        const fcId = fc.id ?? fc.name ?? this.generateId();
         if (!state.seenFunctionCallIds.has(fcId)) {
           state.seenFunctionCallIds.add(fcId);
+          if (part.thoughtSignature) {
+            this.emitGeminiThoughtSignatureBlock(state, events, fcId, part.thoughtSignature);
+          }
           this.transitionBlock(state, events, "tool_use");
           state.toolCallBlockIndices.set(fcId, state.currentBlockIndex);
 
@@ -320,11 +329,10 @@ export class MessagesToGeminiConverter {
             index: state.currentBlockIndex,
             content_block: {
               type: "tool_use",
-              id: fc.id ?? fc.name ?? this.generateId(),
+              id: fcId,
               name: fc.name ?? "",
               input: {},
               caller: { type: "direct" },
-              ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
             },
           });
 
@@ -516,19 +524,32 @@ export class MessagesToGeminiConverter {
     }
 
     const parts: Part[] = [];
+    const thoughtSignaturesByToolUseId = msg.content.reduce((map, block) => {
+      if (block.type !== "redacted_thinking") return map;
+
+      const carrier = this.parseGeminiThoughtSignatureBlock(block);
+      if (!carrier) return map;
+
+      map.set(carrier.tool_use_id, carrier.signature);
+      return map;
+    }, new Map<string, string>());
 
     for (const block of msg.content) {
+      if (block.type === "redacted_thinking") {
+        continue;
+      }
       if (block.type === "text") {
         parts.push({ text: block.text });
       } else if (block.type === "tool_use") {
-        const tu = block as Anthropic.ToolUseBlockParam & BlockWithThoughtSignature;
+        const tu = block as Anthropic.ToolUseBlockParam;
+        const thoughtSignature = thoughtSignaturesByToolUseId.get(tu.id);
         const part: Part = {
           functionCall: {
             id: tu.id,
             name: tu.name,
             args: tu.input as Record<string, unknown>,
           },
-          ...(tu.thought_signature ? { thoughtSignature: tu.thought_signature } : {}),
+          ...(thoughtSignature ? { thoughtSignature } : {}),
         };
         parts.push(part);
       }
@@ -652,6 +673,73 @@ export class MessagesToGeminiConverter {
       }
     }
     return results;
+  }
+
+  private createGeminiThoughtSignatureBlock(
+    toolUseId: string,
+    signature: string
+  ): Anthropic.RedactedThinkingBlock {
+    const data = Buffer.from(
+      JSON.stringify({ tool_use_id: toolUseId, signature }),
+      ENCODING.UTF8
+    ).toString(ENCODING.BASE64URL);
+    return {
+      type: "redacted_thinking",
+      data: `${GEMINI_THOUGHT_SIGNATURE_PREFIX}${data}`,
+    };
+  }
+
+  private parseGeminiThoughtSignatureBlock(
+    block: Anthropic.RedactedThinkingBlockParam
+  ): GeminiThoughtSignatureCarrier | null {
+    if (!block.data.startsWith(GEMINI_THOUGHT_SIGNATURE_PREFIX)) {
+      return null;
+    }
+
+    try {
+      const encoded = block.data.slice(GEMINI_THOUGHT_SIGNATURE_PREFIX.length);
+      const parsed = JSON.parse(Buffer.from(encoded, ENCODING.BASE64URL).toString(ENCODING.UTF8));
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        typeof (parsed as GeminiThoughtSignatureCarrier).tool_use_id === "string" &&
+        typeof (parsed as GeminiThoughtSignatureCarrier).signature === "string" &&
+        (parsed as GeminiThoughtSignatureCarrier).tool_use_id.length > 0 &&
+        (parsed as GeminiThoughtSignatureCarrier).signature.length > 0
+      ) {
+        return parsed as GeminiThoughtSignatureCarrier;
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  private emitGeminiThoughtSignatureBlock(
+    state: StreamState,
+    events: Anthropic.RawMessageStreamEvent[],
+    toolUseId: string,
+    signature: string
+  ): void {
+    if (state.currentBlockType !== null) {
+      events.push({
+        type: "content_block_stop",
+        index: state.currentBlockIndex,
+      });
+      state.currentBlockType = null;
+    }
+
+    state.currentBlockIndex++;
+    events.push({
+      type: "content_block_start",
+      index: state.currentBlockIndex,
+      content_block: this.createGeminiThoughtSignatureBlock(toolUseId, signature),
+    });
+    events.push({
+      type: "content_block_stop",
+      index: state.currentBlockIndex,
+    });
   }
 
   private generateId(): string {

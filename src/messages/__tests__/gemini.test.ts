@@ -2,6 +2,20 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { GenerateContentResponse, Candidate } from "@google/genai";
 import { MessagesToGeminiConverter } from "../gemini";
 
+const GEMINI_THOUGHT_SIGNATURE_PREFIX = "rosetta-ai/gemini-function-call-thought-signature:v1:";
+
+function makeGeminiThoughtSignatureBlock(toolUseId: string, signature: string) {
+  const data = Buffer.from(JSON.stringify({ tool_use_id: toolUseId, signature }), "utf8").toString(
+    "base64url"
+  );
+  return { type: "redacted_thinking", data: `${GEMINI_THOUGHT_SIGNATURE_PREFIX}${data}` };
+}
+
+function decodeGeminiThoughtSignatureBlock(block: any) {
+  const encoded = block.data.slice(GEMINI_THOUGHT_SIGNATURE_PREFIX.length);
+  return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+}
+
 describe("MessagesToGeminiConverter", () => {
   const converter = new MessagesToGeminiConverter();
 
@@ -139,7 +153,7 @@ describe("MessagesToGeminiConverter", () => {
       expect(toolParts[0].functionResponse.response).toEqual({ output: "72F" });
     });
 
-    it("preserves Gemini thought signatures on assistant tool_use history", () => {
+    it("restores Gemini thought signatures from redacted_thinking history", () => {
       const result = converter.convertRequest({
         model: "gemini-3-pro",
         max_tokens: 1024,
@@ -148,13 +162,8 @@ describe("MessagesToGeminiConverter", () => {
           {
             role: "assistant",
             content: [
-              {
-                type: "tool_use",
-                id: "tu_1",
-                name: "default_api:Bash",
-                input: { command: "pwd" },
-                thought_signature: "sig_tool_123",
-              } as any,
+              makeGeminiThoughtSignatureBlock("tu_1", "sig_tool_123") as any,
+              { type: "tool_use", id: "tu_1", name: "default_api:Bash", input: { command: "pwd" } },
             ],
           },
         ],
@@ -169,6 +178,30 @@ describe("MessagesToGeminiConverter", () => {
         },
         thoughtSignature: "sig_tool_123",
       });
+    });
+
+    it("ignores non-Rosetta redacted_thinking blocks", () => {
+      const result = converter.convertRequest({
+        model: "gemini-3-pro",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "redacted_thinking", data: "anthropic-redacted-thinking" } as any,
+              { type: "tool_use", id: "tu_1", name: "default_api:Bash", input: {} },
+            ],
+          },
+        ],
+      });
+
+      const modelParts = (result.contents as any[])[0].parts;
+      expect(modelParts[0].functionCall).toEqual({
+        id: "tu_1",
+        name: "default_api:Bash",
+        args: {},
+      });
+      expect(modelParts[0].thoughtSignature).toBeUndefined();
     });
 
     it("converts image block (base64) to inlineData", () => {
@@ -443,7 +476,7 @@ describe("MessagesToGeminiConverter", () => {
       expect(result.stop_reason).toBe("tool_use");
     });
 
-    it("preserves functionCall thoughtSignature on tool_use blocks", () => {
+    it("preserves functionCall thoughtSignature in redacted_thinking blocks", () => {
       const result = converter.convertResponse(
         makeResponse({
           candidates: [
@@ -467,8 +500,58 @@ describe("MessagesToGeminiConverter", () => {
         })
       );
 
+      const redactedThinking = result.content.find(
+        (b: any) => b.type === "redacted_thinking"
+      ) as any;
       const toolUse = result.content.find((b: any) => b.type === "tool_use") as any;
-      expect(toolUse.thought_signature).toBe("sig_tool_123");
+      expect(redactedThinking).toBeDefined();
+      expect(decodeGeminiThoughtSignatureBlock(redactedThinking)).toEqual({
+        tool_use_id: "call_1",
+        signature: "sig_tool_123",
+      });
+      expect(toolUse.thought_signature).toBeUndefined();
+    });
+
+    it("round-trips functionCall thoughtSignature through strict Messages blocks", () => {
+      const message = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    functionCall: {
+                      id: "call_1",
+                      name: "default_api:Bash",
+                      args: { command: "pwd" },
+                    },
+                    thoughtSignature: "sig_tool_123",
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            } as any,
+          ],
+        })
+      );
+
+      const strictContent = message.content.map((block: any) =>
+        block.type === "redacted_thinking"
+          ? { type: "redacted_thinking", data: block.data }
+          : block.type === "tool_use"
+            ? { type: "tool_use", id: block.id, name: block.name, input: block.input }
+            : block
+      );
+
+      const result = converter.convertRequest({
+        model: "gemini-3-pro",
+        max_tokens: 1024,
+        messages: [{ role: "assistant", content: strictContent as any }],
+      });
+
+      const modelParts = (result.contents as any[])[0].parts;
+      expect(modelParts[0].thoughtSignature).toBe("sig_tool_123");
     });
 
     it("converts thought parts to thinking blocks", () => {
@@ -732,7 +815,7 @@ describe("MessagesToGeminiConverter", () => {
       expect(blockStart.content_block.name).toBe("get_weather");
     });
 
-    it("emits thought_signature on streamed tool_use blocks", () => {
+    it("emits redacted_thinking before streamed tool_use blocks with thoughtSignature", () => {
       const c = new MessagesToGeminiConverter();
       c.convertStreamChunk(makeChunk());
 
@@ -754,8 +837,14 @@ describe("MessagesToGeminiConverter", () => {
         })
       );
 
-      const blockStart = events.find(e => e.type === "content_block_start") as any;
-      expect(blockStart.content_block.thought_signature).toBe("sig_stream_123");
+      const blockStarts = events.filter(e => e.type === "content_block_start") as any[];
+      expect(blockStarts[0].content_block.type).toBe("redacted_thinking");
+      expect(decodeGeminiThoughtSignatureBlock(blockStarts[0].content_block)).toEqual({
+        tool_use_id: "call_1",
+        signature: "sig_stream_123",
+      });
+      expect(blockStarts[1].content_block.type).toBe("tool_use");
+      expect(blockStarts[1].content_block.thought_signature).toBeUndefined();
     });
 
     it("emits thinking_delta for thought parts", () => {
