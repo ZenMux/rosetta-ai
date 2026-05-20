@@ -12,6 +12,10 @@ import type {
 
 type BlockType = "text" | "tool_use" | "thinking" | "web_search_tool_result" | null;
 
+type BlockWithThoughtSignature = {
+  thought_signature?: string;
+};
+
 interface StreamState {
   id: string;
   model: string;
@@ -150,6 +154,7 @@ export class MessagesToGeminiConverter {
           name: fc.name ?? "",
           input: fc.args ?? {},
           caller: { type: "direct" },
+          ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
         });
       }
     }
@@ -319,6 +324,7 @@ export class MessagesToGeminiConverter {
               name: fc.name ?? "",
               input: {},
               caller: { type: "direct" },
+              ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
             },
           });
 
@@ -515,14 +521,16 @@ export class MessagesToGeminiConverter {
       if (block.type === "text") {
         parts.push({ text: block.text });
       } else if (block.type === "tool_use") {
-        const tu = block as Anthropic.ToolUseBlockParam;
-        parts.push({
+        const tu = block as Anthropic.ToolUseBlockParam & BlockWithThoughtSignature;
+        const part: Part = {
           functionCall: {
             id: tu.id,
             name: tu.name,
             args: tu.input as Record<string, unknown>,
           },
-        });
+          ...(tu.thought_signature ? { thoughtSignature: tu.thought_signature } : {}),
+        };
+        parts.push(part);
       }
     }
 
