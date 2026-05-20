@@ -139,6 +139,38 @@ describe("MessagesToGeminiConverter", () => {
       expect(toolParts[0].functionResponse.response).toEqual({ output: "72F" });
     });
 
+    it("preserves Gemini thought signatures on assistant tool_use history", () => {
+      const result = converter.convertRequest({
+        model: "gemini-3-pro",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: "Run a command" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "tu_1",
+                name: "default_api:Bash",
+                input: { command: "pwd" },
+                thought_signature: "sig_tool_123",
+              } as any,
+            ],
+          },
+        ],
+      });
+
+      const modelParts = (result.contents as any[])[1].parts;
+      expect(modelParts[0]).toEqual({
+        functionCall: {
+          id: "tu_1",
+          name: "default_api:Bash",
+          args: { command: "pwd" },
+        },
+        thoughtSignature: "sig_tool_123",
+      });
+    });
+
     it("converts image block (base64) to inlineData", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
@@ -411,6 +443,34 @@ describe("MessagesToGeminiConverter", () => {
       expect(result.stop_reason).toBe("tool_use");
     });
 
+    it("preserves functionCall thoughtSignature on tool_use blocks", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    functionCall: {
+                      id: "call_1",
+                      name: "default_api:Bash",
+                      args: { command: "pwd" },
+                    },
+                    thoughtSignature: "sig_tool_123",
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            } as any,
+          ],
+        })
+      );
+
+      const toolUse = result.content.find((b: any) => b.type === "tool_use") as any;
+      expect(toolUse.thought_signature).toBe("sig_tool_123");
+    });
+
     it("converts thought parts to thinking blocks", () => {
       const result = converter.convertResponse(
         makeResponse({
@@ -670,6 +730,32 @@ describe("MessagesToGeminiConverter", () => {
       expect(blockStart).toBeDefined();
       expect(blockStart.content_block.type).toBe("tool_use");
       expect(blockStart.content_block.name).toBe("get_weather");
+    });
+
+    it("emits thought_signature on streamed tool_use blocks", () => {
+      const c = new MessagesToGeminiConverter();
+      c.convertStreamChunk(makeChunk());
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    functionCall: { id: "call_1", name: "default_api:Bash", args: {} },
+                    thoughtSignature: "sig_stream_123",
+                  },
+                ],
+              },
+            } as any,
+          ],
+        })
+      );
+
+      const blockStart = events.find(e => e.type === "content_block_start") as any;
+      expect(blockStart.content_block.thought_signature).toBe("sig_stream_123");
     });
 
     it("emits thinking_delta for thought parts", () => {
