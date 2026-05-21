@@ -28,6 +28,7 @@ interface StreamState {
   prevText: string;
   prevThought: string;
   seenFunctionCallIds: Set<string>;
+  streamFunctionCallIds: Map<string, string>;
   toolCallBlockIndices: Map<string, number>;
 }
 
@@ -43,6 +44,7 @@ export class MessagesToGeminiConverter {
   convertRequest(params: Anthropic.MessageCreateParams): GenerateContentParameters {
     const systemParts: Part[] = [];
     const contents: Content[] = [];
+    const toolUseNames = this.collectToolUseNames(params.messages);
 
     if (params.system) {
       if (typeof params.system === "string") {
@@ -56,7 +58,7 @@ export class MessagesToGeminiConverter {
 
     for (const msg of params.messages) {
       if (msg.role === "user") {
-        this.convertUserMessage(contents, msg);
+        this.convertUserMessage(contents, msg, toolUseNames);
       } else if (msg.role === "assistant") {
         this.convertAssistantMessage(contents, msg);
       }
@@ -151,7 +153,7 @@ export class MessagesToGeminiConverter {
     for (const part of parts) {
       if (part.functionCall) {
         const fc = part.functionCall;
-        const id = fc.id ?? fc.name ?? this.generateId();
+        const id = this.generateToolUseId();
         if (part.thoughtSignature) {
           content.push(this.createGeminiThoughtSignatureBlock(id, part.thoughtSignature));
         }
@@ -298,6 +300,7 @@ export class MessagesToGeminiConverter {
       });
     }
 
+    const functionCallOccurrences = new Map<string, number>();
     for (const part of parts) {
       if (part.thought && part.text) {
         if (state.currentBlockType !== "thinking") {
@@ -315,7 +318,10 @@ export class MessagesToGeminiConverter {
         });
       } else if (part.functionCall) {
         const fc = part.functionCall;
-        const fcId = fc.id ?? fc.name ?? this.generateId();
+        const rawKey = this.getFunctionCallRawKey(fc);
+        const occurrence = functionCallOccurrences.get(rawKey) ?? 0;
+        functionCallOccurrences.set(rawKey, occurrence + 1);
+        const fcId = this.getStreamToolUseId(state, fc, occurrence);
         if (!state.seenFunctionCallIds.has(fcId)) {
           state.seenFunctionCallIds.add(fcId);
           if (part.thoughtSignature) {
@@ -406,7 +412,11 @@ export class MessagesToGeminiConverter {
 
   // --- Private: request helpers ---
 
-  private convertUserMessage(contents: Content[], msg: Anthropic.MessageParam): void {
+  private convertUserMessage(
+    contents: Content[],
+    msg: Anthropic.MessageParam,
+    toolUseNames: Map<string, string>
+  ): void {
     if (typeof msg.content === "string") {
       contents.push({ role: "user", parts: [{ text: msg.content }] });
       return;
@@ -444,7 +454,7 @@ export class MessagesToGeminiConverter {
           toolResponseParts.push({
             functionResponse: {
               id: tr.tool_use_id,
-              name: tr.tool_use_id,
+              name: toolUseNames.get(tr.tool_use_id) || tr.tool_use_id,
               response: { output },
             },
           });
@@ -746,6 +756,45 @@ export class MessagesToGeminiConverter {
     return Math.random().toString(36).substring(2, 15);
   }
 
+  private generateToolUseId(): string {
+    return `toolu_${Date.now()}_${this.generateId()}`;
+  }
+
+  private getFunctionCallRawKey(fc: NonNullable<Part["functionCall"]>): string {
+    return fc.id ?? fc.name ?? "__missing_function_call_id__";
+  }
+
+  private getStreamToolUseId(
+    state: StreamState,
+    fc: NonNullable<Part["functionCall"]>,
+    occurrence: number
+  ): string {
+    const key = `${this.getFunctionCallRawKey(fc)}:${occurrence}`;
+    let id = state.streamFunctionCallIds.get(key);
+    if (!id) {
+      id = this.generateToolUseId();
+      state.streamFunctionCallIds.set(key, id);
+    }
+    return id;
+  }
+
+  private collectToolUseNames(messages: Anthropic.MessageParam[]): Map<string, string> {
+    return messages.reduce((toolUseNames, msg) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) {
+        return toolUseNames;
+      }
+
+      for (const block of msg.content) {
+        if (block.type !== "tool_use") continue;
+
+        const tu = block as Anthropic.ToolUseBlockParam;
+        toolUseNames.set(tu.id, tu.name);
+      }
+
+      return toolUseNames;
+    }, new Map<string, string>());
+  }
+
   // --- Private: stream helpers ---
 
   private createStreamState(): StreamState {
@@ -758,6 +807,7 @@ export class MessagesToGeminiConverter {
       prevText: "",
       prevThought: "",
       seenFunctionCallIds: new Set(),
+      streamFunctionCallIds: new Map(),
       toolCallBlockIndices: new Map(),
     };
   }
