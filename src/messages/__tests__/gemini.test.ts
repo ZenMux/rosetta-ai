@@ -150,6 +150,7 @@ describe("MessagesToGeminiConverter", () => {
       const toolParts = (result.contents as any[])[2].parts;
       expect(toolParts[0].functionResponse).toBeDefined();
       expect(toolParts[0].functionResponse.id).toBe("tu_1");
+      expect(toolParts[0].functionResponse.name).toBe("get_weather");
       expect(toolParts[0].functionResponse.response).toEqual({ output: "72F" });
     });
 
@@ -471,9 +472,37 @@ describe("MessagesToGeminiConverter", () => {
 
       const toolUse = result.content.find((b: any) => b.type === "tool_use") as any;
       expect(toolUse).toBeDefined();
+      expect(toolUse.id).toMatch(/^toolu_/);
       expect(toolUse.name).toBe("get_weather");
       expect(toolUse.input).toEqual({ city: "SF" });
       expect(result.stop_reason).toBe("tool_use");
+    });
+
+    it("generates unique tool_use ids for Gemini functionCall parts", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { functionCall: { id: "Bash", name: "Bash", args: { command: "pwd" } } },
+                  { functionCall: { id: "Bash", name: "Bash", args: { command: "ls" } } },
+                ],
+              },
+              finishReason: "STOP",
+            } as any,
+          ],
+        })
+      );
+
+      const toolUses = result.content.filter((b: any) => b.type === "tool_use") as any[];
+      expect(toolUses).toHaveLength(2);
+      expect(toolUses[0].name).toBe("Bash");
+      expect(toolUses[1].name).toBe("Bash");
+      expect(toolUses[0].id).toMatch(/^toolu_/);
+      expect(toolUses[1].id).toMatch(/^toolu_/);
+      expect(toolUses[0].id).not.toBe(toolUses[1].id);
     });
 
     it("preserves functionCall thoughtSignature in redacted_thinking blocks", () => {
@@ -505,10 +534,10 @@ describe("MessagesToGeminiConverter", () => {
       ) as any;
       const toolUse = result.content.find((b: any) => b.type === "tool_use") as any;
       expect(redactedThinking).toBeDefined();
-      expect(decodeGeminiThoughtSignatureBlock(redactedThinking)).toEqual({
-        tool_use_id: "call_1",
-        signature: "sig_tool_123",
-      });
+      const carrier = decodeGeminiThoughtSignatureBlock(redactedThinking);
+      expect(carrier.tool_use_id).toBe(toolUse.id);
+      expect(carrier.tool_use_id).toMatch(/^toolu_/);
+      expect(carrier.signature).toBe("sig_tool_123");
       expect(toolUse.thought_signature).toBeUndefined();
     });
 
@@ -815,6 +844,29 @@ describe("MessagesToGeminiConverter", () => {
       expect(blockStart.content_block.name).toBe("get_weather");
     });
 
+    it("generates a unique streamed tool_use id for Gemini functionCall parts", () => {
+      const c = new MessagesToGeminiConverter();
+      c.convertStreamChunk(makeChunk());
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ functionCall: { id: "Bash", name: "Bash", args: { command: "pwd" } } }],
+              },
+            } as any,
+          ],
+        })
+      );
+
+      const blockStart = events.find(e => e.type === "content_block_start") as any;
+      expect(blockStart.content_block.type).toBe("tool_use");
+      expect(blockStart.content_block.name).toBe("Bash");
+      expect(blockStart.content_block.id).toMatch(/^toolu_/);
+    });
+
     it("emits redacted_thinking before streamed tool_use blocks with thoughtSignature", () => {
       const c = new MessagesToGeminiConverter();
       c.convertStreamChunk(makeChunk());
@@ -839,11 +891,11 @@ describe("MessagesToGeminiConverter", () => {
 
       const blockStarts = events.filter(e => e.type === "content_block_start") as any[];
       expect(blockStarts[0].content_block.type).toBe("redacted_thinking");
-      expect(decodeGeminiThoughtSignatureBlock(blockStarts[0].content_block)).toEqual({
-        tool_use_id: "call_1",
-        signature: "sig_stream_123",
-      });
       expect(blockStarts[1].content_block.type).toBe("tool_use");
+      const carrier = decodeGeminiThoughtSignatureBlock(blockStarts[0].content_block);
+      expect(carrier.tool_use_id).toBe(blockStarts[1].content_block.id);
+      expect(carrier.tool_use_id).toMatch(/^toolu_/);
+      expect(carrier.signature).toBe("sig_stream_123");
       expect(blockStarts[1].content_block.thought_signature).toBeUndefined();
     });
 
