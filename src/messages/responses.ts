@@ -145,7 +145,7 @@ export class MessagesToResponsesConverter {
     }
 
     const stopReason = this.statusToStopReason(response.status, response.output);
-    const usage = response.usage;
+    const usage = this.buildUsage(response.usage, webSearchCount);
 
     return {
       id: response.id,
@@ -155,20 +155,44 @@ export class MessagesToResponsesConverter {
       content,
       stop_reason: stopReason,
       stop_sequence: null,
-      usage: {
-        input_tokens: usage?.input_tokens ?? 0,
-        output_tokens: usage?.output_tokens ?? 0,
-        cache_creation_input_tokens: null,
-        cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
-        cache_creation: null,
-        inference_geo: null,
-        server_tool_use:
-          webSearchCount > 0
-            ? ({ web_search_requests: webSearchCount, web_fetch_requests: 0 } as any)
-            : null,
-        service_tier: null,
-      },
+      usage,
       container: null,
+    } as any;
+  }
+
+  private buildUsage(usage: any, webSearchCount: number): any {
+    const u = usage ?? {};
+    const inputTokens = u.input_tokens ?? 0;
+    const outputTokens = u.output_tokens ?? 0;
+    const totalTokens = u.total_tokens ?? inputTokens + outputTokens;
+    const cachedTokens = u.input_tokens_details?.cached_tokens ?? 0;
+    const reasoningTokens = u.output_tokens_details?.reasoning_tokens ?? 0;
+
+    return {
+      completion_tokens: outputTokens,
+      prompt_tokens: inputTokens,
+      total_tokens: totalTokens,
+      completion_tokens_details: {
+        reasoning_tokens: reasoningTokens,
+      },
+      prompt_tokens_details: {
+        cached_tokens: cachedTokens,
+        ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
+      },
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_read_input_tokens: cachedTokens,
+      server_tool_use:
+        webSearchCount > 0
+          ? {
+              web_fetch_requests: 0,
+              web_search_requests: webSearchCount,
+            }
+          : null,
+      cache_creation_input_tokens: 0,
+      service_tier: "standard",
+      audio_input_tokens: 0,
+      audio_cache_read_tokens: 0,
     };
   }
 
@@ -306,23 +330,13 @@ export class MessagesToResponsesConverter {
       case "response.completed": {
         const completedEvent = event as OpenAI.Responses.ResponseCompletedEvent;
         const resp = completedEvent.response;
-        const usage = resp.usage;
         const stopReason = this.statusToStopReason(resp.status, resp.output);
 
         events.push({
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null, container: null },
-          usage: {
-            output_tokens: usage?.output_tokens ?? 0,
-            input_tokens: usage?.input_tokens ?? null,
-            cache_creation_input_tokens: null,
-            cache_read_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
-            server_tool_use:
-              state.webSearchCount > 0
-                ? ({ web_search_requests: state.webSearchCount } as any)
-                : null,
-          },
-        });
+          usage: this.buildUsage(resp.usage, state.webSearchCount),
+        } as any);
         events.push({ type: "message_stop" });
         break;
       }
@@ -330,19 +344,12 @@ export class MessagesToResponsesConverter {
       case "response.incomplete": {
         const incompleteEvent = event as OpenAI.Responses.ResponseIncompleteEvent;
         const resp = incompleteEvent.response;
-        const usage = resp.usage;
 
         events.push({
           type: "message_delta",
           delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
-          usage: {
-            output_tokens: usage?.output_tokens ?? 0,
-            input_tokens: usage?.input_tokens ?? null,
-            cache_creation_input_tokens: null,
-            cache_read_input_tokens: null,
-            server_tool_use: null,
-          },
-        });
+          usage: this.buildUsage(resp.usage, state.webSearchCount),
+        } as any);
         events.push({ type: "message_stop" });
         break;
       }
@@ -351,14 +358,8 @@ export class MessagesToResponsesConverter {
         events.push({
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
-          usage: {
-            output_tokens: 0,
-            input_tokens: null,
-            cache_creation_input_tokens: null,
-            cache_read_input_tokens: null,
-            server_tool_use: null,
-          },
-        });
+          usage: this.buildUsage(null, state.webSearchCount),
+        } as any);
         events.push({ type: "message_stop" });
         break;
       }
