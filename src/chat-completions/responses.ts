@@ -120,7 +120,11 @@ export class ChatCompletionToResponsesConverter {
             logprobs: null,
           });
         }
-      } else if (item.type === "web_search_call") {
+      } else if (
+        item.type === "web_search_call" &&
+        item.status === "completed" &&
+        item.action.type === "search"
+      ) {
         webSearchCount++;
       }
     }
@@ -288,7 +292,9 @@ export class ChatCompletionToResponsesConverter {
       case "response.failed":
         return this.handleFailed();
       case "response.web_search_call.completed":
-        this.streamState.webSearchCount++;
+        return null;
+      case "response.output_item.done":
+        this.handleOutputItemDone(event as OpenAI.Responses.ResponseOutputItemDoneEvent);
         return null;
       case "response.output_text.annotation.added":
         this.streamState.annotations.push({
@@ -562,6 +568,15 @@ export class ChatCompletionToResponsesConverter {
       });
     }
     return null;
+  }
+
+  private handleOutputItemDone(event: OpenAI.Responses.ResponseOutputItemDoneEvent): void {
+    const item = event.item;
+    if (item?.type === "web_search_call") {
+      if (item.status === "completed" && item.action.type === "search") {
+        this.streamState.webSearchCount++;
+      }
+    }
   }
 
   private handleTextDelta(
