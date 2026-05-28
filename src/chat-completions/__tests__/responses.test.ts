@@ -383,6 +383,29 @@ describe("ChatCompletionToResponsesConverter", () => {
       ]);
     });
 
+    it("counts only completed web search calls", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          output: [
+            {
+              type: "web_search_call",
+              id: "ws_1",
+              status: "completed",
+              action: { type: "search", queries: ["q1"] },
+            } as any,
+            {
+              type: "web_search_call",
+              id: "ws_2",
+              status: "in_progress",
+              action: { type: "search", queries: ["q2"] },
+            } as any,
+          ],
+        })
+      );
+
+      expect((result.usage as any).prompt_tokens_details?.web_search).toBe(1);
+    });
+
     it("converts reasoning items", () => {
       const result = converter.convertResponse(
         makeResponse({
@@ -583,14 +606,48 @@ describe("ChatCompletionToResponsesConverter", () => {
       expect((result.choices[0].delta as any).reasoning).toBe("Thinking...");
     });
 
-    it("tracks web_search_call.completed count", () => {
+    it("counts web search when output_item.done completes a search", () => {
       const c = new ChatCompletionToResponsesConverter();
       initStream(c);
 
-      const r1 = c.convertStreamEvent({
-        type: "response.web_search_call.completed",
+      c.convertStreamEvent({
+        type: "response.output_item.added",
+        item: {
+          type: "web_search_call",
+          id: "ws_1",
+          status: "completed",
+          action: { type: "search", queries: ["q1"] },
+        },
+        output_index: 0,
+        sequence_number: 1,
       } as any);
-      expect(r1).toBeNull();
+
+      c.convertStreamEvent({
+        type: "response.output_item.done",
+        item: {
+          type: "web_search_call",
+          id: "ws_1",
+          status: "completed",
+          action: { type: "search", queries: ["q1"] },
+        },
+        output_index: 0,
+        sequence_number: 2,
+      } as any);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.completed",
+          response: {
+            id: "resp_1",
+            status: "completed",
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          } as any,
+          sequence_number: 10,
+        })
+      );
+
+      expect(c["streamState"].webSearchCount).toBe(1);
+      expect(result.choices[0].finish_reason).toBe("stop");
     });
 
     it("collects annotations from output_text.annotation.added", () => {
