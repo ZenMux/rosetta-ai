@@ -359,6 +359,30 @@ describe("MessagesToResponsesConverter", () => {
       expect(result.usage.cache_read_input_tokens).toBe(30);
     });
 
+    it("counts only completed web search calls", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          output: [
+            {
+              type: "web_search_call",
+              id: "ws_1",
+              status: "completed",
+              action: { type: "search", queries: ["q1"] },
+            } as any,
+            {
+              type: "web_search_call",
+              id: "ws_2",
+              status: "in_progress",
+              action: { type: "search", queries: ["q2"] },
+            } as any,
+          ],
+        })
+      );
+
+      expect((result.usage as any).prompt_tokens_details?.web_search).toBe(1);
+      expect((result.usage as any).server_tool_use?.web_search_requests).toBe(1);
+    });
+
     it("converts empty output to empty text content", () => {
       const result = converter.convertResponse(
         makeResponse({
@@ -668,6 +692,51 @@ describe("MessagesToResponsesConverter", () => {
         e => e.type === "message_delta"
       ) as Anthropic.RawMessageDeltaEvent;
       expect(msgDelta.delta.stop_reason).toBe("tool_use");
+    });
+
+    it("counts web search when output_item.done completes a search", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+
+      c.convertStreamEvent({
+        type: "response.output_item.added",
+        item: {
+          type: "web_search_call",
+          id: "ws_1",
+          status: "completed",
+          action: { type: "search", queries: ["q1"] },
+        },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
+
+      c.convertStreamEvent({
+        type: "response.output_item.done",
+        item: {
+          type: "web_search_call",
+          id: "ws_1",
+          status: "completed",
+          action: { type: "search", queries: ["q1"] },
+        },
+        output_index: 0,
+        sequence_number: 2,
+      } as any);
+
+      const events = c.convertStreamEvent({
+        type: "response.completed",
+        response: {
+          id: "resp_123",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        } as any,
+        sequence_number: 3,
+      });
+
+      const msgDelta = events.find(
+        e => e.type === "message_delta"
+      ) as Anthropic.RawMessageDeltaEvent;
+      expect((msgDelta.usage as any).prompt_tokens_details?.web_search).toBe(1);
     });
   });
 });
