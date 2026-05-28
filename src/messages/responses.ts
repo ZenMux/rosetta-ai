@@ -99,7 +99,11 @@ export class MessagesToResponsesConverter {
           thinking: summaryText,
           signature: "",
         });
-      } else if (item.type === "web_search_call") {
+      } else if (
+        item.type === "web_search_call" &&
+        item.status === "completed" &&
+        item.action.type === "search"
+      ) {
         webSearchCount++;
       }
     }
@@ -315,15 +319,19 @@ export class MessagesToResponsesConverter {
       }
 
       case "response.output_item.done": {
+        const doneEvent = event as OpenAI.Responses.ResponseOutputItemDoneEvent;
+        const item = doneEvent.item;
+        if (item?.type === "web_search_call") {
+          if (item.status === "completed" && item.action.type === "search") {
+            state.webSearchCount++;
+          }
+          break;
+        }
+
         events.push({
           type: "content_block_stop",
           index: state.currentBlockIndex,
         });
-        break;
-      }
-
-      case "response.web_search_call.completed": {
-        state.webSearchCount++;
         break;
       }
 
