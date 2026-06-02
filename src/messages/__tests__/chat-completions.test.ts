@@ -274,6 +274,62 @@ describe("MessagesToChatCompletionConverter", () => {
         const content = msg.content as OpenAI.ChatCompletionContentPart[];
         expect(content[0]).toEqual({ type: "text", text: "Hello world" });
       });
+
+      it("unpacks document block with content source into nested text and image parts", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "document",
+                  source: {
+                    type: "content",
+                    content: [
+                      { type: "text", text: "Figure 1" },
+                      {
+                        type: "image",
+                        source: { type: "base64", media_type: "image/png", data: "iVBOR..." },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        });
+
+        const msg = result.messages[0] as OpenAI.ChatCompletionUserMessageParam;
+        const content = msg.content as OpenAI.ChatCompletionContentPart[];
+        expect(content).toEqual([
+          { type: "text", text: "Figure 1" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBOR..." } },
+        ]);
+      });
+
+      it("converts document block with string content source to text part", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "document",
+                  source: { type: "content", content: "Inline text" },
+                },
+              ],
+            },
+          ],
+        });
+
+        const msg = result.messages[0] as OpenAI.ChatCompletionUserMessageParam;
+        const content = msg.content as OpenAI.ChatCompletionContentPart[];
+        expect(content[0]).toEqual({ type: "text", text: "Inline text" });
+      });
     });
 
     describe("assistant thinking blocks", () => {
