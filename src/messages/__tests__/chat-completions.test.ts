@@ -171,6 +171,74 @@ describe("MessagesToChatCompletionConverter", () => {
           content: "result2",
         });
       });
+
+      it("keeps text from search_result and tool_reference blocks in tool_result content", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "c1",
+                  content: [
+                    { type: "text", text: "Summary:" },
+                    {
+                      type: "search_result",
+                      source: "https://example.com",
+                      title: "Example",
+                      content: [
+                        { type: "text", text: "first hit" },
+                        { type: "text", text: "second hit" },
+                      ],
+                    },
+                    { type: "tool_reference", tool_name: "web_search" },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(result.messages[0]).toEqual({
+          role: "tool",
+          tool_call_id: "c1",
+          content: "Summary:\nfirst hit\nsecond hit\nweb_search",
+        });
+      });
+
+      it("skips image blocks in tool_result content (unsupported by tool role)", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "c1",
+                  content: [
+                    { type: "text", text: "see image" },
+                    {
+                      type: "image",
+                      source: { type: "base64", media_type: "image/png", data: "iVBOR..." },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(result.messages[0]).toEqual({
+          role: "tool",
+          tool_call_id: "c1",
+          content: "see image",
+        });
+      });
     });
 
     describe("multimodal content", () => {

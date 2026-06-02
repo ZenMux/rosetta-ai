@@ -506,19 +506,10 @@ export class MessagesToChatCompletionConverter {
 
     if (toolResults.length > 0) {
       for (const tr of toolResults) {
-        const content =
-          typeof tr.content === "string"
-            ? tr.content
-            : tr.content
-              ? tr.content
-                  .filter((b): b is Anthropic.TextBlockParam => b.type === "text")
-                  .map(b => b.text)
-                  .join("\n")
-              : "";
         messages.push({
           role: "tool",
           tool_call_id: tr.tool_use_id,
-          content,
+          content: this.convertToolResultContent(tr.content),
         });
       }
       return;
@@ -530,6 +521,33 @@ export class MessagesToChatCompletionConverter {
     }
 
     messages.push({ role: "user", content: contentParts });
+  }
+
+  private convertToolResultContent(content: Anthropic.ToolResultBlockParam["content"]): string {
+    if (typeof content === "string") {
+      return content;
+    }
+    if (!content) {
+      return "";
+    }
+
+    const texts: string[] = [];
+    for (const block of content) {
+      if (block.type === "text") {
+        texts.push(block.text);
+      } else if (block.type === "search_result") {
+        // OpenAI tool role has no search_result type; keep the text portions
+        const sr = block as Anthropic.SearchResultBlockParam;
+        for (const inner of sr.content) {
+          texts.push(inner.text);
+        }
+      } else if (block.type === "tool_reference") {
+        // keep only the referenced tool name
+        texts.push((block as Anthropic.ToolReferenceBlockParam).tool_name);
+      }
+      // image/document blocks are unsupported by OpenAI's tool role — skip
+    }
+    return texts.join("\n");
   }
 
   private convertImageBlock(
