@@ -170,27 +170,45 @@ export class MessagesToChatCompletionConverter {
       content,
       stop_reason: this.mapFinishReasonToStopReason(choice?.finish_reason),
       stop_sequence: null,
-      usage: this.convertUsage(response.usage),
+      usage: this.buildUsage(response.usage),
       container: null,
     };
   }
 
-  private convertUsage(usage?: OpenAI.CompletionUsage): Anthropic.Usage {
-    const promptTokens = usage?.prompt_tokens ?? 0;
-    const completionTokens = usage?.completion_tokens ?? 0;
-    const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
-    const webSearch: number = (usage?.prompt_tokens_details as any)?.web_search ?? 0;
+  private buildUsage(usage?: OpenAI.CompletionUsage): any {
+    const u = usage ?? ({} as OpenAI.CompletionUsage);
+    const inputTokens = u.prompt_tokens ?? 0;
+    const outputTokens = u.completion_tokens ?? 0;
+    const totalTokens = u.total_tokens ?? inputTokens + outputTokens;
+    const cachedTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
+    const reasoningTokens = u.completion_tokens_details?.reasoning_tokens ?? 0;
+    const webSearch: number = (u.prompt_tokens_details as any)?.web_search ?? 0;
 
     return {
-      input_tokens: promptTokens,
-      output_tokens: completionTokens,
-      cache_read_input_tokens: cached || null,
-      cache_creation_input_tokens: 0,
-      cache_creation: null,
-      inference_geo: null,
+      completion_tokens: outputTokens,
+      prompt_tokens: inputTokens,
+      total_tokens: totalTokens,
+      completion_tokens_details: {
+        reasoning_tokens: reasoningTokens,
+      },
+      prompt_tokens_details: {
+        cached_tokens: cachedTokens,
+        ...(webSearch > 0 ? { web_search: webSearch } : {}),
+      },
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_read_input_tokens: cachedTokens,
       server_tool_use:
-        webSearch > 0 ? { web_search_requests: webSearch, web_fetch_requests: 0 } : null,
+        webSearch > 0
+          ? {
+              web_fetch_requests: 0,
+              web_search_requests: webSearch,
+            }
+          : null,
+      cache_creation_input_tokens: 0,
       service_tier: "standard",
+      audio_input_tokens: u.prompt_tokens_details?.audio_tokens ?? 0,
+      audio_cache_read_tokens: (u.prompt_tokens_details as any)?.audio_cached_tokens ?? 0,
     };
   }
 
@@ -406,14 +424,8 @@ export class MessagesToChatCompletionConverter {
         stop_sequence: null,
         container: null,
       },
-      usage: {
-        output_tokens: usage?.completion_tokens ?? 0,
-        input_tokens: usage?.prompt_tokens ?? null,
-        cache_creation_input_tokens: null,
-        cache_read_input_tokens: usage?.prompt_tokens_details?.cached_tokens ?? null,
-        server_tool_use: null,
-      },
-    });
+      usage: this.buildUsage(usage),
+    } as any);
 
     events.push({ type: "message_stop" });
   }
