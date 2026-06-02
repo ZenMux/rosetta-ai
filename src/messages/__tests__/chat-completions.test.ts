@@ -540,6 +540,16 @@ describe("MessagesToChatCompletionConverter", () => {
         expect((result as any).stream).toBe(true);
       });
 
+      it("sets stream_options.include_usage when streaming", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "Hi" }],
+          stream: true,
+        } as any);
+        expect((result as any).stream_options).toEqual({ include_usage: true });
+      });
+
       it("does not set stream when not provided", () => {
         const result = converter.convertRequest({
           model: "claude-sonnet-4-20250514",
@@ -547,6 +557,7 @@ describe("MessagesToChatCompletionConverter", () => {
           messages: [{ role: "user", content: "Hi" }],
         });
         expect((result as any).stream).toBeUndefined();
+        expect((result as any).stream_options).toBeUndefined();
       });
     });
 
@@ -1183,6 +1194,76 @@ describe("MessagesToChatCompletionConverter", () => {
         expect(types).toContain("content_block_start");
         expect(types.filter(t => t === "content_block_delta").length).toBeGreaterThanOrEqual(1);
         expect(types).toContain("message_stop");
+      });
+
+      it("reports usage from the trailing usage-only chunk", async () => {
+        const c = new MessagesToChatCompletionConverter();
+        // Enable include_usage so terminal events defer to the usage chunk.
+        c.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "Hi" }],
+          stream: true,
+        } as any);
+
+        const chunks = [
+          makeChunk({ delta: { role: "assistant" } }),
+          makeChunk({ delta: { content: "Hello" } }),
+          makeChunk({ finish_reason: "stop" }),
+          // trailing usage-only chunk (empty choices) like OpenAI emits
+          {
+            id: "chatcmpl-123",
+            object: "chat.completion.chunk",
+            created: 1700000000,
+            model: "gpt-4o",
+            choices: [],
+            usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
+          } as unknown as OpenAI.ChatCompletionChunk,
+        ];
+
+        const events = await collect(c.convertStream(toAsync(chunks)));
+        const msgDelta = events.find(
+          e => e.type === "message_delta"
+        ) as Anthropic.RawMessageDeltaEvent;
+
+        expect(msgDelta).toBeDefined();
+        expect(msgDelta.usage.output_tokens).toBe(7);
+        expect(msgDelta.usage.input_tokens).toBe(12);
+        expect(msgDelta.delta.stop_reason).toBe("end_turn");
+
+        // message_delta/message_stop must appear exactly once, after the usage chunk
+        const types = events.map(e => e.type);
+        expect(types.filter(t => t === "message_delta").length).toBe(1);
+        expect(types.filter(t => t === "message_stop").length).toBe(1);
+        expect(types[types.length - 1]).toBe("message_stop");
+      });
+
+      it("flushes terminal events when usage chunk never arrives", async () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "Hi" }],
+          stream: true,
+        } as any);
+
+        const chunks = [
+          makeChunk({ delta: { role: "assistant" } }),
+          makeChunk({ delta: { content: "Hello" } }),
+          makeChunk({ finish_reason: "stop" }),
+          // no trailing usage chunk
+        ];
+
+        const events = await collect(c.convertStream(toAsync(chunks)));
+        const types = events.map(e => e.type);
+
+        expect(types.filter(t => t === "message_delta").length).toBe(1);
+        expect(types.filter(t => t === "message_stop").length).toBe(1);
+        const msgDelta = events.find(
+          e => e.type === "message_delta"
+        ) as Anthropic.RawMessageDeltaEvent;
+        expect(msgDelta.usage.output_tokens).toBe(0);
+        expect(msgDelta.delta.stop_reason).toBe("end_turn");
       });
     });
   });

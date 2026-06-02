@@ -13,10 +13,16 @@ interface StreamState {
   id: string;
   model: string;
   toolCallIndexMap: Map<number, number>;
+  stopReason: Anthropic.Message["stop_reason"];
+  finished: boolean;
 }
 
 export class MessagesToChatCompletionConverter {
   private streamState: StreamState;
+  // Set when the forward request enables stream_options.include_usage, so the
+  // backward stream knows usage arrives in a trailing usage-only chunk and can
+  // defer terminal events until then.
+  private streamUsageExpected = false;
 
   constructor() {
     this.streamState = this.createStreamState();
@@ -92,6 +98,8 @@ export class MessagesToChatCompletionConverter {
     }
     if (params.stream === true) {
       (result as any).stream = true;
+      (result as any).stream_options = { include_usage: true };
+      this.streamUsageExpected = true;
     }
 
     return result;
@@ -201,13 +209,30 @@ export class MessagesToChatCompletionConverter {
         yield event;
       }
     }
+
+    // Safety flush: if the backend signalled finish but never sent the trailing
+    // usage chunk, emit terminal events so the stream is well-formed.
+    if (this.streamState.stopReason !== null && !this.streamState.finished) {
+      const events: Anthropic.RawMessageStreamEvent[] = [];
+      this.emitTerminalEvents(this.streamState, events, undefined);
+      for (const event of events) {
+        yield event;
+      }
+    }
   }
 
   convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
     const state = this.streamState;
     const events: Anthropic.RawMessageStreamEvent[] = [];
     const choice = chunk.choices[0];
-    if (!choice) return events;
+
+    if (!choice) {
+      // Usage-only chunk (empty choices) emitted last when stream_options.include_usage is set.
+      if (chunk.usage) {
+        this.emitTerminalEvents(state, events, chunk.usage);
+      }
+      return events;
+    }
 
     state.id = chunk.id;
     state.model = chunk.model;
@@ -340,35 +365,57 @@ export class MessagesToChatCompletionConverter {
       }
     }
 
-    // Finish reason - emit stop events
+    // Finish reason - close the open block, then emit terminal events.
+    // When stream_options.include_usage is set, usage arrives in a trailing
+    // usage-only chunk; defer message_delta/message_stop until then so we can
+    // report real output_tokens. Otherwise (usage already on this chunk, or no
+    // usage at all) emit immediately.
     if (choice.finish_reason) {
+      state.stopReason = this.mapFinishReasonToStopReason(choice.finish_reason);
+
       if (state.currentBlockType !== null) {
         events.push({
           type: "content_block_stop",
           index: state.currentBlockIndex,
         });
+        state.currentBlockType = null;
       }
 
-      events.push({
-        type: "message_delta",
-        delta: {
-          stop_reason: this.mapFinishReasonToStopReason(choice.finish_reason),
-          stop_sequence: null,
-          container: null,
-        },
-        usage: {
-          output_tokens: 0,
-          input_tokens: null,
-          cache_creation_input_tokens: null,
-          cache_read_input_tokens: null,
-          server_tool_use: null,
-        },
-      });
-
-      events.push({ type: "message_stop" });
+      if (chunk.usage) {
+        this.emitTerminalEvents(state, events, chunk.usage);
+      } else if (!this.streamUsageExpected) {
+        this.emitTerminalEvents(state, events, undefined);
+      }
     }
 
     return events;
+  }
+
+  private emitTerminalEvents(
+    state: StreamState,
+    events: Anthropic.RawMessageStreamEvent[],
+    usage: OpenAI.CompletionUsage | undefined
+  ): void {
+    if (state.finished) return;
+    state.finished = true;
+
+    events.push({
+      type: "message_delta",
+      delta: {
+        stop_reason: state.stopReason,
+        stop_sequence: null,
+        container: null,
+      },
+      usage: {
+        output_tokens: usage?.completion_tokens ?? 0,
+        input_tokens: usage?.prompt_tokens ?? null,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: usage?.prompt_tokens_details?.cached_tokens ?? null,
+        server_tool_use: null,
+      },
+    });
+
+    events.push({ type: "message_stop" });
   }
 
   // --- Stream helpers ---
@@ -381,6 +428,8 @@ export class MessagesToChatCompletionConverter {
       id: "",
       model: "",
       toolCallIndexMap: new Map(),
+      stopReason: null,
+      finished: false,
     };
   }
 
