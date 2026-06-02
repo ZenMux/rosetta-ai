@@ -998,6 +998,65 @@ describe("MessagesToChatCompletionConverter", () => {
       expect(result.usage.output_tokens).toBe(50);
       expect(result.usage.cache_read_input_tokens).toBe(30);
     });
+
+    it("enriches usage with OpenAI-style fields", () => {
+      const input: OpenAI.ChatCompletion = {
+        id: "id",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hi", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          prompt_tokens_details: { cached_tokens: 30, audio_tokens: 4 },
+          completion_tokens_details: { reasoning_tokens: 12 },
+        } as any,
+      };
+      const usage = converter.convertResponse(input).usage as any;
+      expect(usage.prompt_tokens).toBe(100);
+      expect(usage.completion_tokens).toBe(50);
+      expect(usage.total_tokens).toBe(150);
+      expect(usage.completion_tokens_details).toEqual({ reasoning_tokens: 12 });
+      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30 });
+      expect(usage.audio_input_tokens).toBe(4);
+      expect(usage.service_tier).toBe("standard");
+      expect(usage.cache_creation_input_tokens).toBe(0);
+    });
+
+    it("counts web_search requests in usage", () => {
+      const input: OpenAI.ChatCompletion = {
+        id: "id",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hi", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+          prompt_tokens_details: { cached_tokens: 0, web_search: 2 },
+        } as any,
+      };
+      const usage = converter.convertResponse(input).usage as any;
+      expect(usage.prompt_tokens_details.web_search).toBe(2);
+      expect(usage.server_tool_use).toEqual({ web_fetch_requests: 0, web_search_requests: 2 });
+    });
   });
 
   // ===== convertStream (CC -> Messages, backward) =====
@@ -1353,6 +1412,9 @@ describe("MessagesToChatCompletionConverter", () => {
         expect(msgDelta).toBeDefined();
         expect(msgDelta.usage.output_tokens).toBe(7);
         expect(msgDelta.usage.input_tokens).toBe(12);
+        expect((msgDelta.usage as any).completion_tokens).toBe(7);
+        expect((msgDelta.usage as any).prompt_tokens).toBe(12);
+        expect((msgDelta.usage as any).total_tokens).toBe(19);
         expect(msgDelta.delta.stop_reason).toBe("end_turn");
 
         // message_delta/message_stop must appear exactly once, after the usage chunk
