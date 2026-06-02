@@ -496,7 +496,7 @@ export class MessagesToChatCompletionConverter {
           break;
         case "document":
           hasNonText = true;
-          contentParts.push(this.convertDocumentBlock(block as Anthropic.DocumentBlockParam));
+          contentParts.push(...this.convertDocumentBlock(block as Anthropic.DocumentBlockParam));
           break;
         case "tool_result":
           toolResults.push(block as Anthropic.ToolResultBlockParam);
@@ -554,38 +554,59 @@ export class MessagesToChatCompletionConverter {
 
   private convertDocumentBlock(
     block: Anthropic.DocumentBlockParam
-  ): OpenAI.ChatCompletionContentPart {
+  ): OpenAI.ChatCompletionContentPart[] {
     const source = block.source;
 
     if (source.type === "base64") {
       const src = source as Anthropic.Base64PDFSource;
-      return {
-        type: "file",
-        file: {
-          file_data: `data:${src.media_type};base64,${src.data}`,
-          filename: block.title ?? undefined,
+      return [
+        {
+          type: "file",
+          file: {
+            file_data: `data:${src.media_type};base64,${src.data}`,
+            filename: block.title ?? undefined,
+          },
         },
-      };
+      ];
     }
 
     if (source.type === "url") {
       const src = source as Anthropic.URLPDFSource;
-      return {
-        type: "file",
-        file: {
-          file_data: src.url,
-          filename: block.title ?? undefined,
+      return [
+        {
+          type: "file",
+          file: {
+            file_data: src.url,
+            filename: block.title ?? undefined,
+          },
         },
-      };
+      ];
     }
 
     // plain text source — encode as text content
     if (source.type === "text") {
       const src = source as Anthropic.PlainTextSource;
-      return { type: "text", text: src.data };
+      return [{ type: "text", text: src.data }];
     }
 
-    return { type: "text", text: "[Unsupported document source]" };
+    // content source — unpack nested text/image blocks into content parts
+    if (source.type === "content") {
+      const src = source as Anthropic.ContentBlockSource;
+      if (typeof src.content === "string") {
+        return [{ type: "text", text: src.content }];
+      }
+      const parts: OpenAI.ChatCompletionContentPart[] = [];
+      for (const nested of src.content) {
+        if (nested.type === "text") {
+          parts.push({ type: "text", text: nested.text });
+        } else if (nested.type === "image") {
+          parts.push(this.convertImageBlock(nested as Anthropic.ImageBlockParam));
+        }
+      }
+      return parts;
+    }
+
+    return [{ type: "text", text: "[Unsupported document source]" }];
   }
 
   private convertAssistantMessage(messages: OpenAIMessage[], msg: Anthropic.MessageParam): void {
