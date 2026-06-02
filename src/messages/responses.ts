@@ -413,9 +413,14 @@ export class MessagesToResponsesConverter {
                 parts.push({
                   type: "input_file",
                   file_data: `data:${src.media_type};base64,${src.data}`,
+                  filename: block.title || "file",
                 });
               } else if (src.type === "url") {
-                parts.push({ type: "input_file", file_data: src.url });
+                parts.push({
+                  type: "input_file",
+                  file_data: src.url,
+                  filename: block.title || "file",
+                });
               } else if (src.type === "text") {
                 parts.push({ type: "input_text", text: src.data });
               }
