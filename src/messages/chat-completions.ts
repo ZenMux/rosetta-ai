@@ -276,8 +276,11 @@ export class MessagesToChatCompletionConverter {
 
     const delta = choice.delta;
 
-    // First chunk with role - emit message_start
-    if (!state.messageStarted && delta.role === "assistant") {
+    // Emit message_start on the first chunk that carries a choice. Do not gate
+    // on delta.role === "assistant": some OpenAI-compatible providers omit role
+    // on the first delta (or send it late), and gating would yield content
+    // blocks with no preceding message_start, producing a malformed stream.
+    if (!state.messageStarted) {
       state.messageStarted = true;
       events.push({
         type: "message_start",
