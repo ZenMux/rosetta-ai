@@ -1185,6 +1185,47 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(msgDelta.delta.stop_reason).toBe("max_tokens");
       });
+
+      it("defers terminal events when usage is expected but never arrives, flushTerminalEvents emits them", () => {
+        const c = new MessagesToChatCompletionConverter();
+        // stream:true sets streamUsageExpected, so terminal events are deferred
+        // until the trailing usage-only chunk.
+        c.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "Hi" }],
+          stream: true,
+        });
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+        // Backend signals finish but omits the trailing usage chunk.
+        const finishEvents = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+        const finishTypes = finishEvents.map(e => e.type);
+        expect(finishTypes).toContain("content_block_stop");
+        expect(finishTypes).not.toContain("message_delta");
+        expect(finishTypes).not.toContain("message_stop");
+
+        // The flush emits the deferred terminal events.
+        const flushed = c.flushTerminalEvents();
+        const flushedTypes = flushed.map(e => e.type);
+        expect(flushedTypes).toEqual(["message_delta", "message_stop"]);
+        expect((flushed[0] as Anthropic.RawMessageDeltaEvent).delta.stop_reason).toBe("end_turn");
+
+        // Idempotent: a second flush emits nothing.
+        expect(c.flushTerminalEvents()).toEqual([]);
+      });
+
+      it("flushTerminalEvents is a no-op when the stream already terminated cleanly", () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+        // No stream_options.include_usage -> terminal events emitted inline.
+        const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+        expect(events.map(e => e.type)).toContain("message_stop");
+
+        expect(c.flushTerminalEvents()).toEqual([]);
+      });
     });
 
     describe("tool call streaming", () => {
