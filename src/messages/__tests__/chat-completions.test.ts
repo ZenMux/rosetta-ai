@@ -1122,6 +1122,22 @@ describe("MessagesToChatCompletionConverter", () => {
         expect(events[0].type).toBe("message_start");
       });
 
+      it("emits message_start even when the first delta omits role", () => {
+        const c = new MessagesToChatCompletionConverter();
+        // Some OpenAI-compatible providers send the first delta with content but
+        // no role; message_start must still precede the content blocks.
+        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+
+        expect(events[0].type).toBe("message_start");
+        const types = events.map(e => e.type);
+        expect(types).toContain("content_block_start");
+        expect(types).toContain("content_block_delta");
+
+        // Subsequent chunks do not emit a second message_start.
+        const next = c.convertStreamChunk(makeChunk({ delta: { content: " world" } }));
+        expect(next.map(e => e.type)).not.toContain("message_start");
+      });
+
       it("emits content_block_start + content_block_delta for first text chunk", () => {
         const c = new MessagesToChatCompletionConverter();
         c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
