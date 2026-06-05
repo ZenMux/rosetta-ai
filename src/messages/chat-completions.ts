@@ -189,9 +189,11 @@ export class MessagesToChatCompletionConverter {
       prompt_tokens: inputTokens,
       total_tokens: totalTokens,
       completion_tokens_details: {
+        ...u.completion_tokens_details,
         reasoning_tokens: reasoningTokens,
       },
       prompt_tokens_details: {
+        ...u.prompt_tokens_details,
         cached_tokens: cachedTokens,
         ...(webSearch > 0 ? { web_search: webSearch } : {}),
       },
