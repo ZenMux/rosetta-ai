@@ -1025,11 +1025,45 @@ describe("MessagesToChatCompletionConverter", () => {
       expect(usage.prompt_tokens).toBe(100);
       expect(usage.completion_tokens).toBe(50);
       expect(usage.total_tokens).toBe(150);
+      // original *_details fields are merged in, computed values take precedence
       expect(usage.completion_tokens_details).toEqual({ reasoning_tokens: 12 });
-      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30 });
+      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30, audio_tokens: 4 });
       expect(usage.audio_input_tokens).toBe(4);
       expect(usage.service_tier).toBe("standard");
       expect(usage.cache_creation_input_tokens).toBe(0);
+    });
+
+    it("preserves extra fields from origin usage details", () => {
+      const input: OpenAI.ChatCompletion = {
+        id: "id",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hi", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+          prompt_tokens_details: { cached_tokens: 3, audio_tokens: 1 },
+          completion_tokens_details: {
+            reasoning_tokens: 2,
+            accepted_prediction_tokens: 7,
+          },
+        } as any,
+      };
+      const usage = converter.convertResponse(input).usage as any;
+      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 3, audio_tokens: 1 });
+      expect(usage.completion_tokens_details).toEqual({
+        reasoning_tokens: 2,
+        accepted_prediction_tokens: 7,
+      });
     });
 
     it("counts web_search requests in usage", () => {
