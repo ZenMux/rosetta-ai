@@ -479,7 +479,7 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(result.temperature).toBe(0.7);
         expect(result.top_p).toBe(0.9);
-        expect(result.max_tokens).toBe(1000);
+        expect(result.max_completion_tokens).toBe(1000);
         expect(result.stop).toEqual(["END", "STOP"]);
       });
     });
