@@ -56,7 +56,9 @@ export class MessagesToChatCompletionConverter {
     };
 
     if (params.max_tokens !== undefined) {
-      result.max_tokens = params.max_tokens;
+      // Use max_completion_tokens: max_tokens is deprecated and rejected by
+      // o-series / reasoning models.
+      result.max_completion_tokens = params.max_tokens;
     }
     if (params.temperature !== undefined) {
       result.temperature = params.temperature;
