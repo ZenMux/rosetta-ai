@@ -234,13 +234,28 @@ export class MessagesToChatCompletionConverter {
 
     // Safety flush: if the backend signalled finish but never sent the trailing
     // usage chunk, emit terminal events so the stream is well-formed.
-    if (this.streamState.stopReason !== null && !this.streamState.finished) {
-      const events: Anthropic.RawMessageStreamEvent[] = [];
-      this.emitTerminalEvents(this.streamState, events, undefined);
-      for (const event of events) {
-        yield event;
-      }
+    for (const event of this.flushTerminalEvents()) {
+      yield event;
     }
+  }
+
+  /**
+   * Emit the trailing terminal events (message_delta + message_stop) when the
+   * backend signalled a finish reason but never sent the trailing usage-only
+   * chunk that normally triggers them. Returns an empty array when the stream
+   * already terminated cleanly.
+   *
+   * Callers that drive the stream chunk-by-chunk via convertStreamChunk (instead
+   * of convertStream) must invoke this once the upstream stream is exhausted, or
+   * a backend that omits the usage chunk will leave the converted stream without
+   * a message_stop.
+   */
+  flushTerminalEvents(): Anthropic.RawMessageStreamEvent[] {
+    const events: Anthropic.RawMessageStreamEvent[] = [];
+    if (this.streamState.stopReason !== null && !this.streamState.finished) {
+      this.emitTerminalEvents(this.streamState, events, undefined);
+    }
+    return events;
   }
 
   convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
