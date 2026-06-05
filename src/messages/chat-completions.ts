@@ -56,7 +56,9 @@ export class MessagesToChatCompletionConverter {
     };
 
     if (params.max_tokens !== undefined) {
-      result.max_tokens = params.max_tokens;
+      // Use max_completion_tokens: max_tokens is deprecated and rejected by
+      // o-series / reasoning models.
+      result.max_completion_tokens = params.max_tokens;
     }
     if (params.temperature !== undefined) {
       result.temperature = params.temperature;
@@ -189,9 +191,11 @@ export class MessagesToChatCompletionConverter {
       prompt_tokens: inputTokens,
       total_tokens: totalTokens,
       completion_tokens_details: {
+        ...u.completion_tokens_details,
         reasoning_tokens: reasoningTokens,
       },
       prompt_tokens_details: {
+        ...u.prompt_tokens_details,
         cached_tokens: cachedTokens,
         ...(webSearch > 0 ? { web_search: webSearch } : {}),
       },
@@ -230,13 +234,28 @@ export class MessagesToChatCompletionConverter {
 
     // Safety flush: if the backend signalled finish but never sent the trailing
     // usage chunk, emit terminal events so the stream is well-formed.
-    if (this.streamState.stopReason !== null && !this.streamState.finished) {
-      const events: Anthropic.RawMessageStreamEvent[] = [];
-      this.emitTerminalEvents(this.streamState, events, undefined);
-      for (const event of events) {
-        yield event;
-      }
+    for (const event of this.flushTerminalEvents()) {
+      yield event;
     }
+  }
+
+  /**
+   * Emit the trailing terminal events (message_delta + message_stop) when the
+   * backend signalled a finish reason but never sent the trailing usage-only
+   * chunk that normally triggers them. Returns an empty array when the stream
+   * already terminated cleanly.
+   *
+   * Callers that drive the stream chunk-by-chunk via convertStreamChunk (instead
+   * of convertStream) must invoke this once the upstream stream is exhausted, or
+   * a backend that omits the usage chunk will leave the converted stream without
+   * a message_stop.
+   */
+  flushTerminalEvents(): Anthropic.RawMessageStreamEvent[] {
+    const events: Anthropic.RawMessageStreamEvent[] = [];
+    if (this.streamState.stopReason !== null && !this.streamState.finished) {
+      this.emitTerminalEvents(this.streamState, events, undefined);
+    }
+    return events;
   }
 
   convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): Anthropic.RawMessageStreamEvent[] {
@@ -257,8 +276,11 @@ export class MessagesToChatCompletionConverter {
 
     const delta = choice.delta;
 
-    // First chunk with role - emit message_start
-    if (!state.messageStarted && delta.role === "assistant") {
+    // Emit message_start on the first chunk that carries a choice. Do not gate
+    // on delta.role === "assistant": some OpenAI-compatible providers omit role
+    // on the first delta (or send it late), and gating would yield content
+    // blocks with no preceding message_start, producing a malformed stream.
+    if (!state.messageStarted) {
       state.messageStarted = true;
       events.push({
         type: "message_start",

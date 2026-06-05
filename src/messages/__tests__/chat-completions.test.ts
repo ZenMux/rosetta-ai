@@ -479,7 +479,7 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(result.temperature).toBe(0.7);
         expect(result.top_p).toBe(0.9);
-        expect(result.max_tokens).toBe(1000);
+        expect(result.max_completion_tokens).toBe(1000);
         expect(result.stop).toEqual(["END", "STOP"]);
       });
     });
@@ -1025,11 +1025,45 @@ describe("MessagesToChatCompletionConverter", () => {
       expect(usage.prompt_tokens).toBe(100);
       expect(usage.completion_tokens).toBe(50);
       expect(usage.total_tokens).toBe(150);
+      // original *_details fields are merged in, computed values take precedence
       expect(usage.completion_tokens_details).toEqual({ reasoning_tokens: 12 });
-      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30 });
+      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30, audio_tokens: 4 });
       expect(usage.audio_input_tokens).toBe(4);
       expect(usage.service_tier).toBe("standard");
       expect(usage.cache_creation_input_tokens).toBe(0);
+    });
+
+    it("preserves extra fields from origin usage details", () => {
+      const input: OpenAI.ChatCompletion = {
+        id: "id",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hi", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+          prompt_tokens_details: { cached_tokens: 3, audio_tokens: 1 },
+          completion_tokens_details: {
+            reasoning_tokens: 2,
+            accepted_prediction_tokens: 7,
+          },
+        } as any,
+      };
+      const usage = converter.convertResponse(input).usage as any;
+      expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 3, audio_tokens: 1 });
+      expect(usage.completion_tokens_details).toEqual({
+        reasoning_tokens: 2,
+        accepted_prediction_tokens: 7,
+      });
     });
 
     it("counts web_search requests in usage", () => {
@@ -1086,6 +1120,22 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(events.length).toBe(1);
         expect(events[0].type).toBe("message_start");
+      });
+
+      it("emits message_start even when the first delta omits role", () => {
+        const c = new MessagesToChatCompletionConverter();
+        // Some OpenAI-compatible providers send the first delta with content but
+        // no role; message_start must still precede the content blocks.
+        const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+
+        expect(events[0].type).toBe("message_start");
+        const types = events.map(e => e.type);
+        expect(types).toContain("content_block_start");
+        expect(types).toContain("content_block_delta");
+
+        // Subsequent chunks do not emit a second message_start.
+        const next = c.convertStreamChunk(makeChunk({ delta: { content: " world" } }));
+        expect(next.map(e => e.type)).not.toContain("message_start");
       });
 
       it("emits content_block_start + content_block_delta for first text chunk", () => {
@@ -1150,6 +1200,47 @@ describe("MessagesToChatCompletionConverter", () => {
         ) as Anthropic.RawMessageDeltaEvent;
 
         expect(msgDelta.delta.stop_reason).toBe("max_tokens");
+      });
+
+      it("defers terminal events when usage is expected but never arrives, flushTerminalEvents emits them", () => {
+        const c = new MessagesToChatCompletionConverter();
+        // stream:true sets streamUsageExpected, so terminal events are deferred
+        // until the trailing usage-only chunk.
+        c.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "Hi" }],
+          stream: true,
+        });
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+        // Backend signals finish but omits the trailing usage chunk.
+        const finishEvents = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+        const finishTypes = finishEvents.map(e => e.type);
+        expect(finishTypes).toContain("content_block_stop");
+        expect(finishTypes).not.toContain("message_delta");
+        expect(finishTypes).not.toContain("message_stop");
+
+        // The flush emits the deferred terminal events.
+        const flushed = c.flushTerminalEvents();
+        const flushedTypes = flushed.map(e => e.type);
+        expect(flushedTypes).toEqual(["message_delta", "message_stop"]);
+        expect((flushed[0] as Anthropic.RawMessageDeltaEvent).delta.stop_reason).toBe("end_turn");
+
+        // Idempotent: a second flush emits nothing.
+        expect(c.flushTerminalEvents()).toEqual([]);
+      });
+
+      it("flushTerminalEvents is a no-op when the stream already terminated cleanly", () => {
+        const c = new MessagesToChatCompletionConverter();
+        c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+        c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+        // No stream_options.include_usage -> terminal events emitted inline.
+        const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+        expect(events.map(e => e.type)).toContain("message_stop");
+
+        expect(c.flushTerminalEvents()).toEqual([]);
       });
     });
 
