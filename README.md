@@ -7,7 +7,7 @@ Convert between OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, a
 ## Install
 
 ```bash
-npm install rosetta-ai
+npm install @zenmux/rosetta-ai
 ```
 
 ## How It Works
@@ -44,7 +44,7 @@ One converter instance handles the full round-trip for a single gateway route.
 ### OpenAI Chat Completions → Anthropic Messages
 
 ```typescript
-import { ChatCompletionToMessagesConverter } from "rosetta-ai";
+import { ChatCompletionToMessagesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new ChatCompletionToMessagesConverter();
 
@@ -67,7 +67,7 @@ for await (const chunk of converter.convertStream(stream)) {
 ### Anthropic Messages → OpenAI Chat Completions
 
 ```typescript
-import { MessagesToChatCompletionConverter } from "rosetta-ai";
+import { MessagesToChatCompletionConverter } from "@zenmux/rosetta-ai";
 
 const converter = new MessagesToChatCompletionConverter();
 
@@ -90,7 +90,7 @@ for await (const event of converter.convertStream(stream)) {
 ### OpenAI Chat Completions → OpenAI Responses
 
 ```typescript
-import { ChatCompletionToResponsesConverter } from "rosetta-ai";
+import { ChatCompletionToResponsesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new ChatCompletionToResponsesConverter();
 
@@ -109,7 +109,7 @@ for await (const chunk of converter.convertStream(responsesStream)) {
 ### OpenAI Responses → OpenAI Chat Completions
 
 ```typescript
-import { ResponsesToChatCompletionConverter } from "rosetta-ai";
+import { ResponsesToChatCompletionConverter } from "@zenmux/rosetta-ai";
 
 const converter = new ResponsesToChatCompletionConverter();
 
@@ -128,7 +128,7 @@ for await (const event of converter.convertStream(ccStream)) {
 ### Anthropic Messages → OpenAI Responses
 
 ```typescript
-import { MessagesToResponsesConverter } from "rosetta-ai";
+import { MessagesToResponsesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new MessagesToResponsesConverter();
 
@@ -147,7 +147,7 @@ for await (const event of converter.convertStream(responsesStream)) {
 ### OpenAI Responses → Anthropic Messages
 
 ```typescript
-import { ResponsesToMessagesConverter } from "rosetta-ai";
+import { ResponsesToMessagesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new ResponsesToMessagesConverter();
 
@@ -166,7 +166,7 @@ for await (const event of converter.convertStream(messagesStream)) {
 ### OpenAI Chat Completions → Google Gemini
 
 ```typescript
-import { ChatCompletionToGeminiConverter } from "rosetta-ai";
+import { ChatCompletionToGeminiConverter } from "@zenmux/rosetta-ai";
 import { GoogleGenAI } from "@google/genai";
 
 const converter = new ChatCompletionToGeminiConverter();
@@ -191,7 +191,7 @@ for await (const chunk of converter.convertStream(stream)) {
 ### Anthropic Messages → Google Gemini
 
 ```typescript
-import { MessagesToGeminiConverter } from "rosetta-ai";
+import { MessagesToGeminiConverter } from "@zenmux/rosetta-ai";
 
 const converter = new MessagesToGeminiConverter();
 
@@ -210,7 +210,7 @@ for await (const event of converter.convertStream(geminiStream)) {
 ### OpenAI Responses → Google Gemini
 
 ```typescript
-import { ResponsesToGeminiConverter } from "rosetta-ai";
+import { ResponsesToGeminiConverter } from "@zenmux/rosetta-ai";
 
 const converter = new ResponsesToGeminiConverter();
 
@@ -229,7 +229,7 @@ for await (const event of converter.convertStream(geminiStream)) {
 ### Google Gemini → OpenAI Chat Completions
 
 ```typescript
-import { GeminiToChatCompletionConverter } from "rosetta-ai";
+import { GeminiToChatCompletionConverter } from "@zenmux/rosetta-ai";
 
 const converter = new GeminiToChatCompletionConverter();
 
@@ -248,7 +248,7 @@ for await (const chunk of converter.convertStream(ccStream)) {
 ### Google Gemini → Anthropic Messages
 
 ```typescript
-import { GeminiToMessagesConverter } from "rosetta-ai";
+import { GeminiToMessagesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new GeminiToMessagesConverter();
 
@@ -267,7 +267,7 @@ for await (const chunk of converter.convertStream(messagesStream)) {
 ### Google Gemini → OpenAI Responses
 
 ```typescript
-import { GeminiToResponsesConverter } from "rosetta-ai";
+import { GeminiToResponsesConverter } from "@zenmux/rosetta-ai";
 
 const converter = new GeminiToResponsesConverter();
 
@@ -344,6 +344,71 @@ for await (const chunk of converter.convertStream(responsesStream)) {
 | `image_url` (URL) | `fileData` |
 | `file` content part | `inlineData` / `fileData` |
 | `input_audio` | `inlineData` (audio mime) |
+
+### Messages ↔ Responses
+
+| Anthropic Messages | OpenAI Responses |
+|---|---|
+| `model` | `model` |
+| `system` | `instructions` |
+| `messages` (user/assistant with content blocks) | `input` (ResponseInputItem[]) |
+| `max_tokens` | `max_output_tokens` |
+| `temperature` | `temperature` |
+| `top_p` | `top_p` |
+| `tools` (custom) | `tools` (function) |
+| `tools` (web_search_20250305) | `tools` (web_search) |
+| `tool_choice` (auto/any/none/tool) | `tool_choice` (auto/required/none/function) |
+| `tool_choice.disable_parallel_tool_use` | `parallel_tool_calls` |
+| `thinking` (enabled/disabled/adaptive) | `reasoning.effort` |
+| `output_config.format` (json_schema) | `text.format` (json_schema) |
+| `metadata.user_id` | `metadata.user_id` |
+| `service_tier` | `service_tier` |
+| `tool_use` blocks | `function_call` items |
+| `tool_result` blocks | `function_call_output` items |
+| `image` blocks (base64/url) | `input_image` parts |
+| `document` blocks (base64/url/text) | `input_file` / `input_text` parts |
+
+### Messages ↔ Gemini
+
+| Anthropic Messages | Google Gemini |
+|---|---|
+| `model` | `model` |
+| `system` | `config.systemInstruction` |
+| `messages` (user/assistant with content blocks) | `contents` (user/model roles) |
+| `max_tokens` | `config.maxOutputTokens` |
+| `temperature` | `config.temperature` |
+| `top_p` | `config.topP` |
+| `top_k` | `config.topK` |
+| `stop_sequences` | `config.stopSequences` |
+| `tools` (custom) | `config.tools[].functionDeclarations` |
+| `tools` (web_search_20250305) | `config.tools` (googleSearch) |
+| `tool_choice` (auto/any/none/tool) | `config.toolConfig.functionCallingConfig` (AUTO/ANY/NONE) |
+| `thinking` (enabled/disabled/adaptive) | `config.thinkingConfig` |
+| `output_config.format` (json_schema) | `config.responseMimeType` + `config.responseJsonSchema` |
+| `tool_use` blocks | `functionCall` parts |
+| `tool_result` blocks | `functionResponse` parts |
+| `image` blocks (base64/url) | `inlineData` / `fileData` |
+| `document` blocks (base64/url/text) | `inlineData` / `fileData` / text part |
+| `thinking` blocks (with signature) | `thought` parts (`thoughtSignature`) |
+
+### Responses ↔ Gemini
+
+| OpenAI Responses | Google Gemini |
+|---|---|
+| `model` | `model` |
+| `instructions` | `config.systemInstruction` |
+| `input` (ResponseInputItem[]) | `contents` (user/model roles) |
+| `max_output_tokens` | `config.maxOutputTokens` |
+| `temperature` | `config.temperature` |
+| `top_p` | `config.topP` |
+| `tools` (function) | `config.tools[].functionDeclarations` |
+| `tools` (web_search) | `config.tools` (googleSearch) |
+| `tool_choice` | `config.toolConfig.functionCallingConfig` (AUTO/ANY/NONE) |
+| `reasoning.effort` | `config.thinkingConfig` |
+| `text.format` (json_schema/json_object) | `config.responseMimeType` + `config.responseJsonSchema` |
+| `include` (logprobs) | `config.responseLogprobs` / `config.logprobs` |
+| `function_call` items | `functionCall` parts |
+| `function_call_output` items | `functionResponse` parts |
 
 ### Gemini Response / Stream
 
