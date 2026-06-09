@@ -10,7 +10,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 |---|---|---|
 | `model` | `model` | |
 | `messages` (system/developer) | `system` | Joined as text blocks |
-| `messages` (user) | `messages[]` (user) | Text, image, document blocks |
+| `messages` (user) | `messages[]` (user) | Text, image blocks (`file` parts → unsupported text placeholder) |
 | `messages` (assistant) | `messages[]` (assistant) | Text, tool_use, thinking blocks |
 | `messages` (tool) | `messages[]` (user tool_result) | |
 | `max_tokens` / `max_completion_tokens` | `max_tokens` | Default 4096 |
@@ -89,7 +89,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `output[]` message (refusal) | `choices[0].message.refusal` | |
 | `output[]` message (annotations) | `choices[0].message.annotations` | |
 | `output[]` web_search_call | `prompt_tokens_details.web_search` | Count |
-| `status` | `finish_reason` | completed→stop, incomplete→length, failed→content_filter |
+| `status` | `finish_reason` | completed→stop, incomplete→length, failed→stop; incomplete + `incomplete_details.reason: content_filter`→content_filter |
 | `usage.*` | `usage.*` | cached_tokens, reasoning_tokens mapped |
 
 ### Stream: text ✅ tool_calls ✅ reasoning ✅ annotations ✅ usage ✅
@@ -155,21 +155,25 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | Messages Field | CC Field | Notes |
 |---|---|---|
 | `model` | `model` | |
-| `system` | `messages[]` (system) | String or TextBlockParam[] |
+| `system` | `messages[]` (system) | String or TextBlockParam[], joined as text |
 | `messages` (user) | `messages[]` (user) | Text, image, document, tool_result |
 | `messages` (assistant) | `messages[]` (assistant) | Text, thinking, tool_use |
-| `max_tokens` | `max_tokens` | |
+| `max_tokens` | `max_completion_tokens` | `max_tokens` deprecated; reasoning models require `max_completion_tokens` |
 | `temperature` | `temperature` | |
 | `top_p` | `top_p` | |
 | `stop_sequences` | `stop` | |
 | `tools` (input_schema) | `tools` (function) | |
-| `tools` (web_search_20250305) | `web_search_options` | |
+| `tools` (web_search_20250305 / web_search_20260209) | `web_search_options` | max_uses, user_location mapped |
 | `tool_choice` | `tool_choice` + `parallel_tool_calls` | auto/any/none → auto/required/none |
 | `output_config` (json_schema) | `response_format` | |
 | `thinking` | `reasoning_effort` | disabled→none, enabled→low/medium/high |
 | `metadata.user_id` | `user` | |
 | `service_tier` | `service_tier` | standard_only→default |
-| `stream` | `stream` | |
+| `stream` | `stream` + `stream_options` | `stream_options.include_usage: true` |
+
+**Document block sources:** base64/url → `file` content part; text → text part; `content` source → nested text/image parts unpacked
+
+**tool_result content blocks:** text kept; `search_result` → inner text flattened; `tool_reference` → tool_name; image/document skipped (unsupported by tool role)
 
 **Not converted:** `top_k`, Anthropic-specific metadata fields
 
@@ -188,6 +192,8 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `usage.completion_tokens` | `usage.output_tokens` | |
 | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | |
 | `prompt_tokens_details.web_search` | `server_tool_use.web_search_requests` | |
+
+Usage also re-emits enriched OpenAI-style fields (`prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details`, `completion_tokens_details`, audio token fields); origin `*_details` objects are merged in to preserve extra fields. Streaming reuses the same `buildUsage`, so `message_delta` carries real `output_tokens` from the trailing usage chunk.
 
 ### Stream: text ✅ tool_calls ✅ thinking ✅ web_search_tool_result ✅ usage ✅
 
@@ -355,7 +361,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `content[]` thinking | `output[]` reasoning | |
 | `content[]` tool_use | `output[]` function_call | |
 | `content[]` text | `output[]` message (output_text) | |
-| `stop_reason` | `status` | end_turn→completed, tool_use→completed, max_tokens→incomplete, refusal→failed |
+| `stop_reason` | `status` | end_turn→completed, max_tokens→incomplete, refusal→failed; **any tool_use/server_tool_use block in content → completed** (overrides stop_reason) |
 | `usage.*` | `usage.*` | cache_read_input_tokens→cached_tokens |
 
 ### Stream: text ✅ tool_calls ✅ reasoning ✅ usage ✅
@@ -393,7 +399,7 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `candidates[0].content.parts[]` functionCall | `output[]` function_call | |
 | `candidates[0].content.parts[]` text | `output[]` message (output_text) | |
 | `candidates[0].groundingMetadata` | `output[]` message annotations | url_citation |
-| `candidates[0].finishReason` | `status` | STOP→completed, MAX_TOKENS→incomplete, SAFETY→failed |
+| `candidates[0].finishReason` | `status` | STOP→completed, MAX_TOKENS→incomplete, SAFETY→failed; **any function_call → completed** (overrides finishReason) |
 | `usageMetadata.*` | `usage.*` | toolUsePromptTokenCount+thoughtsTokenCount combined |
 
 ### Stream: text ✅ tool_calls ✅ reasoning ✅ grounding ✅ usage ✅
