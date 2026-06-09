@@ -345,6 +345,71 @@ for await (const chunk of converter.convertStream(responsesStream)) {
 | `file` content part | `inlineData` / `fileData` |
 | `input_audio` | `inlineData` (audio mime) |
 
+### Messages ↔ Responses
+
+| Anthropic Messages | OpenAI Responses |
+|---|---|
+| `model` | `model` |
+| `system` | `instructions` |
+| `messages` (user/assistant with content blocks) | `input` (ResponseInputItem[]) |
+| `max_tokens` | `max_output_tokens` |
+| `temperature` | `temperature` |
+| `top_p` | `top_p` |
+| `tools` (custom) | `tools` (function) |
+| `tools` (web_search_20250305) | `tools` (web_search) |
+| `tool_choice` (auto/any/none/tool) | `tool_choice` (auto/required/none/function) |
+| `tool_choice.disable_parallel_tool_use` | `parallel_tool_calls` |
+| `thinking` (enabled/disabled/adaptive) | `reasoning.effort` |
+| `output_config.format` (json_schema) | `text.format` (json_schema) |
+| `metadata.user_id` | `metadata.user_id` |
+| `service_tier` | `service_tier` |
+| `tool_use` blocks | `function_call` items |
+| `tool_result` blocks | `function_call_output` items |
+| `image` blocks (base64/url) | `input_image` parts |
+| `document` blocks (base64/url/text) | `input_file` / `input_text` parts |
+
+### Messages ↔ Gemini
+
+| Anthropic Messages | Google Gemini |
+|---|---|
+| `model` | `model` |
+| `system` | `config.systemInstruction` |
+| `messages` (user/assistant with content blocks) | `contents` (user/model roles) |
+| `max_tokens` | `config.maxOutputTokens` |
+| `temperature` | `config.temperature` |
+| `top_p` | `config.topP` |
+| `top_k` | `config.topK` |
+| `stop_sequences` | `config.stopSequences` |
+| `tools` (custom) | `config.tools[].functionDeclarations` |
+| `tools` (web_search_20250305) | `config.tools` (googleSearch) |
+| `tool_choice` (auto/any/none/tool) | `config.toolConfig.functionCallingConfig` (AUTO/ANY/NONE) |
+| `thinking` (enabled/disabled/adaptive) | `config.thinkingConfig` |
+| `output_config.format` (json_schema) | `config.responseMimeType` + `config.responseJsonSchema` |
+| `tool_use` blocks | `functionCall` parts |
+| `tool_result` blocks | `functionResponse` parts |
+| `image` blocks (base64/url) | `inlineData` / `fileData` |
+| `document` blocks (base64/url/text) | `inlineData` / `fileData` / text part |
+| `thinking` blocks (with signature) | `thought` parts (`thoughtSignature`) |
+
+### Responses ↔ Gemini
+
+| OpenAI Responses | Google Gemini |
+|---|---|
+| `model` | `model` |
+| `instructions` | `config.systemInstruction` |
+| `input` (ResponseInputItem[]) | `contents` (user/model roles) |
+| `max_output_tokens` | `config.maxOutputTokens` |
+| `temperature` | `config.temperature` |
+| `top_p` | `config.topP` |
+| `tools` (function) | `config.tools[].functionDeclarations` |
+| `tools` (web_search) | `config.tools` (googleSearch) |
+| `tool_choice` | `config.toolConfig.functionCallingConfig` (AUTO/ANY/NONE) |
+| `reasoning.effort` | `config.thinkingConfig` |
+| `text.format` (json_schema/json_object) | `config.responseMimeType` + `config.responseJsonSchema` |
+| `include` (logprobs) | `config.responseLogprobs` / `config.logprobs` |
+| `function_call` items | `functionCall` parts |
+| `function_call_output` items | `functionResponse` parts |
+
 ### Gemini Response / Stream
 
 | Google Gemini | OpenAI / Anthropic |
