@@ -358,13 +358,18 @@ Usage also re-emits enriched OpenAI-style fields (`prompt_tokens`, `completion_t
 |---|---|---|
 | `id` | `id` | |
 | `model` | `model` | |
-| `content[]` thinking | `output[]` reasoning | |
+| `content[]` thinking | `output[]` reasoning | summary_text |
+| `content[]` server_tool_use (web_search) | `output[]` web_search_call | status completed, action.query from block input |
 | `content[]` tool_use | `output[]` function_call | |
-| `content[]` text | `output[]` message (output_text) | |
+| `content[]` text | `output[]` message (output_text) | Multiple text blocks merge into one item, order preserved |
+| `content[]` text citations | `output[]` message annotations | url_citation; indices shifted by merged-block offset |
+| `content[]` web_search_tool_result | (skipped) | web_search_call already emitted from the server_tool_use block |
 | `stop_reason` | `status` | end_turn→completed, max_tokens→incomplete, refusal→failed; **any tool_use/server_tool_use block in content → completed** (overrides stop_reason) |
-| `usage.*` | `usage.*` | cache_read_input_tokens→cached_tokens |
+| refusal (`status` failed) | `error` | `{ code: content_filter }` surfaced so clients don't read it as a normal completion |
+| `usage.input_tokens` (+ cache read/creation) | `usage.input_tokens` | Folded: uncached + cache_read + cache_creation (Responses treats cached ⊆ input) |
+| `usage.cache_read_input_tokens` | `usage.input_tokens_details.cached_tokens` | |
 
-### Stream: text ✅ tool_calls ✅ reasoning ✅ usage ✅
+### Stream: text ✅ tool_calls ✅ reasoning ✅ web_search_call ✅ annotations ✅ usage ✅
 
 ---
 

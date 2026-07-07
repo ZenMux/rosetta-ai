@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { APIError } from "@anthropic-ai/sdk";
 import type OpenAI from "openai";
 import { ResponsesToMessagesConverter } from "../messages";
 
@@ -125,6 +126,60 @@ describe("ResponsesToMessagesConverter", () => {
       });
     });
 
+    it("coerces non-string function_call_output to string", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "user", content: "What is the weather?" },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "get_weather",
+            arguments: '{"city":"SF"}',
+            status: "completed",
+          },
+          {
+            type: "function_call_output",
+            id: "fco_1",
+            call_id: "call_1",
+            output: { temperature: 72, unit: "F" } as any,
+          },
+        ],
+      });
+
+      const toolResult = (result.messages[2].content as any[])[0];
+      expect(toolResult.type).toBe("tool_result");
+      expect(toolResult.content[0].type).toBe("text");
+      expect(toolResult.content[0].text).toBe('{"temperature":72,"unit":"F"}');
+    });
+
+    it("treats null function_call_output as empty string", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "user", content: "What is the weather?" },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "get_weather",
+            arguments: "{}",
+            status: "completed",
+          },
+          {
+            type: "function_call_output",
+            id: "fco_1",
+            call_id: "call_1",
+            output: null as any,
+          },
+        ],
+      });
+
+      const toolResult = (result.messages[2].content as any[])[0];
+      expect(toolResult.content[0].text).toBe("");
+    });
+
     it("merges consecutive function_call items into one assistant message", () => {
       const result = converter.convertRequest({
         model: "claude-sonnet-4-20250514",
@@ -166,6 +221,65 @@ describe("ResponsesToMessagesConverter", () => {
       expect(userContent[1].type).toBe("tool_result");
     });
 
+    it("merges assistant text and following function_calls into one assistant message", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "user", content: "Do two things" },
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "On it" }],
+          },
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "fn1",
+            arguments: "{}",
+            status: "completed",
+          },
+          {
+            type: "function_call",
+            id: "fc_2",
+            call_id: "call_2",
+            name: "fn2",
+            arguments: "{}",
+            status: "completed",
+          },
+          { type: "function_call_output", id: "fco_1", call_id: "call_1", output: "r1" },
+          { type: "function_call_output", id: "fco_2", call_id: "call_2", output: "r2" },
+        ],
+      } as any);
+
+      // The assistant text and both tool_use blocks must be in ONE assistant message,
+      // not split across two consecutive assistant messages.
+      const assistantMessages = result.messages.filter(m => m.role === "assistant");
+      expect(assistantMessages).toHaveLength(1);
+      const assistantContent = assistantMessages[0].content as any[];
+      expect(assistantContent).toHaveLength(3);
+      expect(assistantContent[0]).toEqual({ type: "text", text: "On it" });
+      expect(assistantContent[1].type).toBe("tool_use");
+      expect(assistantContent[1].name).toBe("fn1");
+      expect(assistantContent[2].type).toBe("tool_use");
+      expect(assistantContent[2].name).toBe("fn2");
+    });
+
+    it("flushes pending assistant text when a user message follows", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: [
+          { role: "user", content: "Hi" },
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] },
+          { role: "user", content: "Bye" },
+        ],
+      } as any);
+
+      expect(result.messages.map(m => m.role)).toEqual(["user", "assistant", "user"]);
+      const assistant = result.messages[1];
+      expect(assistant.content).toEqual([{ type: "text", text: "Hello" }]);
+    });
+
     it("converts function tools", () => {
       const result = converter.convertRequest({
         model: "claude-sonnet-4-20250514",
@@ -197,6 +311,7 @@ describe("ResponsesToMessagesConverter", () => {
 
       expect(result.tools).toBeDefined();
       expect((result.tools![0] as any).type).toBe("web_search_20250305");
+      expect((result.tools![0] as any).name).toBe("web_search");
     });
 
     it("maps tool_choice", () => {
@@ -263,6 +378,23 @@ describe("ResponsesToMessagesConverter", () => {
         format: {
           type: "json_schema",
           schema: { type: "object", properties: { answer: { type: "string" } } },
+        },
+      });
+    });
+
+    it("maps text.format json_object to a permissive object schema", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: "Hi",
+        text: {
+          format: { type: "json_object" },
+        } as any,
+      });
+
+      expect(result.output_config).toEqual({
+        format: {
+          type: "json_schema",
+          schema: { type: "object" },
         },
       });
     });
@@ -443,6 +575,22 @@ describe("ResponsesToMessagesConverter", () => {
       expect(result.incomplete_details).toEqual({ reason: "max_output_tokens" });
     });
 
+    it("maps refusal stop_reason to failed status with error", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [{ type: "text", text: "I can't help with that.", citations: null }],
+          stop_reason: "refusal",
+        })
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.error).toEqual({
+        code: "content_filter",
+        message: "Content refused by the model.",
+      });
+      expect(result.incomplete_details).toBeNull();
+    });
+
     it("counts web_search_tool_result for usage", () => {
       const result = converter.convertResponse(
         makeMessage({
@@ -471,6 +619,37 @@ describe("ResponsesToMessagesConverter", () => {
       expect(msgOutput.content[0].text).toBe("Result");
     });
 
+    it("converts server_tool_use web_search into web_search_call item", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "server_tool_use",
+              id: "srv_1",
+              name: "web_search",
+              input: { query: "latest news" },
+              caller: { type: "direct" },
+            } as any,
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "srv_1",
+              content: [],
+              caller: { type: "direct" },
+            } as any,
+            { type: "text", text: "Here is the answer", citations: null },
+          ],
+        })
+      );
+
+      const wsCall = result.output.find((o: any) => o.type === "web_search_call") as any;
+      expect(wsCall).toBeDefined();
+      expect(wsCall.status).toBe("completed");
+      expect(wsCall.action).toEqual({ type: "search", query: "latest news" });
+
+      const fnCall = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fnCall).toBeUndefined();
+    });
+
     it("converts usage with cache tokens", () => {
       const result = converter.convertResponse(
         makeMessage({
@@ -487,9 +666,161 @@ describe("ResponsesToMessagesConverter", () => {
         })
       );
 
-      expect(result.usage?.input_tokens).toBe(100);
+      // Responses input_tokens is inclusive of cached tokens; Anthropic reports 100 uncached
+      // + 30 cache read, so the Responses total is 130 with cached_tokens as a 30-token subset.
+      expect(result.usage?.input_tokens).toBe(130);
       expect(result.usage?.output_tokens).toBe(50);
+      expect(result.usage?.total_tokens).toBe(180);
       expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
+    });
+
+    it("folds cache creation tokens into input_tokens", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 30,
+            cache_creation: null,
+            inference_geo: null,
+            server_tool_use: null,
+            service_tier: null,
+          },
+        })
+      );
+
+      // 100 uncached + 30 cache read + 20 cache creation = 150.
+      expect(result.usage?.input_tokens).toBe(150);
+      expect(result.usage?.total_tokens).toBe(200);
+      expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
+    });
+
+    it("preserves generation order for text → tool_use", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Let me check the weather", citations: null },
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "get_weather",
+              input: { city: "SF" },
+              caller: { type: "direct" },
+            } as any,
+          ],
+        })
+      );
+
+      expect(result.output.map((o: any) => o.type)).toEqual(["message", "function_call"]);
+    });
+
+    it("preserves generation order for thinking → text → tool_use", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "thinking", thinking: "Planning...", signature: "sig" },
+            { type: "text", text: "Calling tool", citations: null },
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "fn",
+              input: {},
+              caller: { type: "direct" },
+            } as any,
+          ],
+        })
+      );
+
+      expect(result.output.map((o: any) => o.type)).toEqual([
+        "reasoning",
+        "message",
+        "function_call",
+      ]);
+    });
+
+    it("merges multiple text blocks into one message at first text position", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Hello ", citations: null },
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "fn",
+              input: {},
+              caller: { type: "direct" },
+            } as any,
+            { type: "text", text: "world", citations: null },
+          ],
+        })
+      );
+
+      // Order: [message (at first text position), function_call]; second text merged in.
+      expect(result.output.map((o: any) => o.type)).toEqual(["message", "function_call"]);
+      const msg = result.output.find((o: any) => o.type === "message") as any;
+      expect(msg.content[0].text).toBe("Hello world");
+    });
+
+    it("converts text citations to url_citation annotations", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "text",
+              text: "See example.com for details.",
+              citations: [
+                {
+                  type: "web_search_result",
+                  start_index: 4,
+                  end_index: 15,
+                  url: "https://example.com",
+                  title: "Example",
+                  cited_text: "example.com",
+                  encrypted_content: "",
+                } as any,
+              ],
+            } as any,
+          ],
+        })
+      );
+
+      const msg = result.output.find((o: any) => o.type === "message") as any;
+      expect(msg.content[0].annotations).toHaveLength(1);
+      const ann = msg.content[0].annotations[0];
+      expect(ann.type).toBe("url_citation");
+      expect(ann.url).toBe("https://example.com");
+      expect(ann.title).toBe("Example");
+      expect(ann.start_index).toBe(4);
+      expect(ann.end_index).toBe(15);
+    });
+
+    it("shifts citation indices when merging multiple text blocks", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            { type: "text", text: "Hello ", citations: null },
+            {
+              type: "text",
+              text: "world",
+              citations: [
+                {
+                  type: "web_search_result",
+                  start_index: 0,
+                  end_index: 5,
+                  url: "https://example.com",
+                  title: "World",
+                } as any,
+              ],
+            } as any,
+          ],
+        })
+      );
+
+      const msg = result.output.find((o: any) => o.type === "message") as any;
+      // "Hello " is 6 chars, so the second block's citation shifts by 6.
+      expect(msg.content[0].annotations[0].start_index).toBe(6);
+      expect(msg.content[0].annotations[0].end_index).toBe(11);
     });
   });
 
@@ -796,6 +1127,62 @@ describe("ResponsesToMessagesConverter", () => {
       const incomplete = events.find(e => e.type === "response.incomplete") as any;
       expect(incomplete).toBeDefined();
     });
+
+    it("emits response.failed and error on refusal stop", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent({
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-20250514" as Anthropic.Model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            cache_creation: null,
+            inference_geo: null,
+            server_tool_use: null,
+            service_tier: null,
+          },
+          container: null,
+        },
+      });
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "refusal", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+
+      // Must NOT emit response.completed carrying a "failed" status.
+      expect(events.find(e => e.type === "response.completed")).toBeUndefined();
+
+      const failed = events.find(e => e.type === "response.failed") as any;
+      expect(failed).toBeDefined();
+      expect(failed.response.status).toBe("failed");
+      expect(failed.response.error).toEqual({
+        code: "content_filter",
+        message: "Content refused by the model.",
+      });
+
+      const error = events.find(e => e.type === "error") as any;
+      expect(error).toBeDefined();
+      expect(error.code).toBe("content_filter");
+      expect(error.param).toBeNull();
+    });
   });
 
   // ===== convertStream (AsyncIterable) =====
@@ -1097,6 +1484,200 @@ describe("ResponsesToMessagesConverter", () => {
       expect(events.length).toBe(0);
     });
 
+    it("emits web_search_call events for server_tool_use web_search", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      const startEvents = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "server_tool_use",
+          id: "srv_1",
+          name: "web_search",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+
+      const itemAdded = startEvents.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded).toBeDefined();
+      expect(itemAdded.item.type).toBe("web_search_call");
+      expect(itemAdded.item.status).toBe("in_progress");
+
+      const inProgress = startEvents.find(
+        e => e.type === "response.web_search_call.in_progress"
+      ) as any;
+      expect(inProgress).toBeDefined();
+      expect(inProgress.item_id).toBe(itemAdded.item.id);
+
+      // searching fires once at content_block_start, not on every delta.
+      const searching = startEvents.find(
+        e => e.type === "response.web_search_call.searching"
+      ) as any;
+      expect(searching).toBeDefined();
+      expect(searching.item_id).toBe(itemAdded.item.id);
+
+      const searchEvents = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query":"news"}' },
+      });
+      // No additional searching events on deltas.
+      expect(
+        searchEvents.filter((e: any) => e.type === "response.web_search_call.searching")
+      ).toHaveLength(0);
+
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      const doneEvents = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "srv_1",
+          content: [],
+          caller: { type: "direct" },
+        },
+      });
+      const completed = doneEvents.find(
+        e => e.type === "response.web_search_call.completed"
+      ) as any;
+      expect(completed).toBeDefined();
+      expect(completed.item_id).toBe(itemAdded.item.id);
+
+      const itemDone = doneEvents.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("web_search_call");
+      expect(itemDone.item.status).toBe("completed");
+      expect(itemDone.item.action.query).toBe("news");
+    });
+
+    it("accumulates web_search query across multiple input_json_delta chunks", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "server_tool_use",
+          id: "srv_1",
+          name: "web_search",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query":"latest ' },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: 'news today"}' },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      const doneEvents = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "srv_1",
+          content: [],
+          caller: { type: "direct" },
+        },
+      });
+      const itemDone = doneEvents.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone.item.action.query).toBe("latest news today");
+    });
+
+    it("emits searching exactly once regardless of delta count", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      const startEvents = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "server_tool_use",
+          id: "srv_1",
+          name: "web_search",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      const startSearching = startEvents.filter(
+        (e: any) => e.type === "response.web_search_call.searching"
+      );
+      expect(startSearching).toHaveLength(1);
+
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query":"a"' },
+      });
+      const delta1 = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: "}" },
+      });
+      expect(
+        delta1.filter((e: any) => e.type === "response.web_search_call.searching")
+      ).toHaveLength(0);
+    });
+
+    it("backfills web_search_call done at message_stop when result never arrives", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "server_tool_use",
+          id: "srv_1",
+          name: "web_search",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query":"partial' },
+      });
+      // No content_block_stop, no web_search_tool_result — stream truncated.
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 100,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.web_search_call.completed") as any;
+      expect(completed).toBeDefined();
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("web_search_call");
+      // Partial JSON `{"query":"partial` should still yield "partial" via regex fallback.
+      expect(itemDone.item.action.query).toBe("partial");
+
+      const incomplete = events.find(e => e.type === "response.incomplete") as any;
+      expect(incomplete).toBeDefined();
+      // The backfilled item should also appear in the final response.output.
+      const wsInOutput = incomplete.response.output.find((o: any) => o.type === "web_search_call");
+      expect(wsInOutput).toBeDefined();
+      expect(wsInOutput.action.query).toBe("partial");
+    });
+
     it("handles input_json_delta for function arguments", () => {
       const c = new ResponsesToMessagesConverter();
       c.convertStreamEvent(makeMessageStart());
@@ -1144,6 +1725,745 @@ describe("ResponsesToMessagesConverter", () => {
       const events = c.convertStreamEvent({ type: "message_stop" });
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
+    });
+
+    it("marks response completed when max_tokens hits after a complete tool_use", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"x":1}' },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 100,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.completed") as any;
+      const incomplete = events.find(e => e.type === "response.incomplete") as any;
+      expect(completed).toBeDefined();
+      expect(incomplete).toBeUndefined();
+      expect(completed.response.status).toBe("completed");
+    });
+
+    it("marks response incomplete when max_tokens hits mid tool_use (no content_block_stop)", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"x":' },
+      });
+      // No content_block_stop — block truncated by max_tokens.
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 100,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const incomplete = events.find(e => e.type === "response.incomplete") as any;
+      expect(incomplete).toBeDefined();
+      expect(incomplete.response.status).toBe("incomplete");
+    });
+
+    it("assigns distinct output_index for text and tool_use without reasoning", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      const textStart = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      const textItemAdded = textStart.find(e => e.type === "response.output_item.added") as any;
+
+      const textDelta = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "thinking..." },
+      });
+      const textDeltaEvent = textDelta.find(e => e.type === "response.output_text.delta") as any;
+
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      const toolStart = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      const toolItemAdded = toolStart.find(e => e.type === "response.output_item.added") as any;
+
+      const toolDelta = c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: "{}" },
+      });
+      const toolArgsDelta = toolDelta.find(
+        e => e.type === "response.function_call_arguments.delta"
+      ) as any;
+
+      // Text and tool_use must not share the same output_index.
+      expect(textItemAdded.output_index).toBe(0);
+      expect(toolItemAdded.output_index).toBe(1);
+      // Deltas reuse the indices assigned at item start.
+      expect(textDeltaEvent.output_index).toBe(textItemAdded.output_index);
+      expect(toolArgsDelta.output_index).toBe(toolItemAdded.output_index);
+    });
+
+    it("assigns sequential output_index for reasoning → text → tool_use", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      const reasoningStart = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      const reasoningAdded = reasoningStart.find(
+        e => e.type === "response.output_item.added"
+      ) as any;
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      const textStart = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      const textAdded = textStart.find(e => e.type === "response.output_item.added") as any;
+      c.convertStreamEvent({ type: "content_block_stop", index: 1 });
+
+      const toolStart = c.convertStreamEvent({
+        type: "content_block_start",
+        index: 2,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      const toolAdded = toolStart.find(e => e.type === "response.output_item.added") as any;
+
+      expect(reasoningAdded.output_index).toBe(0);
+      expect(textAdded.output_index).toBe(1);
+      expect(toolAdded.output_index).toBe(2);
+    });
+
+    it("emits done events for reasoning on content_block_stop", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Hello" },
+      });
+      const stopEvents = c.convertStreamEvent({
+        type: "content_block_stop",
+        index: 0,
+      });
+
+      const textDone = stopEvents.find(
+        e => e.type === "response.reasoning_summary_text.done"
+      ) as any;
+      expect(textDone).toBeDefined();
+      expect(textDone.text).toBe("Hello");
+
+      const partDone = stopEvents.find(
+        e => e.type === "response.reasoning_summary_part.done"
+      ) as any;
+      expect(partDone).toBeDefined();
+
+      const itemDone = stopEvents.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("reasoning");
+      expect(itemDone.item.summary[0].text).toBe("Hello");
+    });
+
+    it("resets reasoning text accumulator between thinking blocks", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      // First thinking block
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Hello" },
+      });
+      const stop1 = c.convertStreamEvent({
+        type: "content_block_stop",
+        index: 0,
+      });
+      const itemDone1 = stop1.find(e => e.type === "response.output_item.done") as any;
+      const firstItemId = itemDone1.item.id;
+      expect(itemDone1.item.summary[0].text).toBe("Hello");
+
+      // Second thinking block — must not inherit the first block's text
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "thinking_delta", thinking: " World" },
+      });
+      const stop2 = c.convertStreamEvent({
+        type: "content_block_stop",
+        index: 1,
+      });
+
+      const textDone2 = stop2.find(e => e.type === "response.reasoning_summary_text.done") as any;
+      expect(textDone2.text).toBe(" World");
+
+      const itemDone2 = stop2.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone2.item.id).not.toBe(firstItemId);
+      expect(itemDone2.item.summary[0].text).toBe(" World");
+    });
+
+    it("emits done events for function_call on content_block_stop", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "get_weather",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"city":"SF"}' },
+      });
+      const stopEvents = c.convertStreamEvent({
+        type: "content_block_stop",
+        index: 0,
+      });
+
+      const argsDone = stopEvents.find(
+        e => e.type === "response.function_call_arguments.done"
+      ) as any;
+      expect(argsDone).toBeDefined();
+      expect(argsDone.arguments).toBe('{"city":"SF"}');
+
+      const itemDone = stopEvents.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("function_call");
+      expect(itemDone.item.status).toBe("completed");
+      expect(itemDone.item.arguments).toBe('{"city":"SF"}');
+      expect(itemDone.item.call_id).toBe("tu_1");
+      expect(itemDone.item.name).toBe("get_weather");
+    });
+
+    it("emits done events for message on message_stop", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Hello " },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "world" },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const textDone = events.find(e => e.type === "response.output_text.done") as any;
+      expect(textDone).toBeDefined();
+      expect(textDone.text).toBe("Hello world");
+
+      const partDone = events.find(e => e.type === "response.content_part.done") as any;
+      expect(partDone).toBeDefined();
+      expect(partDone.part.text).toBe("Hello world");
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("message");
+      expect(itemDone.item.status).toBe("completed");
+      expect(itemDone.item.content[0].text).toBe("Hello world");
+
+      // Done events must fire before response.completed.
+      const completedIdx = events.findIndex(e => e.type === "response.completed");
+      const itemDoneIdx = events.findIndex(e => e.type === "response.output_item.done");
+      expect(itemDoneIdx).toBeLessThan(completedIdx);
+    });
+
+    it("emits citations_delta as annotations on message done events", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "See example.com" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result",
+            start_index: 4,
+            end_index: 15,
+            url: "https://example.com",
+            title: "Example",
+          },
+        } as any,
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const partDone = events.find(e => e.type === "response.content_part.done") as any;
+      expect(partDone.part.annotations).toHaveLength(1);
+      expect(partDone.part.annotations[0]).toEqual({
+        type: "url_citation",
+        start_index: 4,
+        end_index: 15,
+        url: "https://example.com",
+        title: "Example",
+      });
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone.item.content[0].annotations).toHaveLength(1);
+      expect(itemDone.item.content[0].annotations[0].url).toBe("https://example.com");
+    });
+
+    it("shifts citation indices across multiple streamed text blocks", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      // Block 1: "Hello " (6 chars)
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Hello " },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+      // Block 2: "world" with citation at start_index=0 relative to "world"
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "text_delta", text: "world" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result",
+            start_index: 0,
+            end_index: 5,
+            url: "https://example.com",
+            title: "World",
+          },
+        } as any,
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 1 });
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      // Citation shifts by 6 (length of "Hello ").
+      expect(itemDone.item.content[0].annotations[0].start_index).toBe(6);
+      expect(itemDone.item.content[0].annotations[0].end_index).toBe(11);
+      expect(itemDone.item.content[0].text).toBe("Hello world");
+    });
+
+    it("populates response.output on response.completed with all items", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      // reasoning block
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Hmm" },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      // tool_use block
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"x":1}' },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 1 });
+
+      // text block
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 2,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 2,
+        delta: { type: "text_delta", text: "Answer" },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 2 });
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+
+      const output = completed.response.output as any[];
+      expect(output).toHaveLength(3);
+      expect(output.map((o: any) => o.type)).toEqual(["reasoning", "function_call", "message"]);
+      expect(output[0].summary[0].text).toBe("Hmm");
+      expect(output[1].arguments).toBe('{"x":1}');
+      expect(output[1].status).toBe("completed");
+      expect(output[2].content[0].text).toBe("Answer");
+    });
+
+    it("orders response.output by output_index, not completion order", () => {
+      // reasoning(0) → text(1) → tool_use(2), but the text block stays open until
+      // message_stop while tool_use completes first. Completion order is
+      // [reasoning, tool_use, text]; output must be sorted back to [reasoning, text, tool_use].
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+
+      // reasoning block (index 0) — opens and closes
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Plan" },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 0 });
+
+      // text block (index 1) — opens, receives text, but does NOT stop before tool_use
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "", citations: null },
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "text_delta", text: "Answer" },
+      });
+
+      // tool_use block (index 2) — opens and closes, finalizing before the text block
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 2,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 2,
+        delta: { type: "input_json_delta", partial_json: '{"x":1}' },
+      });
+      c.convertStreamEvent({ type: "content_block_stop", index: 2 });
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const completed = events.find(e => e.type === "response.completed") as any;
+      const output = completed.response.output as any[];
+
+      expect(output.map((o: any) => o.type)).toEqual(["reasoning", "message", "function_call"]);
+      expect(output[1].content[0].text).toBe("Answer");
+      expect(output[2].arguments).toBe('{"x":1}');
+    });
+
+    it("includes truncated tool_call in response.output with incomplete status", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent(makeMessageStart());
+      c.convertStreamEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tu_1",
+          name: "fn",
+          input: {},
+          caller: { type: "direct" },
+        } as any,
+      });
+      c.convertStreamEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"x":' },
+      });
+      // No content_block_stop — truncated by max_tokens.
+
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 100,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
+
+      const events = c.convertStreamEvent({ type: "message_stop" });
+      const incomplete = events.find(e => e.type === "response.incomplete") as any;
+      expect(incomplete).toBeDefined();
+
+      const output = incomplete.response.output as any[];
+      expect(output).toHaveLength(1);
+      expect(output[0].type).toBe("function_call");
+      expect(output[0].status).toBe("incomplete");
+      expect(output[0].arguments).toBe('{"x":');
+    });
+  });
+
+  describe("convertStream - error handling", () => {
+    it("emits response.failed and error events when upstream throws APIError", async () => {
+      const c = new ResponsesToMessagesConverter();
+      async function* failingStream(): AsyncIterable<Anthropic.RawMessageStreamEvent> {
+        yield {
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514" as Anthropic.Model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 10,
+              output_tokens: 0,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+              cache_creation: null,
+              inference_geo: null,
+              server_tool_use: null,
+              service_tier: null,
+            },
+            container: null,
+          },
+        } as Anthropic.RawMessageStreamEvent;
+        throw new APIError(529, { message: "overloaded" }, "overloaded", undefined as any);
+      }
+
+      const events: any[] = [];
+      for await (const e of c.convertStream(failingStream())) {
+        events.push(e);
+      }
+
+      const failed = events.find(e => e.type === "response.failed") as any;
+      expect(failed).toBeDefined();
+      expect(failed.response.status).toBe("failed");
+      expect(failed.response.error).toEqual({
+        code: "server_error",
+        message: "529 overloaded",
+      });
+
+      const error = events.find(e => e.type === "error") as any;
+      expect(error).toBeDefined();
+      expect(error.code).toBe("server_error");
+      expect(error.message).toBe("529 overloaded");
+      expect(error.param).toBeNull();
+    });
+
+    it("maps 429 APIError to rate_limit_exceeded", async () => {
+      const c = new ResponsesToMessagesConverter();
+      async function* failingStream(): AsyncIterable<Anthropic.RawMessageStreamEvent> {
+        throw new APIError(429, { message: "rate limited" }, "rate limited", undefined as any);
+      }
+
+      const events: any[] = [];
+      for await (const e of c.convertStream(failingStream())) {
+        events.push(e);
+      }
+
+      const failed = events.find(e => e.type === "response.failed") as any;
+      expect(failed.response.error.code).toBe("rate_limit_exceeded");
+
+      const error = events.find(e => e.type === "error") as any;
+      expect(error.code).toBe("rate_limit_exceeded");
+    });
+
+    it("re-throws non-APIError exceptions", async () => {
+      const c = new ResponsesToMessagesConverter();
+      async function* failingStream(): AsyncIterable<Anthropic.RawMessageStreamEvent> {
+        throw new TypeError("programming bug");
+      }
+
+      let threw = false;
+      let caught: unknown = null;
+      try {
+        for await (const _ of c.convertStream(failingStream())) {
+          // drain
+        }
+      } catch (err) {
+        threw = true;
+        caught = err;
+      }
+      expect(threw).toBe(true);
+      expect(caught).toBeInstanceOf(TypeError);
     });
   });
 });
