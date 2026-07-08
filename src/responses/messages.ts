@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
+import { APIError } from "@anthropic-ai/sdk";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -10,14 +11,61 @@ interface StreamState {
   id: string;
   model: string;
   seq: number;
-  outputIndex: number;
-  reasoningStarted: boolean;
+  // Single counter shared across all item types; each new item claims and increments it once.
+  nextOutputIndex: number;
+  reasoningItemId: string;
+  reasoningOutputIndex: number;
+  reasoningText: string;
   toolCallCount: number;
+  // Stores full per-call info so output_item.done can carry the finalized item.
+  // `done` tracks whether content_block_stop fired, so message_stop can tell
+  // complete tool_calls from ones truncated by max_tokens.
+  toolCalls: Array<{
+    id: string;
+    call_id: string;
+    name: string;
+    arguments: string;
+    outputIndex: number;
+    done: boolean;
+  }>;
+  webSearchCallCount: number;
+  // Keyed by Anthropic's server_tool_use block.id to pair with the later web_search_tool_result block.
+  // `query` accumulates input_json_delta partial_json so done events can carry the actual search query;
+  // `done` marks whether output_item.done has fired, so message_stop can backfill truncated items.
+  webSearchByToolUseId: Map<
+    string,
+    {
+      itemId: string;
+      outputIndex: number;
+      query: string;
+      done: boolean;
+    }
+  >;
+  // Maps a content block's stream index to its web_search tool_use_id, so input_json_delta
+  // events can route to the right entry by event.index rather than assuming one open block.
+  webSearchToolUseIdByBlockIndex: Map<number, string>;
+  // Needed because input_json_delta is overloaded between tool_use args and web_search query.
+  currentBlockType: string;
+  // Anthropic may emit multiple text blocks; they all merge into one Responses message item.
   textMessageStarted: boolean;
+  textMessageItemId: string;
+  textMessageOutputIndex: number;
+  textMessageText: string;
+  // Annotations collected from citations_delta, emitted on the message's done events.
+  textAnnotations: any[];
+  // Char offset where the current text block starts within the merged textMessageText;
+  // needed because per-block citation indices must shift when blocks merge.
+  textBlockStartOffset: number;
+  // Accumulates finalized items for response.completed/incomplete.output. Also covers
+  // truncated tool_calls (status="incomplete") pushed at message_stop. Items are pushed in
+  // completion order (which differs from output order, e.g. text finalizes at message_stop
+  // after a later tool_use), so each carries its `index` for a final sort before output.
+  outputItems: Array<{ index: number; item: any }>;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  // Distinct from webSearchCallCount: this tracks usage.server_tool_use.web_search_requests, not emitted items.
   webSearchCount: number;
   stopReason: string | null;
 }
@@ -73,6 +121,14 @@ export class ResponsesToMessagesConverter {
           schema: fmt.schema ?? {},
         },
       };
+    } else if (params.text?.format?.type === "json_object") {
+      // Anthropic has no bare "json_object" mode; approximate with a permissive object schema.
+      result.output_config = {
+        format: {
+          type: "json_schema",
+          schema: { type: "object" },
+        },
+      };
     }
     if (params.metadata) {
       const userId =
@@ -100,7 +156,14 @@ export class ResponsesToMessagesConverter {
 
   convertResponse(message: Anthropic.Message): RespResponse {
     const output: OpenAI.Responses.ResponseOutputItem[] = [];
+    const textParts: string[] = [];
+    const annotations: any[] = [];
+    let messageItem: any = null;
+    // Offset of the current text block within the merged text; citations are per-block.
+    let textOffset = 0;
 
+    // Single pass preserving Anthropic's generation order, which matches OpenAI's
+    // typical ordering (reasoning → web_search_call → message → function_call).
     for (const block of message.content) {
       if (block.type === "thinking") {
         output.push({
@@ -108,11 +171,16 @@ export class ResponsesToMessagesConverter {
           id: `rs_${this.generateId()}`,
           summary: [{ type: "summary_text", text: block.thinking }],
         });
-      }
-    }
-
-    for (const block of message.content) {
-      if (block.type === "tool_use" || block.type === "server_tool_use") {
+      } else if (block.type === "server_tool_use" && block.name === "web_search") {
+        const input = (block as any).input as any;
+        const query = typeof input === "object" && input !== null ? String(input.query ?? "") : "";
+        output.push({
+          type: "web_search_call",
+          id: `ws_${this.generateId()}`,
+          status: "completed",
+          action: { type: "search", query },
+        });
+      } else if (block.type === "tool_use" || block.type === "server_tool_use") {
         output.push({
           type: "function_call",
           id: `fc_${this.generateId()}`,
@@ -121,31 +189,41 @@ export class ResponsesToMessagesConverter {
           arguments: JSON.stringify(block.input),
           status: "completed",
         });
-      }
-    }
-
-    const textParts: string[] = [];
-    for (const block of message.content) {
-      if (block.type === "text") {
+      } else if (block.type === "text") {
         textParts.push(block.text);
+        const citations = (block as any).citations as any[] | null | undefined;
+        if (citations) {
+          for (const c of citations) {
+            annotations.push(this.citationToAnnotation(c, textOffset));
+          }
+        }
+        // Multiple text blocks merge into one message item at the first text block's position.
+        if (!messageItem) {
+          messageItem = {
+            type: "message",
+            id: `msg_${this.generateId()}`,
+            role: "assistant",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: "",
+                annotations: [],
+                logprobs: null as any,
+              },
+            ],
+          };
+          output.push(messageItem);
+        }
+        textOffset += block.text.length;
       }
+      // web_search_tool_result and other result blocks: skipped; the corresponding
+      // server_tool_use block already produced the web_search_call item.
     }
 
-    if (textParts.length > 0) {
-      output.push({
-        type: "message",
-        id: `msg_${this.generateId()}`,
-        role: "assistant",
-        status: "completed",
-        content: [
-          {
-            type: "output_text",
-            text: textParts.join(""),
-            annotations: [],
-            logprobs: null as any,
-          },
-        ],
-      });
+    if (messageItem) {
+      messageItem.content[0].text = textParts.join("");
+      messageItem.content[0].annotations = annotations;
     }
 
     if (output.length === 0) {
@@ -167,6 +245,11 @@ export class ResponsesToMessagesConverter {
 
     const status = this.stopReasonToStatus(message.stop_reason, message.content);
     const usage = message.usage;
+    // Responses input_tokens is inclusive of cached tokens (cached ⊆ input), but Anthropic's
+    // input_tokens counts only uncached tokens, with cache read/creation as separate buckets.
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const totalInputTokens =
+      usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0);
 
     return {
       id: message.id,
@@ -175,7 +258,11 @@ export class ResponsesToMessagesConverter {
       model: message.model as string,
       output,
       status,
-      error: null,
+      // refusal → status "failed"; surface an error so clients don't read it as a normal completion.
+      error:
+        status === "failed"
+          ? { code: "content_filter", message: "Content refused by the model." }
+          : null,
       incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
       instructions: null,
       metadata: {},
@@ -191,11 +278,11 @@ export class ResponsesToMessagesConverter {
       truncation: null,
       user: undefined,
       usage: {
-        input_tokens: usage.input_tokens,
+        input_tokens: totalInputTokens,
         output_tokens: usage.output_tokens,
-        total_tokens: usage.input_tokens + usage.output_tokens,
+        total_tokens: totalInputTokens + usage.output_tokens,
         input_tokens_details: {
-          cached_tokens: usage.cache_read_input_tokens ?? 0,
+          cached_tokens: cacheRead,
         },
         output_tokens_details: {
           reasoning_tokens: 0,
@@ -209,11 +296,39 @@ export class ResponsesToMessagesConverter {
   async *convertStream(
     stream: AsyncIterable<Anthropic.RawMessageStreamEvent>
   ): AsyncIterable<RespStreamEvent> {
-    for await (const event of stream) {
-      const events = this.convertStreamEvent(event);
-      for (const e of events) {
-        yield e;
+    try {
+      for await (const event of stream) {
+        const events = this.convertStreamEvent(event);
+        for (const e of events) {
+          yield e;
+        }
       }
+    } catch (err) {
+      // Only Anthropic API errors are converted to OpenAI-style failure events;
+      // unexpected errors (programming bugs, network layer, etc.) propagate.
+      if (!(err instanceof APIError)) {
+        throw err;
+      }
+      const message = err.message;
+      const code: "server_error" | "rate_limit_exceeded" =
+        err.status === 429 ? "rate_limit_exceeded" : "server_error";
+
+      const resp = this.makeSkeletonResponse();
+      resp.status = "failed" as any;
+      resp.error = { code, message } as any;
+
+      yield {
+        type: "response.failed",
+        response: resp,
+        sequence_number: this.streamState.seq++,
+      } as RespStreamEvent;
+      yield {
+        type: "error",
+        code,
+        message,
+        param: null,
+        sequence_number: this.streamState.seq++,
+      } as RespStreamEvent;
     }
   }
 
@@ -248,37 +363,87 @@ export class ResponsesToMessagesConverter {
         const block = event.content_block;
 
         if (block.type === "thinking") {
-          state.reasoningStarted = true;
+          state.currentBlockType = "thinking";
+          const reasoningItemId = `rs_${this.generateId()}`;
+          state.reasoningItemId = reasoningItemId;
+          state.reasoningOutputIndex = state.nextOutputIndex++;
+          // Reset per-item so done events don't carry text from prior reasoning items.
+          state.reasoningText = "";
           events.push({
             type: "response.output_item.added",
             item: {
               type: "reasoning",
-              id: `rs_${this.generateId()}`,
+              id: reasoningItemId,
               summary: [],
             },
-            output_index: state.outputIndex,
+            output_index: state.reasoningOutputIndex,
             sequence_number: state.seq++,
           } as RespStreamEvent);
           events.push({
             type: "response.reasoning_summary_part.added",
-            item_id: `rs_${this.generateId()}`,
-            output_index: state.outputIndex,
+            item_id: reasoningItemId,
+            output_index: state.reasoningOutputIndex,
             summary_index: 0,
             part: { type: "summary_text", text: "" },
             sequence_number: state.seq++,
           } as RespStreamEvent);
+        } else if (block.type === "server_tool_use" && block.name === "web_search") {
+          state.webSearchCallCount++;
+          const wsOutputIndex = state.nextOutputIndex++;
+          const wsItemId = `ws_${this.generateId()}`;
+          // web_search_tool_result arrives as a separate later block; key by tool_use_id to pair them.
+          state.webSearchByToolUseId.set(block.id, {
+            itemId: wsItemId,
+            outputIndex: wsOutputIndex,
+            query: "",
+            done: false,
+          });
+          state.webSearchToolUseIdByBlockIndex.set(event.index, block.id);
+          state.currentBlockType = "server_tool_use_web_search";
+
+          events.push({
+            type: "response.output_item.added",
+            item: {
+              type: "web_search_call",
+              id: wsItemId,
+              status: "in_progress",
+              action: { type: "search", query: "" },
+            },
+            output_index: wsOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.web_search_call.in_progress",
+            item_id: wsItemId,
+            output_index: wsOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          // searching fires once when the search begins, not on every query delta.
+          events.push({
+            type: "response.web_search_call.searching",
+            item_id: wsItemId,
+            output_index: wsOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
         } else if (block.type === "tool_use" || block.type === "server_tool_use") {
-          if (state.toolCallCount === 0 && state.reasoningStarted) {
-            state.outputIndex++;
-          }
           state.toolCallCount++;
-          const toolOutputIndex = state.outputIndex + state.toolCallCount - 1;
+          const toolCallItemId = `fc_${this.generateId()}`;
+          const toolOutputIndex = state.nextOutputIndex++;
+          state.toolCalls.push({
+            id: toolCallItemId,
+            call_id: block.id,
+            name: block.name,
+            arguments: "",
+            outputIndex: toolOutputIndex,
+            done: false,
+          });
+          state.currentBlockType = "tool_use";
 
           events.push({
             type: "response.output_item.added",
             item: {
               type: "function_call",
-              id: `fc_${this.generateId()}`,
+              id: toolCallItemId,
               call_id: block.id,
               name: block.name,
               arguments: "",
@@ -290,32 +455,64 @@ export class ResponsesToMessagesConverter {
         } else if (block.type === "text") {
           if (!state.textMessageStarted) {
             state.textMessageStarted = true;
-            const msgOutputIndex =
-              state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
+            const textMessageItemId = `msg_${this.generateId()}`;
+            state.textMessageItemId = textMessageItemId;
+            state.textMessageOutputIndex = state.nextOutputIndex++;
+            state.textBlockStartOffset = 0;
 
             events.push({
               type: "response.output_item.added",
               item: {
                 type: "message",
-                id: `msg_${this.generateId()}`,
+                id: textMessageItemId,
                 role: "assistant",
                 status: "in_progress",
                 content: [],
               },
-              output_index: msgOutputIndex,
+              output_index: state.textMessageOutputIndex,
               sequence_number: state.seq++,
             } as RespStreamEvent);
             events.push({
               type: "response.content_part.added",
-              item_id: `msg_${this.generateId()}`,
-              output_index: msgOutputIndex,
+              item_id: textMessageItemId,
+              output_index: state.textMessageOutputIndex,
               content_index: 0,
               part: { type: "output_text", text: "", annotations: [] },
               sequence_number: state.seq++,
             } as RespStreamEvent);
+          } else {
+            // Subsequent text block — its citations are relative to this block's text,
+            // so shift by the accumulated length of prior merged blocks.
+            state.textBlockStartOffset = state.textMessageText.length;
           }
+          state.currentBlockType = "text";
         } else if (block.type === "web_search_tool_result") {
           state.webSearchCount++;
+          state.currentBlockType = "web_search_tool_result";
+          const entry = state.webSearchByToolUseId.get((block as any).tool_use_id as string);
+          if (entry && !entry.done) {
+            entry.done = true;
+            const query = this.extractWebSearchQuery(entry.query);
+            events.push({
+              type: "response.web_search_call.completed",
+              item_id: entry.itemId,
+              output_index: entry.outputIndex,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+            const wsItem = {
+              type: "web_search_call",
+              id: entry.itemId,
+              status: "completed",
+              action: { type: "search", query },
+            };
+            events.push({
+              type: "response.output_item.done",
+              item: wsItem,
+              output_index: entry.outputIndex,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+            state.outputItems.push({ index: entry.outputIndex, item: wsItem });
+          }
         }
         break;
       }
@@ -324,40 +521,126 @@ export class ResponsesToMessagesConverter {
         const delta = event.delta;
 
         if (delta.type === "thinking_delta") {
+          state.reasoningText += delta.thinking;
           events.push({
             type: "response.reasoning_summary_text.delta",
-            item_id: `rs_${this.generateId()}`,
-            output_index: state.outputIndex,
+            item_id: state.reasoningItemId,
+            output_index: state.reasoningOutputIndex,
             summary_index: 0,
             delta: delta.thinking,
             sequence_number: state.seq++,
           } as RespStreamEvent);
         } else if (delta.type === "input_json_delta") {
-          const toolOutputIndex =
-            state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount - 1;
-          events.push({
-            type: "response.function_call_arguments.delta",
-            item_id: `fc_${this.generateId()}`,
-            output_index: toolOutputIndex,
-            delta: delta.partial_json,
-            sequence_number: state.seq++,
-          } as RespStreamEvent);
+          // Same delta type carries tool_use args and web_search query; route by current block.
+          if (state.currentBlockType === "server_tool_use_web_search") {
+            const toolUseId = state.webSearchToolUseIdByBlockIndex.get(event.index);
+            const entry = toolUseId ? state.webSearchByToolUseId.get(toolUseId) : undefined;
+            if (entry) {
+              entry.query += delta.partial_json;
+            }
+            // searching already emitted at content_block_start; deltas only accumulate query.
+          } else {
+            const lastToolCall = state.toolCalls[state.toolCalls.length - 1];
+            if (lastToolCall) {
+              lastToolCall.arguments += delta.partial_json;
+              events.push({
+                type: "response.function_call_arguments.delta",
+                item_id: lastToolCall.id,
+                output_index: lastToolCall.outputIndex,
+                delta: delta.partial_json,
+                sequence_number: state.seq++,
+              } as RespStreamEvent);
+            }
+          }
         } else if (delta.type === "text_delta") {
-          const msgOutputIndex =
-            state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
+          state.textMessageText += delta.text;
           events.push({
             type: "response.output_text.delta",
-            item_id: `msg_${this.generateId()}`,
-            output_index: msgOutputIndex,
+            item_id: state.textMessageItemId,
+            output_index: state.textMessageOutputIndex,
             content_index: 0,
             delta: delta.text,
             sequence_number: state.seq++,
           } as RespStreamEvent);
+        } else if (delta.type === "citations_delta") {
+          // Anthropic streams citations as deltas; collect and emit on the message's done events.
+          const citation = (delta as any).citation;
+          if (citation) {
+            state.textAnnotations.push(
+              this.citationToAnnotation(citation, state.textBlockStartOffset)
+            );
+          }
         }
         break;
       }
 
       case "content_block_stop": {
+        const finishedType = state.currentBlockType;
+        state.currentBlockType = "";
+
+        if (finishedType === "thinking") {
+          events.push({
+            type: "response.reasoning_summary_text.done",
+            item_id: state.reasoningItemId,
+            output_index: state.reasoningOutputIndex,
+            summary_index: 0,
+            text: state.reasoningText,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.reasoning_summary_part.done",
+            item_id: state.reasoningItemId,
+            output_index: state.reasoningOutputIndex,
+            summary_index: 0,
+            part: { type: "summary_text", text: state.reasoningText },
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.output_item.done",
+            item: {
+              type: "reasoning",
+              id: state.reasoningItemId,
+              summary: [{ type: "summary_text", text: state.reasoningText }],
+            },
+            output_index: state.reasoningOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          state.outputItems.push({
+            index: state.reasoningOutputIndex,
+            item: {
+              type: "reasoning",
+              id: state.reasoningItemId,
+              summary: [{ type: "summary_text", text: state.reasoningText }],
+            },
+          });
+        } else if (finishedType === "tool_use") {
+          const lastToolCall = state.toolCalls[state.toolCalls.length - 1];
+          if (lastToolCall) {
+            lastToolCall.done = true;
+            events.push({
+              type: "response.function_call_arguments.done",
+              item_id: lastToolCall.id,
+              output_index: lastToolCall.outputIndex,
+              arguments: lastToolCall.arguments,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+            const toolItem = {
+              type: "function_call",
+              id: lastToolCall.id,
+              call_id: lastToolCall.call_id,
+              name: lastToolCall.name,
+              arguments: lastToolCall.arguments,
+              status: "completed" as const,
+            };
+            events.push({
+              type: "response.output_item.done",
+              item: toolItem,
+              output_index: lastToolCall.outputIndex,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+            state.outputItems.push({ index: lastToolCall.outputIndex, item: toolItem });
+          }
+        }
         break;
       }
 
@@ -373,13 +656,24 @@ export class ResponsesToMessagesConverter {
       }
 
       case "message_stop": {
-        const status = this.stopReasonToStatus(state.stopReason as any, undefined);
+        // Pass a synthetic content array when any tool_call completed its block, so the
+        // streaming path matches non-streaming behavior (max_tokens + complete tool_use
+        // → "completed", not "incomplete").
+        const hasCompleteToolCall = state.toolCalls.some(t => t.done);
+        const status = this.stopReasonToStatus(
+          state.stopReason as any,
+          hasCompleteToolCall ? ([{ type: "tool_use" }] as any) : undefined
+        );
         const resp = this.makeSkeletonResponse();
         resp.status = status as any;
+        // Responses input_tokens is inclusive of cached tokens (cached ⊆ input), but Anthropic's
+        // input_tokens counts only uncached tokens, with cache read/creation as separate buckets.
+        const totalInputTokens =
+          state.inputTokens + state.cacheReadTokens + state.cacheCreationTokens;
         resp.usage = {
-          input_tokens: state.inputTokens,
+          input_tokens: totalInputTokens,
           output_tokens: state.outputTokens,
-          total_tokens: state.inputTokens + state.outputTokens,
+          total_tokens: totalInputTokens + state.outputTokens,
           input_tokens_details: {
             cached_tokens: state.cacheReadTokens,
           },
@@ -388,10 +682,122 @@ export class ResponsesToMessagesConverter {
           },
         };
 
+        // Text may span multiple Anthropic blocks; emit the message's done events once at the end.
+        if (state.textMessageStarted) {
+          events.push({
+            type: "response.output_text.done",
+            item_id: state.textMessageItemId,
+            output_index: state.textMessageOutputIndex,
+            content_index: 0,
+            text: state.textMessageText,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "response.content_part.done",
+            item_id: state.textMessageItemId,
+            output_index: state.textMessageOutputIndex,
+            content_index: 0,
+            part: {
+              type: "output_text",
+              text: state.textMessageText,
+              annotations: state.textAnnotations,
+            },
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          const messageItem = {
+            type: "message",
+            id: state.textMessageItemId,
+            role: "assistant",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: state.textMessageText,
+                annotations: state.textAnnotations,
+                logprobs: null as any,
+              },
+            ],
+          };
+          events.push({
+            type: "response.output_item.done",
+            item: messageItem,
+            output_index: state.textMessageOutputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          state.outputItems.push({ index: state.textMessageOutputIndex, item: messageItem });
+        }
+
+        // Truncated tool_calls (no content_block_stop) still belong in output with incomplete status.
+        for (const tc of state.toolCalls) {
+          if (!tc.done) {
+            state.outputItems.push({
+              index: tc.outputIndex,
+              item: {
+                type: "function_call",
+                id: tc.id,
+                call_id: tc.call_id,
+                name: tc.name,
+                arguments: tc.arguments,
+                status: "incomplete",
+              },
+            });
+          }
+        }
+
+        // Truncated web_search_calls (web_search_tool_result never arrived) still need a
+        // completed + output_item.done so clients see the item finalize.
+        for (const entry of state.webSearchByToolUseId.values()) {
+          if (entry.done) continue;
+          entry.done = true;
+          const query = this.extractWebSearchQuery(entry.query);
+          const wsStatus = status === "incomplete" ? "incomplete" : "completed";
+          events.push({
+            type: "response.web_search_call.completed",
+            item_id: entry.itemId,
+            output_index: entry.outputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          const wsItem = {
+            type: "web_search_call",
+            id: entry.itemId,
+            status: wsStatus,
+            action: { type: "search", query },
+          };
+          events.push({
+            type: "response.output_item.done",
+            item: wsItem,
+            output_index: entry.outputIndex,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          state.outputItems.push({ index: entry.outputIndex, item: wsItem });
+        }
+
+        // Items accumulate in completion order, not output order (e.g. text finalizes here,
+        // after an earlier-emitted tool_use with a higher index). Sort by index to match
+        // the output_index sequence clients saw during streaming.
+        resp.output = [...state.outputItems].sort((a, b) => a.index - b.index).map(o => o.item);
+
         if (status === "incomplete") {
           events.push({
             type: "response.incomplete",
             response: resp,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+        } else if (status === "failed") {
+          // refusal → mirror the catch block's failure shape so clients see a terminal
+          // response.failed + error instead of a response.completed carrying status "failed".
+          const error = { code: "content_filter", message: "Content refused by the model." };
+          resp.error = error as any;
+          events.push({
+            type: "response.failed",
+            response: resp,
+            sequence_number: state.seq++,
+          } as RespStreamEvent);
+          events.push({
+            type: "error",
+            code: error.code,
+            message: error.message,
+            param: null,
             sequence_number: state.seq++,
           } as RespStreamEvent);
         } else {
@@ -423,40 +829,42 @@ export class ResponsesToMessagesConverter {
       return;
     }
 
-    const pendingToolUses: Anthropic.ToolUseBlockParam[] = [];
+    // Buffer assistant text and tool_use blocks together so a single assistant turn
+    // (text + following function_calls) lands in one message, as Anthropic requires.
+    const pendingAssistantBlocks: Anthropic.ContentBlockParam[] = [];
 
-    const flushToolUses = () => {
-      if (pendingToolUses.length > 0) {
+    const flushAssistant = () => {
+      if (pendingAssistantBlocks.length > 0) {
         messages.push({
           role: "assistant",
-          content: [...pendingToolUses],
+          content: [...pendingAssistantBlocks],
         });
-        pendingToolUses.length = 0;
+        pendingAssistantBlocks.length = 0;
       }
     };
 
     for (const item of input!) {
       const typed = item as any;
 
-      if (typed.type === "message") {
-        flushToolUses();
+      if (typed.type === "message" || !typed.type) {
         if (typed.role === "system" || typed.role === "developer") {
+          flushAssistant();
           const text = this.extractText(typed.content);
           if (text) systemBlocks.push(text);
         } else if (typed.role === "user") {
+          flushAssistant();
           const content = this.convertInputContent(typed.content);
           messages.push({ role: "user", content });
         } else if (typed.role === "assistant") {
-          const blocks: Anthropic.ContentBlockParam[] = [];
-          if (Array.isArray(typed.content)) {
+          // Append to pending; may merge with following function_call tool_use blocks.
+          if (typeof typed.content === "string") {
+            pendingAssistantBlocks.push({ type: "text", text: typed.content });
+          } else if (Array.isArray(typed.content)) {
             for (const part of typed.content) {
               if (part.type === "output_text") {
-                blocks.push({ type: "text", text: part.text });
+                pendingAssistantBlocks.push({ type: "text", text: part.text });
               }
             }
-          }
-          if (blocks.length > 0) {
-            messages.push({ role: "assistant", content: blocks });
           }
         }
       } else if (typed.type === "function_call") {
@@ -466,19 +874,27 @@ export class ResponsesToMessagesConverter {
         } catch {
           parsedInput = {};
         }
-        pendingToolUses.push({
+        pendingAssistantBlocks.push({
           type: "tool_use",
           id: typed.call_id,
           name: typed.name,
           input: parsedInput,
         });
       } else if (typed.type === "function_call_output") {
-        flushToolUses();
+        flushAssistant();
+        const output = typed.output;
+        // Array content-part outputs are lossy: serialized as raw JSON rather than
+        // unwrapping input_text/image/file parts. Acceptable since Anthropic tool_result
+        // text expects a string and array outputs are rare on this path.
+        const outputText =
+          typeof output === "string" ? output : output == null ? "" : JSON.stringify(output);
         const toolResult: Anthropic.ToolResultBlockParam = {
           type: "tool_result",
           tool_use_id: typed.call_id,
-          content: [{ type: "text", text: typed.output ?? "" }],
+          content: [{ type: "text", text: outputText }],
         };
+        // Anthropic requires parallel tool_results grouped in one user message,
+        // so append to the prior user message if it already holds tool_results.
         const last = messages[messages.length - 1];
         if (last && last.role === "user" && Array.isArray(last.content)) {
           const lastContent = last.content as Anthropic.ContentBlockParam[];
@@ -489,19 +905,20 @@ export class ResponsesToMessagesConverter {
         }
         messages.push({ role: "user", content: [toolResult] });
       } else if ("role" in typed && "content" in typed && typeof typed.content === "string") {
-        flushToolUses();
         const role = typed.role;
         if (role === "system" || role === "developer") {
+          flushAssistant();
           systemBlocks.push(typed.content);
         } else if (role === "user") {
+          flushAssistant();
           messages.push({ role: "user", content: [{ type: "text", text: typed.content }] });
         } else if (role === "assistant") {
-          messages.push({ role: "assistant", content: [{ type: "text", text: typed.content }] });
+          pendingAssistantBlocks.push({ type: "text", text: typed.content });
         }
       }
     }
 
-    flushToolUses();
+    flushAssistant();
   }
 
   private extractText(content: any): string {
@@ -598,7 +1015,7 @@ export class ResponsesToMessagesConverter {
           input_schema: (tt.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema,
         });
       } else if (this.isWebSearch(tt)) {
-        result.push({ type: "web_search_20250305" } as any);
+        result.push({ type: "web_search_20250305", name: "web_search" } as any);
       }
     }
     return result;
@@ -627,6 +1044,7 @@ export class ResponsesToMessagesConverter {
             ? { type: "auto", disable_parallel_tool_use: true }
             : { type: "auto" };
         case "required":
+          // Anthropic's name for "required" is "any".
           return disableParallel
             ? { type: "any", disable_parallel_tool_use: true }
             : { type: "any" };
@@ -671,6 +1089,7 @@ export class ResponsesToMessagesConverter {
     stopReason: Anthropic.Message["stop_reason"] | string | null,
     content?: Anthropic.ContentBlock[]
   ): RespResponse["status"] {
+    // Any tool_use in content means the turn ended for tool dispatch, not incompleteness.
     if (content) {
       const hasToolCall = content.some(b => b.type === "tool_use" || b.type === "server_tool_use");
       if (hasToolCall) return "completed";
@@ -693,6 +1112,37 @@ export class ResponsesToMessagesConverter {
     return Math.random().toString(36).substring(2, 15);
   }
 
+  // Parses the query from accumulated web_search input_json_delta. Handles both complete
+  // JSON (`{"query":"x"}`) and partial JSON truncated by max_tokens (`{"query":"lat`).
+  private extractWebSearchQuery(raw: string): string {
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && typeof parsed.query === "string") {
+        return parsed.query;
+      }
+    } catch {
+      // partial JSON; fall through to regex
+    }
+    const match = raw.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    return match ? match[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\") : "";
+  }
+
+  // Maps an Anthropic citation to an OpenAI output_text annotation. Anthropic's
+  // web_search_result citation maps to OpenAI's url_citation; indices are shifted by
+  // `offset` when merging multiple text blocks into one output_text.
+  private citationToAnnotation(citation: any, offset: number = 0): any {
+    const start = (citation.start_index ?? 0) + offset;
+    const end = (citation.end_index ?? 0) + offset;
+    return {
+      type: "url_citation",
+      start_index: start,
+      end_index: end,
+      url: citation.url ?? "",
+      title: citation.title ?? "",
+    };
+  }
+
   // --- Private: stream helpers ---
 
   private createStreamState(): StreamState {
@@ -700,10 +1150,23 @@ export class ResponsesToMessagesConverter {
       id: "",
       model: "",
       seq: 0,
-      outputIndex: 0,
-      reasoningStarted: false,
+      nextOutputIndex: 0,
+      reasoningItemId: "",
+      reasoningOutputIndex: 0,
+      reasoningText: "",
       toolCallCount: 0,
+      toolCalls: [],
+      webSearchCallCount: 0,
+      webSearchByToolUseId: new Map(),
+      webSearchToolUseIdByBlockIndex: new Map(),
+      currentBlockType: "",
       textMessageStarted: false,
+      textMessageItemId: "",
+      textMessageOutputIndex: 0,
+      textMessageText: "",
+      textAnnotations: [],
+      textBlockStartOffset: 0,
+      outputItems: [],
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
