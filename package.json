@@ -1,6 +1,6 @@
 {
   "name": "@zenmux/rosetta-ai",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Universal translator between AI provider protocols",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
