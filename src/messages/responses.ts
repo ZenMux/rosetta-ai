@@ -177,9 +177,11 @@ export class MessagesToResponsesConverter {
       prompt_tokens: inputTokens,
       total_tokens: totalTokens,
       completion_tokens_details: {
+        ...u.output_tokens_details,
         reasoning_tokens: reasoningTokens,
       },
       prompt_tokens_details: {
+        ...u.input_tokens_detauls,
         cached_tokens: cachedTokens,
         ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
       },
