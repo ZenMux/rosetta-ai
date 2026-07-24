@@ -43,6 +43,49 @@ describe("ResponsesToChatCompletionConverter", () => {
       ]);
     });
 
+    it("converts easy messages with array content (input parts)", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { role: "developer", content: "You are helpful." },
+          {
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
+      });
+
+      expect(result.messages).toEqual([
+        { role: "developer", content: "You are helpful." },
+        { role: "user", content: "hello" },
+      ]);
+    });
+
+    it("converts easy messages with multiple input parts", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: "What is this?" },
+              { type: "input_text", text: "Describe it." },
+            ],
+          },
+        ],
+      });
+
+      expect(result.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is this?" },
+            { type: "text", text: "Describe it." },
+          ],
+        },
+      ]);
+    });
+
     it("converts function_call and function_call_output in input", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",

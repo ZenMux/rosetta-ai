@@ -404,13 +404,19 @@ export class ResponsesToChatCompletionConverter {
     };
 
     for (const item of input!) {
-      if ("role" in item && "content" in item && typeof item.content === "string") {
+      if ("role" in item && "content" in item && !("type" in item)) {
+        // EasyInputMessage: { role, content } with no `type` field.
+        // content may be a string or an array of input parts.
         flushToolCalls();
         const role = item.role;
         if (role === "user" || role === "system" || role === "developer" || role === "assistant") {
+          const content =
+            typeof item.content === "string"
+              ? item.content
+              : this.convertInputContent(item.content);
           messages.push({
             role,
-            content: item.content,
+            content,
           } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
         }
         continue;
