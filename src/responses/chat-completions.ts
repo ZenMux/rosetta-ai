@@ -268,6 +268,7 @@ export class ResponsesToChatCompletionConverter {
       created_at: response.created,
       model: response.model,
       output,
+      output_text: this.collectOutputText(output),
       status,
       error: null,
       incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
@@ -409,6 +410,28 @@ export class ResponsesToChatCompletionConverter {
       return t;
     }
     return undefined;
+  }
+
+  /**
+   * Compute `output_text` — the concatenation of all `output_text` content
+   * parts across the response's message output items, matching the Responses
+   * API convention. Returns "" when there are no text parts (e.g. tool-only
+   * or refusal-only responses), matching the legacy `toOpenAIRespResponse`
+   * default of `output_text: ""`.
+   */
+  private collectOutputText(output: RespResponse["output"]): string {
+    let text = "";
+    for (const item of output ?? []) {
+      if ((item as any).type !== "message") continue;
+      const content = (item as any).content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (part?.type === "output_text" && typeof part.text === "string") {
+          text += part.text;
+        }
+      }
+    }
+    return text;
   }
 
   // --- Stream conversion (CC → Responses, backward) ---
@@ -1246,6 +1269,7 @@ export class ResponsesToChatCompletionConverter {
     resp.status = finalStatus;
     // Carry the output items accumulated during the stream.
     resp.output = [...state.output];
+    resp.output_text = this.collectOutputText(resp.output);
 
     // Echo request-scoped fields onto the terminal response when available.
     const echoed = this.echoRequestFields(this.requestParams);
