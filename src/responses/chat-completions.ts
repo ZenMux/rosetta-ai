@@ -203,7 +203,7 @@ export class ResponsesToChatCompletionConverter {
     if (reasoning) {
       output.push({
         type: "reasoning",
-        id: `rs_${this.generateId()}`,
+        id: `rs_${choice?.index ?? 0}_${response.id}`,
         summary: [{ type: "summary_text", text: reasoning }],
       });
     }
@@ -214,7 +214,7 @@ export class ResponsesToChatCompletionConverter {
         if (tc.type === "function") {
           output.push({
             type: "function_call",
-            id: `fc_${this.generateId()}`,
+            id: `fc_${choice?.index ?? 0}_${response.id}`,
             call_id: tc.id,
             name: tc.function.name,
             arguments: tc.function.arguments,
@@ -248,7 +248,7 @@ export class ResponsesToChatCompletionConverter {
       }
       output.push({
         type: "message",
-        id: `msg_${this.generateId()}`,
+        id: `msg_${choice?.index ?? 0}_${response.id}`,
         role: "assistant",
         status: "completed",
         content,
@@ -284,23 +284,28 @@ export class ResponsesToChatCompletionConverter {
       text: echoed.text,
       reasoning: echoed.reasoning,
       truncation: echoed.truncation,
-      user: undefined,
+      user: null as any,
+      // Fields the legacy converter always emitted; keep them for parity.
+      conversation: null as any,
+      prompt: null as any,
+      background: params?.background ?? false,
       // Non-standard echoes (top_logprobs / safety_identifier / service_tier)
       // are attached via cast; the Responses Response type does not declare them.
       ...((echoed as any).top_logprobs !== undefined
         ? { top_logprobs: (echoed as any).top_logprobs }
         : {}),
-      ...(echoed.safety_identifier !== undefined
+      ...(echoed.safety_identifier != null
         ? { safety_identifier: echoed.safety_identifier }
-        : {}),
-      ...(echoed.service_tier !== undefined ? { service_tier: echoed.service_tier } : {}),
-      ...(params?.background != null ? { background: params.background } : {}),
+        : { safety_identifier: null as any }),
+      ...(echoed.service_tier != null
+        ? { service_tier: echoed.service_tier }
+        : { service_tier: (response.service_tier as any) ?? "default" }),
       ...(params?.prompt_cache_key !== undefined
         ? { prompt_cache_key: params.prompt_cache_key }
         : {}),
       ...(params?.prompt_cache_retention !== undefined
         ? { prompt_cache_retention: params.prompt_cache_retention }
-        : {}),
+        : { prompt_cache_retention: null as any }),
       usage: response.usage
         ? {
             input_tokens: response.usage.prompt_tokens,
@@ -335,22 +340,22 @@ export class ResponsesToChatCompletionConverter {
     reasoning: RespResponse["reasoning"];
     truncation: RespResponse["truncation"];
     top_logprobs?: number | null;
-    safety_identifier?: string;
+    safety_identifier?: string | null;
     service_tier?: RespResponse["service_tier"];
   } {
     if (!params) {
       return {
         instructions: null,
-        temperature: null,
-        top_p: null,
+        temperature: 1,
+        top_p: 1,
         max_output_tokens: null,
         previous_response_id: null,
         parallel_tool_calls: true,
         tool_choice: "auto",
         tools: [],
-        text: { format: { type: "text" } },
+        text: { format: { type: "text" }, verbosity: "medium" },
         reasoning: null,
-        truncation: null,
+        truncation: "disabled",
       };
     }
 
@@ -360,20 +365,18 @@ export class ResponsesToChatCompletionConverter {
 
     return {
       instructions: params.instructions ?? null,
-      temperature: params.temperature ?? null,
-      top_p: params.top_p ?? null,
+      temperature: params.temperature ?? 1,
+      top_p: params.top_p ?? 1,
       max_output_tokens: params.max_output_tokens ?? null,
       previous_response_id: params.previous_response_id ?? null,
       parallel_tool_calls: params.parallel_tool_calls ?? true,
       tool_choice: params.tool_choice ?? "auto",
       tools,
-      text: params.text ?? { format: { type: "text" } },
+      text: params.text ?? { format: { type: "text" }, verbosity: "medium" },
       reasoning: params.reasoning ?? null,
-      truncation: params.truncation ?? null,
+      truncation: params.truncation ?? "disabled",
       top_logprobs: (params as any).top_logprobs,
-      safety_identifier: params.safety_identifier,
-      // service_tier is normally returned by the upstream model; echo the
-      // request's value as a fallback (the legacy converter did the same).
+      safety_identifier: params.safety_identifier ?? null,
       service_tier: params.service_tier,
     };
   }
@@ -487,7 +490,7 @@ export class ResponsesToChatCompletionConverter {
       if (!state.current || state.current.type !== "reasoning") {
         // Close any other open item before starting reasoning.
         events.push(...this.closeCurrent());
-        const itemId = `rs_${this.generateId()}`;
+        const itemId = `rs_${choice.index}_${state.id}`;
         state.current = {
           type: "reasoning",
           itemId,
@@ -559,7 +562,7 @@ export class ResponsesToChatCompletionConverter {
           // matching the legacy converter's output_index math.
           const outputIndex = state.outputIndex + state.toolCallCount - 1;
           if (isCustom) {
-            const itemId = `ct_${this.generateId()}`;
+            const itemId = `ct_${choice.index}_${state.id}`;
             state.current = {
               type: "custom_tool_call",
               itemId,
@@ -582,7 +585,7 @@ export class ResponsesToChatCompletionConverter {
               sequence_number: state.seq++,
             } as RespStreamEvent);
           } else {
-            const itemId = `fc_${this.generateId()}`;
+            const itemId = `fc_${choice.index}_${state.id}`;
             state.current = {
               type: "function_call",
               itemId,
@@ -718,7 +721,7 @@ export class ResponsesToChatCompletionConverter {
   /** Open a message output item and its first content part. */
   private openMessage(state: StreamState, kind: ContentKind, events: RespStreamEvent[]): void {
     state.messageStarted = true;
-    const itemId = `msg_${this.generateId()}`;
+    const itemId = `msg_0_${state.id}`;
     const msgOutputIndex = state.outputIndex + state.toolCallCount;
     state.current = {
       type: "message",
@@ -1211,10 +1214,6 @@ export class ResponsesToChatCompletionConverter {
     }
   }
 
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15);
-  }
-
   // --- Private: stream helpers ---
 
   private createStreamState(): StreamState {
@@ -1284,17 +1283,21 @@ export class ResponsesToChatCompletionConverter {
     resp.text = echoed.text;
     resp.reasoning = echoed.reasoning;
     resp.truncation = echoed.truncation;
+    (resp as any).user = null;
+    (resp as any).conversation = null;
+    (resp as any).prompt = null;
+    (resp as any).background = this.requestParams?.background ?? false;
     if ((echoed as any).top_logprobs !== undefined)
       (resp as any).top_logprobs = (echoed as any).top_logprobs;
-    if (echoed.safety_identifier !== undefined)
-      (resp as any).safety_identifier = echoed.safety_identifier;
-    if (echoed.service_tier !== undefined) (resp as any).service_tier = echoed.service_tier;
-    if (this.requestParams?.background != null)
-      (resp as any).background = this.requestParams.background;
+    (resp as any).safety_identifier =
+      echoed.safety_identifier != null ? echoed.safety_identifier : null;
+    (resp as any).service_tier = echoed.service_tier != null ? echoed.service_tier : "default";
     if (this.requestParams?.prompt_cache_key !== undefined)
       (resp as any).prompt_cache_key = this.requestParams.prompt_cache_key;
-    if (this.requestParams?.prompt_cache_retention !== undefined)
-      (resp as any).prompt_cache_retention = this.requestParams.prompt_cache_retention;
+    (resp as any).prompt_cache_retention =
+      this.requestParams?.prompt_cache_retention !== undefined
+        ? this.requestParams.prompt_cache_retention
+        : null;
 
     if (finalStatus === "incomplete") {
       resp.incomplete_details = { reason: "max_output_tokens" };

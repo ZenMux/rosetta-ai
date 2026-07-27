@@ -580,14 +580,22 @@ describe("ResponsesToChatCompletionConverter", () => {
       const result = c.convertResponse(makeCCResponse());
 
       expect(result.instructions).toBeNull();
-      expect(result.temperature).toBeNull();
+      expect(result.temperature).toBe(1);
+      expect(result.top_p).toBe(1);
       expect(result.parallel_tool_calls).toBe(true);
       expect(result.tool_choice).toBe("auto");
       expect(result.tools).toEqual([]);
-      expect(result.text).toEqual({ format: { type: "text" } });
+      expect(result.text).toEqual({ format: { type: "text" }, verbosity: "medium" });
       expect(result.reasoning).toBeNull();
-      expect(result.truncation).toBeNull();
+      expect(result.truncation).toBe("disabled");
       expect((result as any).top_logprobs).toBeUndefined();
+      expect((result as any).background).toBe(false);
+      expect((result as any).conversation).toBeNull();
+      expect((result as any).prompt).toBeNull();
+      expect((result as any).user).toBeNull();
+      expect((result as any).service_tier).toBe("default");
+      expect((result as any).safety_identifier).toBeNull();
+      expect((result as any).prompt_cache_retention).toBeNull();
     });
 
     it("echoes web_search tools back as-is", () => {
