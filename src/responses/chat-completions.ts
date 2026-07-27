@@ -203,7 +203,7 @@ export class ResponsesToChatCompletionConverter {
     if (reasoning) {
       output.push({
         type: "reasoning",
-        id: `rs_${this.generateId()}`,
+        id: `rs_${choice?.index ?? 0}_${response.id}`,
         summary: [{ type: "summary_text", text: reasoning }],
       });
     }
@@ -214,7 +214,7 @@ export class ResponsesToChatCompletionConverter {
         if (tc.type === "function") {
           output.push({
             type: "function_call",
-            id: `fc_${this.generateId()}`,
+            id: `fc_${choice?.index ?? 0}_${response.id}`,
             call_id: tc.id,
             name: tc.function.name,
             arguments: tc.function.arguments,
@@ -248,7 +248,7 @@ export class ResponsesToChatCompletionConverter {
       }
       output.push({
         type: "message",
-        id: `msg_${this.generateId()}`,
+        id: `msg_${choice?.index ?? 0}_${response.id}`,
         role: "assistant",
         status: "completed",
         content,
@@ -490,7 +490,7 @@ export class ResponsesToChatCompletionConverter {
       if (!state.current || state.current.type !== "reasoning") {
         // Close any other open item before starting reasoning.
         events.push(...this.closeCurrent());
-        const itemId = `rs_${this.generateId()}`;
+        const itemId = `rs_${choice.index}_${state.id}`;
         state.current = {
           type: "reasoning",
           itemId,
@@ -562,7 +562,7 @@ export class ResponsesToChatCompletionConverter {
           // matching the legacy converter's output_index math.
           const outputIndex = state.outputIndex + state.toolCallCount - 1;
           if (isCustom) {
-            const itemId = `ct_${this.generateId()}`;
+            const itemId = `ct_${choice.index}_${state.id}`;
             state.current = {
               type: "custom_tool_call",
               itemId,
@@ -585,7 +585,7 @@ export class ResponsesToChatCompletionConverter {
               sequence_number: state.seq++,
             } as RespStreamEvent);
           } else {
-            const itemId = `fc_${this.generateId()}`;
+            const itemId = `fc_${choice.index}_${state.id}`;
             state.current = {
               type: "function_call",
               itemId,
@@ -721,7 +721,7 @@ export class ResponsesToChatCompletionConverter {
   /** Open a message output item and its first content part. */
   private openMessage(state: StreamState, kind: ContentKind, events: RespStreamEvent[]): void {
     state.messageStarted = true;
-    const itemId = `msg_${this.generateId()}`;
+    const itemId = `msg_0_${state.id}`;
     const msgOutputIndex = state.outputIndex + state.toolCallCount;
     state.current = {
       type: "message",
@@ -1212,10 +1212,6 @@ export class ResponsesToChatCompletionConverter {
       default:
         return "completed";
     }
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15);
   }
 
   // --- Private: stream helpers ---
