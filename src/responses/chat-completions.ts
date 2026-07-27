@@ -1291,7 +1291,7 @@ export class ResponsesToChatCompletionConverter {
       (resp as any).top_logprobs = (echoed as any).top_logprobs;
     (resp as any).safety_identifier =
       echoed.safety_identifier != null ? echoed.safety_identifier : null;
-    (resp as any).service_tier = echoed.service_tier != null ? echoed.service_tier : "default";
+    (resp as any).service_tier = echoed.service_tier != null ? echoed.service_tier : "auto";
     (resp as any).prompt_cache_key =
       this.requestParams?.prompt_cache_key !== undefined
         ? this.requestParams.prompt_cache_key
