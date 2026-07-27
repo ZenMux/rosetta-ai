@@ -3,6 +3,60 @@ import type OpenAI from "openai";
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 
+type ContentKind = "output_text" | "refusal";
+
+interface ReasoningContext {
+  type: "reasoning";
+  itemId: string;
+  outputIndex: number;
+  summaryIndex: number;
+  text: string;
+}
+
+interface MessageContext {
+  type: "message";
+  itemId: string;
+  outputIndex: number;
+  contentIndex: number;
+  kind: ContentKind;
+  outputText: string;
+  refusal: string;
+  annotations: Array<{
+    type: "url_citation";
+    url: string;
+    title: string;
+    start_index: number;
+    end_index: number;
+  }>;
+}
+
+interface FunctionCallContext {
+  type: "function_call";
+  itemId: string;
+  outputIndex: number;
+  callId: string;
+  name: string;
+  arguments: string;
+}
+
+interface CustomToolCallContext {
+  type: "custom_tool_call";
+  itemId: string;
+  outputIndex: number;
+  callId: string;
+  name: string;
+  input: string;
+}
+
+/**
+ * The currently open output item. At most one is open at a time in a single
+ * CC streaming response (choices[0]). When the item finishes — on finish_reason
+ * or on transition to a different content kind / a new tool call id — the
+ * associated `*.done` / `response.output_item.done` events are emitted and the
+ * context is cleared.
+ */
+type ItemContext = ReasoningContext | MessageContext | FunctionCallContext | CustomToolCallContext;
+
 interface StreamState {
   id: string;
   model: string;
@@ -10,8 +64,11 @@ interface StreamState {
   seq: number;
   outputIndex: number;
   contentIndex: number;
-  toolCallStarted: boolean;
-  reasoningStarted: boolean;
+  annotationIndex: number;
+  /** Running output items, mirrored so the terminal response carries `output`. */
+  output: RespResponse["output"];
+  /** The currently open output item, if any. */
+  current: ItemContext | null;
   messageStarted: boolean;
   toolCallCount: number;
 }
@@ -258,33 +315,39 @@ export class ResponsesToChatCompletionConverter {
 
     const delta = choice.delta;
 
-    // Reasoning delta
+    // Reasoning delta — open a reasoning item if not already open.
     const reasoning = (delta as any)?.reasoning || (delta as any)?.reasoning_content;
     if (reasoning) {
-      if (!state.reasoningStarted) {
-        state.reasoningStarted = true;
+      if (!state.current || state.current.type !== "reasoning") {
+        // Close any other open item before starting reasoning.
+        events.push(...this.closeCurrent());
+        const itemId = `rs_${this.generateId()}`;
+        state.current = {
+          type: "reasoning",
+          itemId,
+          outputIndex: state.outputIndex,
+          summaryIndex: 0,
+          text: "",
+        };
         events.push({
           type: "response.output_item.added",
-          item: {
-            type: "reasoning",
-            id: `rs_${this.generateId()}`,
-            summary: [],
-          },
+          item: { type: "reasoning", id: itemId, summary: [] },
           output_index: state.outputIndex,
           sequence_number: state.seq++,
         } as RespStreamEvent);
         events.push({
           type: "response.reasoning_summary_part.added",
-          item_id: `rs_${this.generateId()}`,
+          item_id: itemId,
           output_index: state.outputIndex,
           summary_index: 0,
           part: { type: "summary_text", text: "" },
           sequence_number: state.seq++,
         } as RespStreamEvent);
       }
+      state.current.text += reasoning;
       events.push({
         type: "response.reasoning_summary_text.delta",
-        item_id: `rs_${this.generateId()}`,
+        item_id: state.current.itemId,
         output_index: state.outputIndex,
         summary_index: 0,
         delta: reasoning,
@@ -292,83 +355,189 @@ export class ResponsesToChatCompletionConverter {
       } as RespStreamEvent);
     }
 
-    // Tool call start
+    // Tool calls — function or custom.
     if (delta?.tool_calls) {
       for (const tc of delta.tool_calls) {
-        if (tc.id && tc.function?.name) {
-          if (state.reasoningStarted && !state.toolCallStarted) {
-            state.outputIndex++;
+        const isCustom = (tc as any).type === "custom" || (tc as any).custom;
+        // A new tool call begins when an id + name arrive.
+        if (tc.id && ((tc.function?.name && !isCustom) || ((tc as any).custom?.name && isCustom))) {
+          const callId = tc.id;
+          const name = isCustom ? (tc as any).custom.name : tc.function!.name;
+          // Close any open reasoning/message item before starting a tool call.
+          if (
+            state.current &&
+            state.current.type !== "function_call" &&
+            state.current.type !== "custom_tool_call"
+          ) {
+            events.push(...this.closeCurrent());
           }
-          state.toolCallStarted = true;
-          state.toolCallCount++;
+          // If a tool call of a different type/id is already open, close it.
+          if (
+            state.current &&
+            ((state.current.type === "function_call" && isCustom) ||
+              (state.current.type === "custom_tool_call" && !isCustom) ||
+              (state.current.type !== "custom_tool_call" && state.current.type !== "function_call"))
+          ) {
+            events.push(...this.closeCurrent());
+          }
+          if (
+            state.current &&
+            (state.current.type === "function_call" || state.current.type === "custom_tool_call") &&
+            state.current.callId !== callId
+          ) {
+            events.push(...this.closeCurrent());
+          }
 
-          events.push({
-            type: "response.output_item.added",
-            item: {
+          state.toolCallCount++;
+          // Tool calls live at output_index = outputIndex + toolCallCount - 1,
+          // matching the legacy converter's output_index math.
+          const outputIndex = state.outputIndex + state.toolCallCount - 1;
+          if (isCustom) {
+            const itemId = `ct_${this.generateId()}`;
+            state.current = {
+              type: "custom_tool_call",
+              itemId,
+              outputIndex,
+              callId,
+              name,
+              input: "",
+            };
+            events.push({
+              type: "response.output_item.added",
+              item: {
+                type: "custom_tool_call",
+                id: itemId,
+                call_id: callId,
+                name,
+                input: "",
+                status: "in_progress",
+              } as any,
+              output_index: outputIndex,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+          } else {
+            const itemId = `fc_${this.generateId()}`;
+            state.current = {
               type: "function_call",
-              id: `fc_${this.generateId()}`,
-              call_id: tc.id,
-              name: tc.function.name,
+              itemId,
+              outputIndex,
+              callId,
+              name,
               arguments: "",
-              status: "in_progress",
-            },
-            output_index: state.outputIndex + state.toolCallCount - 1,
-            sequence_number: state.seq++,
-          } as RespStreamEvent);
+            };
+            events.push({
+              type: "response.output_item.added",
+              item: {
+                type: "function_call",
+                id: itemId,
+                call_id: callId,
+                name,
+                arguments: "",
+                status: "in_progress",
+              },
+              output_index: outputIndex,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+          }
         }
 
-        // Tool call arguments delta
-        if (tc.function?.arguments) {
+        // Arguments/input delta.
+        if (state.current?.type === "function_call" && tc.function?.arguments) {
+          state.current.arguments += tc.function.arguments;
           events.push({
             type: "response.function_call_arguments.delta",
-            item_id: `fc_${this.generateId()}`,
-            output_index: state.outputIndex + state.toolCallCount - 1,
+            item_id: state.current.itemId,
+            output_index: state.current.outputIndex,
             delta: tc.function.arguments,
             sequence_number: state.seq++,
           } as RespStreamEvent);
+        } else if (state.current?.type === "custom_tool_call") {
+          const inputDelta =
+            (tc as any).custom?.input ?? (tc.function?.arguments as string | undefined) ?? "";
+          if (inputDelta) {
+            state.current.input += inputDelta;
+            events.push({
+              type: "response.custom_tool_call_input.delta",
+              item_id: state.current.itemId,
+              output_index: state.current.outputIndex,
+              delta: inputDelta,
+              sequence_number: state.seq++,
+            } as RespStreamEvent);
+          }
         }
       }
     }
 
-    // Text content delta
-    if (delta?.content && delta.content !== "") {
-      if (!state.messageStarted) {
-        state.messageStarted = true;
-        const msgOutputIndex =
-          state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount;
-        events.push({
-          type: "response.output_item.added",
-          item: {
-            type: "message",
-            id: `msg_${this.generateId()}`,
-            role: "assistant",
-            status: "in_progress",
-            content: [],
-          },
-          output_index: msgOutputIndex,
-          sequence_number: state.seq++,
-        } as RespStreamEvent);
-        events.push({
-          type: "response.content_part.added",
-          item_id: `msg_${this.generateId()}`,
-          output_index: msgOutputIndex,
-          content_index: 0,
-          part: { type: "output_text", text: "", annotations: [] },
-          sequence_number: state.seq++,
-        } as RespStreamEvent);
+    // Refusal delta.
+    const refusalDelta = (delta as any)?.refusal;
+    if (refusalDelta) {
+      if (!state.current || state.current.type !== "message" || state.current.kind !== "refusal") {
+        events.push(...this.closeCurrent());
+        this.openMessage(state, "refusal", events);
       }
+      const msgCtx = state.current as MessageContext;
+      msgCtx.refusal += refusalDelta;
       events.push({
-        type: "response.output_text.delta",
-        item_id: `msg_${this.generateId()}`,
-        output_index: state.outputIndex + (state.reasoningStarted ? 1 : 0) + state.toolCallCount,
-        content_index: 0,
-        delta: delta.content,
+        type: "response.refusal.delta",
+        item_id: msgCtx.itemId,
+        output_index: msgCtx.outputIndex,
+        content_index: msgCtx.contentIndex,
+        delta: refusalDelta,
         sequence_number: state.seq++,
       } as RespStreamEvent);
     }
 
-    // Finish reason
+    // Text content delta.
+    if (delta?.content && delta.content !== "") {
+      if (
+        !state.current ||
+        state.current.type !== "message" ||
+        state.current.kind !== "output_text"
+      ) {
+        events.push(...this.closeCurrent());
+        this.openMessage(state, "output_text", events);
+      }
+      (state.current as MessageContext).outputText += delta.content;
+      events.push({
+        type: "response.output_text.delta",
+        item_id: (state.current as MessageContext).itemId,
+        output_index: (state.current as MessageContext).outputIndex,
+        content_index: (state.current as MessageContext).contentIndex,
+        delta: delta.content,
+        logprobs: [],
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+    }
+
+    // Annotations on the message delta.
+    const annotations = (delta as any)?.annotations;
+    if (annotations && state.current?.type === "message") {
+      for (const a of annotations) {
+        if (a?.type !== "url_citation" || !a.url_citation) continue;
+        state.annotationIndex++;
+        const annotation = {
+          type: "url_citation" as const,
+          url: a.url_citation.url,
+          title: a.url_citation.title,
+          start_index: a.url_citation.start_index,
+          end_index: a.url_citation.end_index,
+        };
+        state.current.annotations.push(annotation);
+        events.push({
+          type: "response.output_text.annotation.added",
+          item_id: state.current.itemId,
+          output_index: state.current.outputIndex,
+          content_index: state.current.contentIndex,
+          annotation_index: state.annotationIndex,
+          annotation,
+          sequence_number: state.seq++,
+        } as RespStreamEvent);
+      }
+    }
+
+    // Finish reason — close the open item, then emit the terminal event.
     if (choice.finish_reason) {
+      events.push(...this.closeCurrent());
       const status = this.finishReasonToStatus(choice.finish_reason);
       if (chunk.usage) {
         events.push(...this.emitCompleted(chunk.usage, status));
@@ -377,6 +546,196 @@ export class ResponsesToChatCompletionConverter {
       }
     }
 
+    return events;
+  }
+
+  /** Open a message output item and its first content part. */
+  private openMessage(state: StreamState, kind: ContentKind, events: RespStreamEvent[]): void {
+    state.messageStarted = true;
+    const itemId = `msg_${this.generateId()}`;
+    const msgOutputIndex = state.outputIndex + state.toolCallCount;
+    state.current = {
+      type: "message",
+      itemId,
+      outputIndex: msgOutputIndex,
+      contentIndex: state.contentIndex,
+      kind,
+      outputText: "",
+      refusal: "",
+      annotations: [],
+    };
+    events.push({
+      type: "response.output_item.added",
+      item: {
+        type: "message",
+        id: itemId,
+        role: "assistant",
+        status: "in_progress",
+        content: [],
+      },
+      output_index: msgOutputIndex,
+      sequence_number: state.seq++,
+    } as RespStreamEvent);
+    events.push({
+      type: "response.content_part.added",
+      item_id: itemId,
+      output_index: msgOutputIndex,
+      content_index: state.contentIndex,
+      part:
+        kind === "output_text"
+          ? { type: "output_text", text: "", annotations: [] }
+          : { type: "refusal", refusal: "" },
+      sequence_number: state.seq++,
+    } as RespStreamEvent);
+  }
+
+  /**
+   * Close the currently open output item, emitting the `*.done` and
+   * `response.output_item.done` events. Mirrors the legacy converter's
+   * stopReasoning / stopOutputTextRefusal / stopFunctionCallArguments /
+   * stopCustomToolCallInput helpers.
+   */
+  private closeCurrent(): RespStreamEvent[] {
+    const state = this.streamState;
+    const ctx = state.current;
+    if (!ctx) return [];
+    const events: RespStreamEvent[] = [];
+
+    if (ctx.type === "reasoning") {
+      events.push({
+        type: "response.reasoning_summary_text.done",
+        item_id: ctx.itemId,
+        output_index: ctx.outputIndex,
+        summary_index: ctx.summaryIndex,
+        text: ctx.text,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      events.push({
+        type: "response.reasoning_summary_part.done",
+        item_id: ctx.itemId,
+        output_index: ctx.outputIndex,
+        summary_index: ctx.summaryIndex,
+        part: { type: "summary_text", text: ctx.text },
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      const item = {
+        id: ctx.itemId,
+        type: "reasoning" as const,
+        summary: [{ type: "summary_text" as const, text: ctx.text }],
+      };
+      state.output.push(item);
+      events.push({
+        type: "response.output_item.done",
+        item,
+        output_index: ctx.outputIndex,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      state.outputIndex++;
+    } else if (ctx.type === "message") {
+      const status: "completed" | "incomplete" = "completed";
+      const part =
+        ctx.kind === "output_text"
+          ? {
+              type: "output_text" as const,
+              annotations: ctx.annotations,
+              logprobs: [] as any[],
+              text: ctx.outputText,
+            }
+          : { type: "refusal" as const, refusal: ctx.refusal };
+      events.push(
+        ctx.kind === "output_text"
+          ? ({
+              type: "response.output_text.done",
+              item_id: ctx.itemId,
+              output_index: ctx.outputIndex,
+              content_index: ctx.contentIndex,
+              text: ctx.outputText,
+              logprobs: [],
+              sequence_number: state.seq++,
+            } as RespStreamEvent)
+          : ({
+              type: "response.refusal.done",
+              item_id: ctx.itemId,
+              output_index: ctx.outputIndex,
+              content_index: ctx.contentIndex,
+              refusal: ctx.refusal,
+              sequence_number: state.seq++,
+            } as RespStreamEvent)
+      );
+      events.push({
+        type: "response.content_part.done",
+        item_id: ctx.itemId,
+        output_index: ctx.outputIndex,
+        content_index: ctx.contentIndex,
+        part,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      const item = {
+        id: ctx.itemId,
+        type: "message" as const,
+        role: "assistant" as const,
+        status,
+        content: [part],
+      };
+      state.output.push(item);
+      events.push({
+        type: "response.output_item.done",
+        item,
+        output_index: ctx.outputIndex,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      state.outputIndex++;
+    } else if (ctx.type === "function_call") {
+      events.push({
+        type: "response.function_call_arguments.done",
+        item_id: ctx.itemId,
+        output_index: ctx.outputIndex,
+        name: ctx.name,
+        arguments: ctx.arguments,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      const item = {
+        id: ctx.itemId,
+        type: "function_call" as const,
+        status: "completed" as const,
+        call_id: ctx.callId,
+        name: ctx.name,
+        arguments: ctx.arguments,
+      };
+      state.output.push(item);
+      events.push({
+        type: "response.output_item.done",
+        item,
+        output_index: ctx.outputIndex,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      state.outputIndex++;
+    } else if (ctx.type === "custom_tool_call") {
+      events.push({
+        type: "response.custom_tool_call_input.done",
+        item_id: ctx.itemId,
+        output_index: ctx.outputIndex,
+        input: ctx.input,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      const item = {
+        id: ctx.itemId,
+        type: "custom_tool_call" as const,
+        call_id: ctx.callId,
+        name: ctx.name,
+        input: ctx.input,
+      };
+      state.output.push(item);
+      events.push({
+        type: "response.output_item.done",
+        item,
+        output_index: ctx.outputIndex,
+        sequence_number: state.seq++,
+      } as RespStreamEvent);
+      state.outputIndex++;
+    }
+
+    state.current = null;
     return events;
   }
 
@@ -619,8 +978,9 @@ export class ResponsesToChatCompletionConverter {
       seq: 0,
       outputIndex: 0,
       contentIndex: 0,
-      toolCallStarted: false,
-      reasoningStarted: false,
+      annotationIndex: -1,
+      output: [],
+      current: null,
       messageStarted: false,
       toolCallCount: 0,
     };
@@ -660,6 +1020,12 @@ export class ResponsesToChatCompletionConverter {
     const finalStatus = status ?? "completed";
     const resp = this.makeSkeletonResponse();
     resp.status = finalStatus;
+    // Carry the output items accumulated during the stream.
+    resp.output = [...state.output];
+
+    if (finalStatus === "incomplete") {
+      resp.incomplete_details = { reason: "max_output_tokens" };
+    }
 
     if (usage) {
       resp.usage = {
@@ -673,6 +1039,16 @@ export class ResponsesToChatCompletionConverter {
           reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,
         },
       };
+    }
+
+    if (finalStatus === "failed") {
+      return [
+        {
+          type: "response.failed",
+          response: resp,
+          sequence_number: state.seq++,
+        } as RespStreamEvent,
+      ];
     }
 
     if (finalStatus === "incomplete") {

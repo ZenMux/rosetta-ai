@@ -737,6 +737,193 @@ describe("ResponsesToChatCompletionConverter", () => {
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
     });
+
+    // ===== done / refusal / annotation / custom / failed events =====
+
+    it("emits output_text.done, content_part.done and output_item.done on finish", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+
+      const textDone = events.find(e => e.type === "response.output_text.done") as any;
+      expect(textDone).toBeDefined();
+      expect(textDone.text).toBe("Hi");
+
+      const partDone = events.find(e => e.type === "response.content_part.done") as any;
+      expect(partDone).toBeDefined();
+      expect(partDone.part.type).toBe("output_text");
+      expect(partDone.part.text).toBe("Hi");
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("message");
+      expect(itemDone.item.content[0].text).toBe("Hi");
+    });
+
+    it("emits reasoning_summary_text.done, reasoning_summary_part.done and output_item.done when reasoning closes", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { reasoning_content: "Thinking..." } as any }));
+      // A text delta after reasoning closes the reasoning item.
+      const events = c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const textDone = events.find(e => e.type === "response.reasoning_summary_text.done") as any;
+      expect(textDone).toBeDefined();
+      expect(textDone.text).toBe("Thinking...");
+
+      const partDone = events.find(e => e.type === "response.reasoning_summary_part.done") as any;
+      expect(partDone).toBeDefined();
+      expect(partDone.part.text).toBe("Thinking...");
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("reasoning");
+      expect(itemDone.item.summary[0].text).toBe("Thinking...");
+    });
+
+    it("emits function_call_arguments.done and output_item.done when a tool call finishes", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_1", type: "function", function: { name: "fn", arguments: "" } },
+            ],
+          },
+        })
+      );
+      c.convertStreamChunk(
+        makeChunk({ delta: { tool_calls: [{ index: 0, function: { arguments: '{"x":1}' } }] } })
+      );
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "tool_calls" }));
+
+      const argsDone = events.find(e => e.type === "response.function_call_arguments.done") as any;
+      expect(argsDone).toBeDefined();
+      expect(argsDone.name).toBe("fn");
+      expect(argsDone.arguments).toBe('{"x":1}');
+
+      const itemDone = events.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("function_call");
+      expect(itemDone.item.arguments).toBe('{"x":1}');
+    });
+
+    it("emits refusal.delta and refusal.done", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { refusal: "I can't" } as any }));
+
+      const events = c.convertStreamChunk(makeChunk({ delta: { refusal: " help." } as any }));
+
+      const refusalDelta = events.find(e => e.type === "response.refusal.delta") as any;
+      expect(refusalDelta).toBeDefined();
+      expect(refusalDelta.delta).toBe(" help.");
+
+      // Closing via finish_reason emits refusal.done + content_part.done + output_item.done
+      const finish = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const refusalDone = finish.find(e => e.type === "response.refusal.done") as any;
+      expect(refusalDone).toBeDefined();
+      expect(refusalDone.refusal).toBe("I can't help.");
+    });
+
+    it("emits response.output_text.annotation.added for url_citation annotations", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            annotations: [
+              {
+                type: "url_citation",
+                url_citation: {
+                  url: "https://example.com",
+                  title: "Ex",
+                  start_index: 0,
+                  end_index: 5,
+                },
+              },
+            ],
+          } as any,
+        })
+      );
+
+      const annAdded = events.find(e => e.type === "response.output_text.annotation.added") as any;
+      expect(annAdded).toBeDefined();
+      expect(annAdded.annotation.url).toBe("https://example.com");
+      expect(annAdded.annotation_index).toBe(0);
+    });
+
+    it("emits custom_tool_call_input.delta and .done for custom tool calls", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "custom",
+                custom: { name: "my_tool", input: "" },
+              } as any,
+            ],
+          },
+        })
+      );
+
+      const deltaEvents = c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [{ index: 0, type: "custom", custom: { input: '{"a":1}' } } as any],
+          },
+        })
+      );
+      const inputDelta = deltaEvents.find(
+        e => e.type === "response.custom_tool_call_input.delta"
+      ) as any;
+      expect(inputDelta).toBeDefined();
+      expect(inputDelta.delta).toBe('{"a":1}');
+
+      const finish = c.convertStreamChunk(makeChunk({ finish_reason: "tool_calls" }));
+      const inputDone = finish.find(e => e.type === "response.custom_tool_call_input.done") as any;
+      expect(inputDone).toBeDefined();
+      expect(inputDone.input).toBe('{"a":1}');
+
+      const itemDone = finish.find(e => e.type === "response.output_item.done") as any;
+      expect(itemDone).toBeDefined();
+      expect(itemDone.item.type).toBe("custom_tool_call");
+    });
+
+    it("emits response.failed on content_filter finish", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "content_filter" }));
+
+      const failed = events.find(e => e.type === "response.failed") as any;
+      expect(failed).toBeDefined();
+      expect(failed.response.status).toBe("failed");
+    });
+
+    it("carries accumulated output items on the terminal response", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
+      c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+
+      const lastEvents = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const completed = lastEvents.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.output.length).toBeGreaterThanOrEqual(1);
+      expect(completed.response.output[0].type).toBe("message");
+    });
   });
 
   describe("convertRequest - advanced input items", () => {
