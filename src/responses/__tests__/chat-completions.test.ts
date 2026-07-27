@@ -1132,5 +1132,158 @@ describe("ResponsesToChatCompletionConverter", () => {
 
       expect(result.response_format).toEqual({ type: "text" });
     });
+
+    // ===== behavior 3: request-conversion parity =====
+
+    it("converts custom tools to CC custom tools", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tools: [
+          {
+            type: "custom",
+            name: "my_tool",
+            description: "does a thing",
+            format: { type: "grammar", definition: "def", syntax: "lark" },
+          } as any,
+        ],
+      } as any);
+
+      const tool = result.tools![0] as any;
+      expect(tool.type).toBe("custom");
+      expect(tool.custom.name).toBe("my_tool");
+      expect(tool.custom.description).toBe("does a thing");
+      expect(tool.custom.format).toEqual({
+        type: "grammar",
+        grammar: { definition: "def", syntax: "lark" },
+      });
+    });
+
+    it("converts custom tool with text format", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tools: [{ type: "custom", name: "my_tool", format: { type: "text" } } as any],
+      } as any);
+
+      const tool = result.tools![0] as any;
+      expect(tool.custom.format).toEqual({ type: "text" });
+    });
+
+    it("converts custom_tool_call_output input item to a tool message", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { type: "custom_tool_call", call_id: "c1", name: "my_tool", input: "{}" } as any,
+          {
+            type: "custom_tool_call_output",
+            call_id: "c1",
+            output: [{ type: "input_text", text: "result text" }],
+          } as any,
+        ],
+      } as any);
+
+      const toolMsg = result.messages.find((m: any) => m.role === "tool") as any;
+      expect(toolMsg).toBeDefined();
+      expect(toolMsg.tool_call_id).toBe("c1");
+      expect(toolMsg.content).toEqual([{ type: "text", text: "result text" }]);
+    });
+
+    it("converts input_audio content part", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_audio", input_audio: { data: "BASE64", format: "mp3" } } as any,
+            ],
+          },
+        ],
+      } as any);
+
+      const part = (result.messages[0] as any).content[0];
+      expect(part.type).toBe("input_audio");
+      expect(part.input_audio.data).toBe("BASE64");
+      expect(part.input_audio.format).toBe("mp3");
+    });
+
+    it("converts input_video content part (non-standard extension)", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_video", input_video: { data: "BASE64", format: "mp4" } } as any,
+            ],
+          },
+        ],
+      } as any);
+
+      const part = (result.messages[0] as any).content[0];
+      expect(part.type).toBe("video_url");
+      expect(part.video_url.url).toContain("data:video/mp4;base64,BASE64");
+    });
+
+    it("maps tool_choice allowed_tools", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tool_choice: {
+          type: "allowed_tools",
+          mode: "required",
+          tools: [{ type: "function", name: "fn" }],
+        } as any,
+      } as any);
+
+      expect(result.tool_choice).toEqual({
+        type: "allowed_tools",
+        allowed_tools: {
+          mode: "required",
+          tools: [{ type: "function", name: "fn" }],
+        },
+      });
+    });
+
+    it("maps tool_choice custom", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        tool_choice: { type: "custom", name: "my_tool" } as any,
+      } as any);
+
+      expect(result.tool_choice).toEqual({ type: "custom", custom: { name: "my_tool" } });
+    });
+
+    it("carries json_schema description in response_format", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        text: {
+          format: {
+            type: "json_schema",
+            name: "out",
+            description: "desc",
+            schema: { type: "object" },
+            strict: true,
+          },
+        },
+      } as any);
+
+      expect((result.response_format as any).json_schema.description).toBe("desc");
+    });
+
+    it("forwards stream_options.include_obfuscation even when stream is not true", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        stream_options: { include_obfuscation: false },
+      } as any);
+
+      expect((result as any).stream_options).toEqual({ include_obfuscation: false });
+    });
   });
 });

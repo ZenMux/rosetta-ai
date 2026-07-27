@@ -167,6 +167,11 @@ export class ResponsesToChatCompletionConverter {
       if (params.stream_options) {
         result.stream_options = params.stream_options;
       }
+    } else if (params.stream_options?.include_obfuscation != null) {
+      // include_obfuscation is meaningful even for non-streaming Responses
+      // requests (it governs how the gateway streams back to the client).
+      // Forward it so it is not dropped when params.stream is falsy.
+      result.stream_options = { include_obfuscation: params.stream_options.include_obfuscation };
     }
 
     return result;
@@ -965,8 +970,18 @@ export class ResponsesToChatCompletionConverter {
         messages.push({
           role: "tool",
           tool_call_id: typed.call_id,
-          content: typed.output,
+          content: this.toToolContent(typed.output),
         });
+      } else if (typed.type === "custom_tool_call_output") {
+        // A custom tool's output. There is no CC "custom tool" message role;
+        // surface it as a tool message keyed by the call id, matching the
+        // legacy converter's behavior.
+        flushToolCalls();
+        messages.push({
+          role: "tool",
+          tool_call_id: typed.call_id,
+          content: this.toToolContent(typed.output),
+        } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
       }
     }
 
@@ -989,7 +1004,11 @@ export class ResponsesToChatCompletionConverter {
       if (part.type === "input_image") {
         return {
           type: "image_url",
-          image_url: { url: part.image_url || part.file_id || "" },
+          image_url: {
+            url: part.image_url || part.file_id || "",
+            // "original" is not a valid CC image_url.detail; omit it to use the default.
+            ...(part.detail && part.detail !== "original" ? { detail: part.detail } : {}),
+          },
         };
       }
       if (part.type === "input_file") {
@@ -998,12 +1017,47 @@ export class ResponsesToChatCompletionConverter {
           file: {
             file_data: part.file_data || part.file_url || "",
             filename: part.filename,
-            file_id: part.file_id,
+            file_id: part.file_id || undefined,
           },
         };
       }
+      if (part.type === "input_audio") {
+        return {
+          type: "input_audio",
+          input_audio: {
+            data: part.input_audio?.data,
+            format: part.input_audio?.format,
+          },
+        } as unknown as OpenAI.Chat.Completions.ChatCompletionContentPart;
+      }
+      // Non-standard extension: ZenMux supports input_video on Responses user
+      // input. Map to a video_url content part (not in the SDK types).
+      if (part.type === "input_video") {
+        const v = part.input_video;
+        const url = v?.data ? `data:video/${v?.format ?? "mp4"};base64,${v.data}` : (v?.url ?? "");
+        return {
+          type: "video_url",
+          video_url: { url: url || null },
+        } as unknown as OpenAI.Chat.Completions.ChatCompletionContentPart;
+      }
       return { type: "text", text: "" };
     });
+  }
+
+  /**
+   * Normalize a Responses tool-call output payload to a CC tool message
+   * content. A string passes through; an array of input parts is reduced to
+   * its `input_text` items as CC text parts. Mirrors the legacy `toToolContent`.
+   */
+  private toToolContent(
+    output: string | Array<{ type: string; text?: string } | Record<string, unknown>>
+  ): string | OpenAI.Chat.Completions.ChatCompletionToolMessageParam["content"] {
+    if (typeof output === "string") return output;
+    if (!Array.isArray(output)) return "";
+    const parts = output
+      .filter((item: any) => item.type === "input_text")
+      .map((item: any) => ({ type: "text" as const, text: item.text }));
+    return parts.length ? parts : "";
   }
 
   private convertTools(tools: OpenAI.Responses.ResponseCreateParams["tools"]): {
@@ -1027,6 +1081,23 @@ export class ResponsesToChatCompletionConverter {
             strict: tt.strict,
           },
         });
+      } else if (tt.type === "custom") {
+        // Responses custom tool → CC custom tool.
+        const custom: any = { name: tt.name };
+        if (tt.description != null) custom.description = tt.description;
+        if (tt.format != null) {
+          custom.format =
+            tt.format.type === "text"
+              ? { type: "text" }
+              : {
+                  type: "grammar",
+                  grammar: {
+                    definition: tt.format.definition,
+                    syntax: tt.format.syntax,
+                  },
+                };
+        }
+        ccTools.push({ type: "custom", custom });
       } else if (this.isWebSearch(tt)) {
         webSearchOptions = {};
         if (tt.search_context_size) {
@@ -1059,9 +1130,21 @@ export class ResponsesToChatCompletionConverter {
       return "auto";
     }
     if (typeof choice === "object" && choice !== null) {
-      const c = choice;
+      const c = choice as any;
       if (c.type === "function" && c.name) {
         return { type: "function", function: { name: c.name } };
+      }
+      if (c.type === "custom" && c.name) {
+        return { type: "custom", custom: { name: c.name } };
+      }
+      if (c.type === "allowed_tools") {
+        return {
+          type: "allowed_tools",
+          allowed_tools: {
+            mode: c.mode,
+            tools: c.tools,
+          },
+        };
       }
     }
     return "auto";
@@ -1071,13 +1154,16 @@ export class ResponsesToChatCompletionConverter {
     format: any
   ): OpenAI.Chat.Completions.ChatCompletionCreateParams["response_format"] {
     if (format.type === "json_schema") {
+      const json_schema: any = {
+        name: format.name || "response",
+        schema: format.schema,
+        strict: format.strict,
+      };
+      // description is optional but supported by the CC json_schema format.
+      if (format.description != null) json_schema.description = format.description;
       return {
         type: "json_schema",
-        json_schema: {
-          name: format.name || "response",
-          schema: format.schema,
-          strict: format.strict,
-        },
+        json_schema,
       };
     }
     if (format.type === "json_object") {
