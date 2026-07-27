@@ -357,6 +357,40 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(msgOutput.content[0].text).toBe("Hello!");
     });
 
+    it("populates output_text with the concatenated message text", () => {
+      const result = converter.convertResponse(
+        makeCCResponse({
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "Hello world!", refusal: null },
+              finish_reason: "stop",
+              logprobs: null,
+            },
+          ],
+        })
+      );
+
+      expect(result.output_text).toBe("Hello world!");
+    });
+
+    it("sets output_text to empty string for refusal-only responses", () => {
+      const result = converter.convertResponse(
+        makeCCResponse({
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: null, refusal: "no" },
+              finish_reason: "stop",
+              logprobs: null,
+            },
+          ],
+        })
+      );
+
+      expect(result.output_text).toBe("");
+    });
+
     it("converts tool_calls to function_call output items", () => {
       const result = converter.convertResponse(
         makeCCResponse({
@@ -1007,6 +1041,18 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(completed).toBeDefined();
       expect(completed.response.output.length).toBeGreaterThanOrEqual(1);
       expect(completed.response.output[0].type).toBe("message");
+    });
+
+    it("populates output_text on the terminal streaming response", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hello " } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "world" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.output_text).toBe("Hello world");
     });
 
     it("echoes request fields on the terminal response after convertRequest", () => {
