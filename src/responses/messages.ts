@@ -111,7 +111,7 @@ export class ResponsesToMessagesConverter {
       result.tool_choice = this.convertToolChoice(params.tool_choice, params.parallel_tool_calls);
     }
     if (params.reasoning) {
-      result.thinking = this.convertReasoning(params.reasoning);
+      result.thinking = this.convertReasoning(params.reasoning, result.max_tokens);
     }
     if (params.text?.format?.type === "json_schema") {
       const fmt = params.text.format as any;
@@ -1067,20 +1067,27 @@ export class ResponsesToMessagesConverter {
   }
 
   private convertReasoning(
-    reasoning: OpenAI.Responses.ResponseCreateParams["reasoning"]
-  ): Anthropic.ThinkingConfigParam {
+    reasoning: OpenAI.Responses.ResponseCreateParams["reasoning"],
+    maxOutputTokens: number
+  ): Anthropic.ThinkingConfigParam | undefined {
     if (!reasoning || !reasoning.effort) {
+      return undefined;
+    } else if (reasoning.effort === "none") {
       return { type: "disabled" };
     }
 
-    const budgetMap: Record<string, number> = {
-      low: 2048,
-      medium: 5120,
-      high: 10240,
+    const effortRatioMap: Record<string, number> = {
+      minimal: 0.1,
+      low: 0.2,
+      medium: 0.5,
+      high: 0.8,
+      xhigh: 0.9,
+      max: 0.95,
     };
 
-    const budget = budgetMap[reasoning.effort] ?? 10240;
-    return { type: "enabled", budget_tokens: budget };
+    const ratio = effortRatioMap[reasoning.effort] ?? effortRatioMap.minimal;
+    const budget = Math.floor(maxOutputTokens * ratio);
+    return { type: "enabled", budget_tokens: Math.max(budget, 1024) };
   }
 
   // --- Private: response helpers ---

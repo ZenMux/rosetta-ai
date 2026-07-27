@@ -355,10 +355,11 @@ describe("ResponsesToMessagesConverter", () => {
       const result = converter.convertRequest({
         model: "claude-sonnet-4-20250514",
         input: "Hi",
+        max_output_tokens: 2000,
         reasoning: { effort: "high" },
       });
 
-      expect(result.thinking).toEqual({ type: "enabled", budget_tokens: 10240 });
+      expect(result.thinking).toEqual({ type: "enabled", budget_tokens: 1600 });
     });
 
     it("maps text.format json_schema to output_config", () => {
