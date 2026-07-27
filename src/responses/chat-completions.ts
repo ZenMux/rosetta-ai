@@ -490,7 +490,7 @@ export class ResponsesToChatCompletionConverter {
       if (!state.current || state.current.type !== "reasoning") {
         // Close any other open item before starting reasoning.
         events.push(...this.closeCurrent());
-        const itemId = `rs_${choice.index}_${state.id}`;
+        const itemId = `rs_${state.id}`;
         state.current = {
           type: "reasoning",
           itemId,
@@ -562,7 +562,7 @@ export class ResponsesToChatCompletionConverter {
           // matching the legacy converter's output_index math.
           const outputIndex = state.outputIndex + state.toolCallCount - 1;
           if (isCustom) {
-            const itemId = `ct_${choice.index}_${state.id}`;
+            const itemId = `ct_${state.id}`;
             state.current = {
               type: "custom_tool_call",
               itemId,
@@ -585,7 +585,7 @@ export class ResponsesToChatCompletionConverter {
               sequence_number: state.seq++,
             } as RespStreamEvent);
           } else {
-            const itemId = `fc_${choice.index}_${state.id}`;
+            const itemId = `fc_${state.id}`;
             state.current = {
               type: "function_call",
               itemId,
@@ -721,7 +721,7 @@ export class ResponsesToChatCompletionConverter {
   /** Open a message output item and its first content part. */
   private openMessage(state: StreamState, kind: ContentKind, events: RespStreamEvent[]): void {
     state.messageStarted = true;
-    const itemId = `msg_0_${state.id}`;
+    const itemId = `msg_${state.id}`;
     const msgOutputIndex = state.outputIndex + state.toolCallCount;
     state.current = {
       type: "message",
@@ -1292,8 +1292,10 @@ export class ResponsesToChatCompletionConverter {
     (resp as any).safety_identifier =
       echoed.safety_identifier != null ? echoed.safety_identifier : null;
     (resp as any).service_tier = echoed.service_tier != null ? echoed.service_tier : "default";
-    if (this.requestParams?.prompt_cache_key !== undefined)
-      (resp as any).prompt_cache_key = this.requestParams.prompt_cache_key;
+    (resp as any).prompt_cache_key =
+      this.requestParams?.prompt_cache_key !== undefined
+        ? this.requestParams.prompt_cache_key
+        : null;
     (resp as any).prompt_cache_retention =
       this.requestParams?.prompt_cache_retention !== undefined
         ? this.requestParams.prompt_cache_retention
