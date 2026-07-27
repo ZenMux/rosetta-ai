@@ -482,6 +482,90 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(msgOutput.content[0].type).toBe("refusal");
       expect(msgOutput.content[0].refusal).toBe("I cannot do that");
     });
+
+    // ===== request-field echo via convertResponse(response, params) =====
+
+    it("echoes request-scoped fields onto the response when params provided", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      const params: any = {
+        model: "gpt-4o",
+        input: "Hi",
+        instructions: "Be helpful.",
+        temperature: 0.7,
+        top_p: 0.9,
+        max_output_tokens: 256,
+        previous_response_id: "resp_abc",
+        parallel_tool_calls: false,
+        tool_choice: "required",
+        tools: [
+          {
+            type: "function",
+            name: "get_weather",
+            description: "Get weather",
+            parameters: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
+            strict: true,
+          },
+        ],
+        text: { format: { type: "json_object" } },
+        reasoning: { effort: "high" },
+        truncation: "auto",
+        top_logprobs: 5,
+        safety_identifier: "user-42",
+        service_tier: "flex",
+        background: true,
+        prompt_cache_key: "cache-1",
+        prompt_cache_retention: "24h",
+      };
+      const result = c.convertResponse(makeCCResponse(), params);
+
+      expect(result.instructions).toBe("Be helpful.");
+      expect(result.temperature).toBe(0.7);
+      expect(result.top_p).toBe(0.9);
+      expect(result.max_output_tokens).toBe(256);
+      expect(result.previous_response_id).toBe("resp_abc");
+      expect(result.parallel_tool_calls).toBe(false);
+      expect(result.tool_choice).toBe("required");
+      expect(result.text).toEqual({ format: { type: "json_object" } });
+      expect(result.reasoning).toEqual({ effort: "high" });
+      expect(result.truncation).toBe("auto");
+      expect((result as any).top_logprobs).toBe(5);
+      expect((result as any).safety_identifier).toBe("user-42");
+      expect((result as any).service_tier).toBe("flex");
+      expect((result as any).background).toBe(true);
+      expect((result as any).prompt_cache_key).toBe("cache-1");
+      expect((result as any).prompt_cache_retention).toBe("24h");
+
+      const tool = result.tools[0] as any;
+      expect(tool.type).toBe("function");
+      expect(tool.name).toBe("get_weather");
+      expect(tool.strict).toBe(true);
+    });
+
+    it("falls back to defaults when params omitted", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      const result = c.convertResponse(makeCCResponse());
+
+      expect(result.instructions).toBeNull();
+      expect(result.temperature).toBeNull();
+      expect(result.parallel_tool_calls).toBe(true);
+      expect(result.tool_choice).toBe("auto");
+      expect(result.tools).toEqual([]);
+      expect(result.text).toEqual({ format: { type: "text" } });
+      expect(result.reasoning).toBeNull();
+      expect(result.truncation).toBeNull();
+      expect((result as any).top_logprobs).toBeUndefined();
+    });
+
+    it("echoes web_search tools back as-is", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      const params: any = {
+        model: "gpt-4o",
+        input: "Hi",
+        tools: [{ type: "web_search_preview", search_context_size: "medium" }],
+      };
+      const result = c.convertResponse(makeCCResponse(), params);
+      expect(result.tools[0].type).toBe("web_search_preview");
+    });
   });
 
   // ===== convertStreamChunk (CC → Responses, backward) =====
@@ -923,6 +1007,32 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(completed).toBeDefined();
       expect(completed.response.output.length).toBeGreaterThanOrEqual(1);
       expect(completed.response.output[0].type).toBe("message");
+    });
+
+    it("echoes request fields on the terminal response after convertRequest", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertRequest({
+        model: "gpt-4o",
+        input: "Hi",
+        instructions: "Be brief.",
+        temperature: 0.5,
+        parallel_tool_calls: false,
+        tool_choice: "required",
+        reasoning: { effort: "high" },
+        truncation: "auto",
+      } as any);
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+      c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.instructions).toBe("Be brief.");
+      expect(completed.response.temperature).toBe(0.5);
+      expect(completed.response.parallel_tool_calls).toBe(false);
+      expect(completed.response.tool_choice).toBe("required");
+      expect(completed.response.reasoning).toEqual({ effort: "high" });
+      expect(completed.response.truncation).toBe("auto");
     });
   });
 

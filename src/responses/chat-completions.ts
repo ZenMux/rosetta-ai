@@ -75,6 +75,13 @@ interface StreamState {
 
 export class ResponsesToChatCompletionConverter {
   private streamState: StreamState;
+  /**
+   * The original Responses request params, stashed during `convertRequest` so
+   * the streaming terminal event can echo request-scoped fields onto the
+   * `response.completed` / `response.incomplete` payload. Only populated when
+   * `convertRequest` ran before streaming (the normal gateway flow).
+   */
+  private requestParams?: OpenAI.Responses.ResponseCreateParams;
 
   constructor() {
     this.streamState = this.createStreamState();
@@ -85,6 +92,7 @@ export class ResponsesToChatCompletionConverter {
   convertRequest(
     params: OpenAI.Responses.ResponseCreateParams
   ): OpenAI.Chat.Completions.ChatCompletionCreateParams {
+    this.requestParams = params;
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 
     if (params.instructions) {
@@ -166,7 +174,21 @@ export class ResponsesToChatCompletionConverter {
 
   // --- Response conversion (CC → Responses, backward) ---
 
-  convertResponse(response: OpenAI.ChatCompletion): RespResponse {
+  /**
+   * Convert a ChatCompletion response back to a Responses Response.
+   *
+   * @param response The upstream ChatCompletion.
+   * @param params Optional original Responses request params. When provided,
+   *   request-scoped fields (instructions, parallel_tool_calls, tool_choice,
+   *   tools, reasoning, temperature, text, etc.) are echoed back onto the
+   *   response — matching the behavior of a gateway that round-trips the
+   *   request through the Responses API. When omitted, these fields fall back
+   *   to protocol defaults.
+   */
+  convertResponse(
+    response: OpenAI.ChatCompletion,
+    params?: OpenAI.Responses.ResponseCreateParams
+  ): RespResponse {
     const choice = response.choices[0];
     const msg = choice?.message;
     const output: OpenAI.Responses.ResponseOutputItem[] = [];
@@ -230,6 +252,11 @@ export class ResponsesToChatCompletionConverter {
 
     const status = this.finishReasonToStatus(choice?.finish_reason);
 
+    // Request-scoped fields echoed back onto the response. When `params` is
+    // absent, fall back to protocol defaults so behavior matches a gateway
+    // that does not round-trip the request.
+    const echoed = this.echoRequestFields(params);
+
     return {
       id: response.id,
       object: "response",
@@ -239,19 +266,35 @@ export class ResponsesToChatCompletionConverter {
       status,
       error: null,
       incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
-      instructions: null,
+      instructions: echoed.instructions,
       metadata: {},
-      temperature: null,
-      top_p: null,
-      max_output_tokens: null,
-      previous_response_id: null,
-      parallel_tool_calls: true,
-      tool_choice: "auto",
-      tools: [],
-      text: { format: { type: "text" } },
-      reasoning: null,
-      truncation: null,
+      temperature: echoed.temperature,
+      top_p: echoed.top_p,
+      max_output_tokens: echoed.max_output_tokens,
+      previous_response_id: echoed.previous_response_id,
+      parallel_tool_calls: echoed.parallel_tool_calls,
+      tool_choice: echoed.tool_choice,
+      tools: echoed.tools,
+      text: echoed.text,
+      reasoning: echoed.reasoning,
+      truncation: echoed.truncation,
       user: undefined,
+      // Non-standard echoes (top_logprobs / safety_identifier / service_tier)
+      // are attached via cast; the Responses Response type does not declare them.
+      ...((echoed as any).top_logprobs !== undefined
+        ? { top_logprobs: (echoed as any).top_logprobs }
+        : {}),
+      ...(echoed.safety_identifier !== undefined
+        ? { safety_identifier: echoed.safety_identifier }
+        : {}),
+      ...(echoed.service_tier !== undefined ? { service_tier: echoed.service_tier } : {}),
+      ...(params?.background != null ? { background: params.background } : {}),
+      ...(params?.prompt_cache_key !== undefined
+        ? { prompt_cache_key: params.prompt_cache_key }
+        : {}),
+      ...(params?.prompt_cache_retention !== undefined
+        ? { prompt_cache_retention: params.prompt_cache_retention }
+        : {}),
       usage: response.usage
         ? {
             input_tokens: response.usage.prompt_tokens,
@@ -266,6 +309,101 @@ export class ResponsesToChatCompletionConverter {
           }
         : undefined,
     } as unknown as RespResponse;
+  }
+
+  /**
+   * Compute the request-scoped field values to echo onto a converted response,
+   * mirroring the legacy `toOpenAIRespResponse(params, result)` mapping. Returns
+   * protocol defaults when `params` is absent.
+   */
+  private echoRequestFields(params?: OpenAI.Responses.ResponseCreateParams): {
+    instructions: RespResponse["instructions"];
+    temperature: RespResponse["temperature"];
+    top_p: RespResponse["top_p"];
+    max_output_tokens: RespResponse["max_output_tokens"];
+    previous_response_id: RespResponse["previous_response_id"];
+    parallel_tool_calls: RespResponse["parallel_tool_calls"];
+    tool_choice: RespResponse["tool_choice"];
+    tools: RespResponse["tools"];
+    text: RespResponse["text"];
+    reasoning: RespResponse["reasoning"];
+    truncation: RespResponse["truncation"];
+    top_logprobs?: number | null;
+    safety_identifier?: string;
+    service_tier?: RespResponse["service_tier"];
+  } {
+    if (!params) {
+      return {
+        instructions: null,
+        temperature: null,
+        top_p: null,
+        max_output_tokens: null,
+        previous_response_id: null,
+        parallel_tool_calls: true,
+        tool_choice: "auto",
+        tools: [],
+        text: { format: { type: "text" } },
+        reasoning: null,
+        truncation: null,
+      };
+    }
+
+    const tools = (params.tools ?? [])
+      .map(t => this.toRespTool(t))
+      .filter(Boolean) as RespResponse["tools"];
+
+    return {
+      instructions: params.instructions ?? null,
+      temperature: params.temperature ?? null,
+      top_p: params.top_p ?? null,
+      max_output_tokens: params.max_output_tokens ?? null,
+      previous_response_id: params.previous_response_id ?? null,
+      parallel_tool_calls: params.parallel_tool_calls ?? true,
+      tool_choice: params.tool_choice ?? "auto",
+      tools,
+      text: params.text ?? { format: { type: "text" } },
+      reasoning: params.reasoning ?? null,
+      truncation: params.truncation ?? null,
+      top_logprobs: (params as any).top_logprobs,
+      safety_identifier: params.safety_identifier,
+      // service_tier is normally returned by the upstream model; echo the
+      // request's value as a fallback (the legacy converter did the same).
+      service_tier: params.service_tier,
+    };
+  }
+
+  /**
+   * Map a Responses request tool back to a Responses response tool, preserving
+   * function / web_search / custom tools. Mirrors the legacy `toRespTool`.
+   */
+  private toRespTool(tool: OpenAI.Responses.Tool): RespResponse["tools"][number] | undefined {
+    const t = tool as any;
+    if (t.type === "function") {
+      return {
+        type: "function",
+        name: t.name,
+        description: t.description,
+        parameters: !t.parameters
+          ? { additionalProperties: false, type: "object", properties: {}, required: [] }
+          : {
+              additionalProperties: t.parameters.additionalProperties ?? false,
+              type: t.parameters.type ?? "object",
+              properties: t.parameters.properties ?? {},
+              required: t.parameters.required ?? [],
+            },
+        strict: t.strict,
+      } as any;
+    }
+    if (
+      t.type === "web_search" ||
+      t.type === "web_search_preview" ||
+      t.type === "web_search_2025_08_26" ||
+      t.type === "web_search_preview_2025_03_11" ||
+      t.type === "custom"
+    ) {
+      return t;
+    }
+    return undefined;
   }
 
   // --- Stream conversion (CC → Responses, backward) ---
@@ -1022,6 +1160,31 @@ export class ResponsesToChatCompletionConverter {
     resp.status = finalStatus;
     // Carry the output items accumulated during the stream.
     resp.output = [...state.output];
+
+    // Echo request-scoped fields onto the terminal response when available.
+    const echoed = this.echoRequestFields(this.requestParams);
+    resp.instructions = echoed.instructions;
+    resp.temperature = echoed.temperature;
+    resp.top_p = echoed.top_p;
+    resp.max_output_tokens = echoed.max_output_tokens;
+    resp.previous_response_id = echoed.previous_response_id;
+    resp.parallel_tool_calls = echoed.parallel_tool_calls;
+    resp.tool_choice = echoed.tool_choice;
+    resp.tools = echoed.tools;
+    resp.text = echoed.text;
+    resp.reasoning = echoed.reasoning;
+    resp.truncation = echoed.truncation;
+    if ((echoed as any).top_logprobs !== undefined)
+      (resp as any).top_logprobs = (echoed as any).top_logprobs;
+    if (echoed.safety_identifier !== undefined)
+      (resp as any).safety_identifier = echoed.safety_identifier;
+    if (echoed.service_tier !== undefined) (resp as any).service_tier = echoed.service_tier;
+    if (this.requestParams?.background != null)
+      (resp as any).background = this.requestParams.background;
+    if (this.requestParams?.prompt_cache_key !== undefined)
+      (resp as any).prompt_cache_key = this.requestParams.prompt_cache_key;
+    if (this.requestParams?.prompt_cache_retention !== undefined)
+      (resp as any).prompt_cache_retention = this.requestParams.prompt_cache_retention;
 
     if (finalStatus === "incomplete") {
       resp.incomplete_details = { reason: "max_output_tokens" };
