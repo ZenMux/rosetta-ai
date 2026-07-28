@@ -224,8 +224,10 @@ export class ResponsesToChatCompletionConverter {
       }
     }
 
-    // Message
-    if (msg?.content != null || msg?.refusal != null) {
+    // Message — legacy emitted the message item only when content was truthy
+    // (empty-string content with e.g. max_output_tokens exhausted was skipped).
+    // Refusal is also surfaced as a message when present.
+    if (msg?.content || msg?.refusal) {
       const content: any[] = [];
       if (msg.refusal) {
         content.push({ type: "refusal", refusal: msg.refusal });
@@ -400,7 +402,7 @@ export class ResponsesToChatCompletionConverter {
               properties: t.parameters.properties ?? {},
               required: t.parameters.required ?? [],
             },
-        strict: t.strict,
+        strict: t.strict ?? true,
       } as any;
     }
     if (
