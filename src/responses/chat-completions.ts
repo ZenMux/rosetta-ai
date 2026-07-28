@@ -918,6 +918,13 @@ export class ResponsesToChatCompletionConverter {
       messages.push({ role: "user", content: input });
       return;
     }
+    // Missing or non-array input: emit no messages and let the downstream
+    // ChatCompletions validation reject the request with a 400 (matching the
+    // legacy converter, which returned [] for undefined input rather than
+    // crashing).
+    if (!Array.isArray(input)) {
+      return;
+    }
 
     const pendingToolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
 

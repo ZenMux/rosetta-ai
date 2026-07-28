@@ -15,6 +15,23 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(result.messages).toEqual([{ role: "user", content: "Hello" }]);
     });
 
+    it("returns empty messages for undefined input (downstream rejects with 400)", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+      } as any);
+
+      expect(result.messages).toEqual([]);
+    });
+
+    it("returns empty messages for non-array, non-string input", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: 12345 as any,
+      } as any);
+
+      expect(result.messages).toEqual([]);
+    });
+
     it("converts instructions to system message", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",
