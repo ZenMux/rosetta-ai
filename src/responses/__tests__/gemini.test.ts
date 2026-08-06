@@ -156,7 +156,7 @@ describe("ResponsesToGeminiConverter", () => {
 
       const tools = result.config?.tools as any[];
       expect(tools[0].functionDeclarations[0]).toEqual({
-        name: "agents.spawn_agent",
+        name: "agents_spawn_agent",
         description: "Spawn a child agent.",
         parametersJsonSchema: {
           type: "object",
