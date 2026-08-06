@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
+import { expandNamespaceTools } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -1003,6 +1004,7 @@ export class ResponsesToMessagesConverter {
   private convertTools(
     tools: OpenAI.Responses.ResponseCreateParams["tools"]
   ): Anthropic.ToolUnion[] {
+    tools = expandNamespaceTools(tools);
     if (!tools) return [];
 
     const result: Anthropic.ToolUnion[] = [];

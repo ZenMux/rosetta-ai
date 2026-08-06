@@ -190,6 +190,51 @@ describe("ResponsesToChatCompletionConverter", () => {
       ]);
     });
 
+    it("expands namespace tools into namespaced function tools", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: "Call agents.spawn_agent",
+        tools: [
+          {
+            type: "namespace",
+            name: "agents",
+            description: "Multi-agent collaboration tools.",
+            tools: [
+              {
+                type: "function",
+                name: "spawn_agent",
+                description: "Spawn a child agent.",
+                strict: false,
+                parameters: {
+                  type: "object",
+                  properties: { task_name: { type: "string" }, message: { type: "string" } },
+                  required: ["task_name", "message"],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ] as any,
+      });
+
+      expect(result.tools).toEqual([
+        {
+          type: "function",
+          function: {
+            name: "agents.spawn_agent",
+            description: "Spawn a child agent.",
+            strict: false,
+            parameters: {
+              type: "object",
+              properties: { task_name: { type: "string" }, message: { type: "string" } },
+              required: ["task_name", "message"],
+              additionalProperties: false,
+            },
+          },
+        },
+      ]);
+    });
+
     it("maps tool_choice", () => {
       expect(
         converter.convertRequest({ model: "gpt-4o", input: "Hi", tool_choice: "auto" }).tool_choice

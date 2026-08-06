@@ -302,6 +302,45 @@ describe("ResponsesToMessagesConverter", () => {
       });
     });
 
+    it("expands namespace tools into namespaced function tools", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        input: "Call agents.spawn_agent",
+        tools: [
+          {
+            type: "namespace",
+            name: "agents",
+            description: "Multi-agent collaboration tools.",
+            tools: [
+              {
+                type: "function",
+                name: "spawn_agent",
+                description: "Spawn a child agent.",
+                strict: false,
+                parameters: {
+                  type: "object",
+                  properties: { task_name: { type: "string" }, message: { type: "string" } },
+                  required: ["task_name", "message"],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ] as any,
+      });
+
+      expect(result.tools![0]).toEqual({
+        name: "agents.spawn_agent",
+        description: "Spawn a child agent.",
+        input_schema: {
+          type: "object",
+          properties: { task_name: { type: "string" }, message: { type: "string" } },
+          required: ["task_name", "message"],
+          additionalProperties: false,
+        },
+      });
+    });
+
     it("converts web_search tools", () => {
       const result = converter.convertRequest({
         model: "claude-sonnet-4-20250514",
