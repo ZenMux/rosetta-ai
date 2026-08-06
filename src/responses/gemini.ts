@@ -9,6 +9,7 @@ import type {
   FunctionCallingConfigMode,
   FinishReason,
 } from "@google/genai";
+import { expandNamespaceTools } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -554,6 +555,7 @@ export class ResponsesToGeminiConverter {
     tools: FunctionDeclaration[];
     hasGoogleSearch: boolean;
   } {
+    tools = expandNamespaceTools(tools);
     if (!tools) return { tools: [], hasGoogleSearch: false };
 
     const functionTools: FunctionDeclaration[] = [];

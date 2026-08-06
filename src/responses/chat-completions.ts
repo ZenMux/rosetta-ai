@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import { expandNamespaceTools } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -361,7 +362,7 @@ export class ResponsesToChatCompletionConverter {
       };
     }
 
-    const tools = (params.tools ?? [])
+    const tools = (expandNamespaceTools(params.tools) ?? [])
       .map(t => this.toRespTool(t))
       .filter(Boolean) as RespResponse["tools"];
 
@@ -1099,6 +1100,7 @@ export class ResponsesToChatCompletionConverter {
     tools: OpenAI.Chat.Completions.ChatCompletionTool[];
     webSearchOptions?: Record<string, unknown>;
   } {
+    tools = expandNamespaceTools(tools);
     if (!tools) return { tools: [] };
 
     const ccTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];

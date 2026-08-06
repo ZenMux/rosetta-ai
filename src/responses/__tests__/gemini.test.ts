@@ -129,6 +129,42 @@ describe("ResponsesToGeminiConverter", () => {
       });
     });
 
+    it("expands namespace tools into namespaced functionDeclarations", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        input: "Call agents.spawn_agent",
+        tools: [
+          {
+            type: "namespace",
+            name: "agents",
+            description: "Multi-agent collaboration tools.",
+            tools: [
+              {
+                type: "function",
+                name: "spawn_agent",
+                description: "Spawn a child agent.",
+                strict: false,
+                parameters: {
+                  type: "object",
+                  properties: { task_name: { type: "string" }, message: { type: "string" } },
+                },
+              },
+            ],
+          },
+        ] as any,
+      });
+
+      const tools = result.config?.tools as any[];
+      expect(tools[0].functionDeclarations[0]).toEqual({
+        name: "agents.spawn_agent",
+        description: "Spawn a child agent.",
+        parametersJsonSchema: {
+          type: "object",
+          properties: { task_name: { type: "string" }, message: { type: "string" } },
+        },
+      });
+    });
+
     it("converts web_search tools to googleSearch", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
