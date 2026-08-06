@@ -330,7 +330,7 @@ describe("ResponsesToMessagesConverter", () => {
       });
 
       expect(result.tools![0]).toEqual({
-        name: "agents.spawn_agent",
+        name: "agents_spawn_agent",
         description: "Spawn a child agent.",
         input_schema: {
           type: "object",
