@@ -330,7 +330,7 @@ describe("ResponsesToMessagesConverter", () => {
       });
 
       expect(result.tools![0]).toEqual({
-        name: "agents_spawn_agent",
+        name: "agents___spawn_agent",
         description: "Spawn a child agent.",
         input_schema: {
           type: "object",
@@ -583,6 +583,27 @@ describe("ResponsesToMessagesConverter", () => {
       expect(fcOutput.arguments).toBe('{"city":"SF"}');
       expect(fcOutput.call_id).toBe("tu_1");
       expect(result.status).toBe("completed");
+    });
+
+    it("splits a namespaced tool_use name into { namespace, name }", () => {
+      const result = converter.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "agents___spawn_agent",
+              input: { task_name: "child" },
+              caller: { type: "direct" },
+            } as any,
+          ],
+          stop_reason: "tool_use",
+        })
+      );
+
+      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fcOutput.name).toBe("spawn_agent");
+      expect(fcOutput.namespace).toBe("agents");
     });
 
     it("converts thinking blocks to reasoning output", () => {

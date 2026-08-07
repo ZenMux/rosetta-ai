@@ -156,7 +156,7 @@ describe("ResponsesToGeminiConverter", () => {
 
       const tools = result.config?.tools as any[];
       expect(tools[0].functionDeclarations[0]).toEqual({
-        name: "agents_spawn_agent",
+        name: "agents___spawn_agent",
         description: "Spawn a child agent.",
         parametersJsonSchema: {
           type: "object",
@@ -310,6 +310,34 @@ describe("ResponsesToGeminiConverter", () => {
       expect(fcOutput.name).toBe("get_weather");
       expect(fcOutput.arguments).toBe('{"city":"SF"}');
       expect(result.status).toBe("completed");
+    });
+
+    it("splits a namespaced functionCall name into { namespace, name }", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    functionCall: {
+                      id: "call_1",
+                      name: "agents___spawn_agent",
+                      args: { task_name: "child" },
+                    },
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            } as any,
+          ],
+        })
+      );
+
+      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fcOutput.name).toBe("spawn_agent");
+      expect(fcOutput.namespace).toBe("agents");
     });
 
     it("converts thought parts to reasoning output", () => {
