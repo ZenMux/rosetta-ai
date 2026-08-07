@@ -221,7 +221,7 @@ describe("ResponsesToChatCompletionConverter", () => {
         {
           type: "function",
           function: {
-            name: "agents__spawn_agent",
+            name: "agents___spawn_agent",
             description: "Spawn a child agent.",
             strict: false,
             parameters: {

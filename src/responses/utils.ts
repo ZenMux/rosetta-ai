@@ -14,8 +14,8 @@ import type OpenAI from "openai";
  *
  * Downstream provider protocols (chat-completions / messages / gemini) do not
  * understand the `namespace` tool type, so each inner tool is flattened into a
- * top-level function tool whose name is namespaced as `<namespace>__<tool>`
- * (e.g. `agents__spawn_agent`). A double-underscore separator is used (not a
+ * top-level function tool whose name is namespaced as `<namespace>___<tool>`
+ * (e.g. `agents___spawn_agent`). A triple-underscore separator is used (not a
  * dot) so the name matches the provider's required pattern `^[a-zA-Z0-9_-]+$`.
  *
  * Non-namespace tools pass through untouched and the original order is
@@ -44,7 +44,7 @@ export function expandNamespaceTools(
         expanded.push({
           ...inner,
           type: "function",
-          name: nsName ? `${nsName}__${innerName}` : innerName,
+          name: nsName ? `${nsName}___${innerName}` : innerName,
         });
       }
       continue;
