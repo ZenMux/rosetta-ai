@@ -1,7 +1,7 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
-import { expandNamespaceTools } from "./utils";
+import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -252,7 +252,7 @@ export class ResponsesToMessagesConverter {
     const totalInputTokens =
       usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0);
 
-    return {
+    const respResult = {
       id: message.id,
       object: "response",
       created_at: Math.floor(Date.now() / 1000),
@@ -290,6 +290,10 @@ export class ResponsesToMessagesConverter {
         },
       },
     } as unknown as RespResponse;
+
+    // Split namespaced function_call names into { namespace, name }.
+    denamespaceResponse(respResult);
+    return respResult;
   }
 
   // --- Stream conversion (Messages → Responses, backward) ---
@@ -812,7 +816,7 @@ export class ResponsesToMessagesConverter {
       }
     }
 
-    return events;
+    return denamespaceStreamEvents(events);
   }
 
   // --- Private: request helpers ---

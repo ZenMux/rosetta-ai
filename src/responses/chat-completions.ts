@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { expandNamespaceTools } from "./utils";
+import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -265,7 +265,7 @@ export class ResponsesToChatCompletionConverter {
     // that does not round-trip the request.
     const echoed = this.echoRequestFields(params);
 
-    return {
+    const respResult = {
       id: response.id,
       object: "response",
       created_at: response.created,
@@ -323,6 +323,11 @@ export class ResponsesToChatCompletionConverter {
           }
         : undefined,
     } as unknown as RespResponse;
+
+    // Reverse the request-side namespace flattening: split namespaced
+    // function_call names into { namespace, name } and re-nest echoed tools.
+    denamespaceResponse(respResult);
+    return respResult;
   }
 
   /**
@@ -362,7 +367,7 @@ export class ResponsesToChatCompletionConverter {
       };
     }
 
-    const tools = (expandNamespaceTools(params.tools) ?? [])
+    const tools = (params.tools ?? [])
       .map(t => this.toRespTool(t))
       .filter(Boolean) as RespResponse["tools"];
 
@@ -390,6 +395,18 @@ export class ResponsesToChatCompletionConverter {
    */
   private toRespTool(tool: OpenAI.Responses.Tool): RespResponse["tools"][number] | undefined {
     const t = tool as any;
+    if (t.type === "namespace") {
+      // Echo the client's namespace tool back in its original nested shape,
+      // mapping each inner tool through the same function-tool normalization.
+      return {
+        type: "namespace",
+        name: t.name,
+        description: t.description,
+        tools: (Array.isArray(t.tools) ? t.tools : [])
+          .map((inner: any) => this.toRespTool(inner))
+          .filter(Boolean),
+      } as any;
+    }
     if (t.type === "function") {
       return {
         type: "function",
@@ -482,7 +499,7 @@ export class ResponsesToChatCompletionConverter {
       if (chunk.usage) {
         events.push(...this.emitCompleted(chunk.usage));
       }
-      return events;
+      return denamespaceStreamEvents(events);
     }
 
     const delta = choice.delta;
@@ -718,7 +735,7 @@ export class ResponsesToChatCompletionConverter {
       }
     }
 
-    return events;
+    return denamespaceStreamEvents(events);
   }
 
   /** Open a message output item and its first content part. */

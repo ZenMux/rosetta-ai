@@ -9,7 +9,7 @@ import type {
   FunctionCallingConfigMode,
   FinishReason,
 } from "@google/genai";
-import { expandNamespaceTools } from "./utils";
+import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -173,7 +173,7 @@ export class ResponsesToGeminiConverter {
     const thoughtsTokens = usage?.thoughtsTokenCount ?? 0;
     const candidatesTokens = (usage?.candidatesTokenCount ?? 0) + thoughtsTokens;
 
-    return {
+    const respResult = {
       id: response.responseId ?? `resp_${this.generateId()}`,
       object: "response",
       created_at: Math.floor(Date.now() / 1000),
@@ -207,6 +207,10 @@ export class ResponsesToGeminiConverter {
         },
       },
     } as unknown as RespResponse;
+
+    // Split namespaced function_call names into { namespace, name }.
+    denamespaceResponse(respResult);
+    return respResult;
   }
 
   // --- Stream conversion (Gemini → Responses, backward) ---
@@ -399,7 +403,7 @@ export class ResponsesToGeminiConverter {
       }
     }
 
-    return events;
+    return denamespaceStreamEvents(events);
   }
 
   // --- Private: request helpers ---

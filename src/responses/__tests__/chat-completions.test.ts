@@ -486,6 +486,70 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(result.status).toBe("completed");
     });
 
+    it("splits a namespaced function_call name into { namespace, name }", () => {
+      const result = converter.convertResponse(
+        makeCCResponse({
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: null,
+                refusal: null,
+                tool_calls: [
+                  {
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "agents___spawn_agent", arguments: "{}" },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+              logprobs: null,
+            },
+          ],
+        })
+      );
+
+      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fcOutput.name).toBe("spawn_agent");
+      expect(fcOutput.namespace).toBe("agents");
+    });
+
+    it("echoes namespace tools back as nested namespace tools", () => {
+      const result = converter.convertResponse(makeCCResponse(), {
+        model: "gpt-4o",
+        input: "Hi",
+        tools: [
+          {
+            type: "namespace",
+            name: "agents",
+            description: "Multi-agent collaboration tools.",
+            tools: [
+              {
+                type: "function",
+                name: "spawn_agent",
+                description: "Spawn a child agent.",
+                strict: false,
+                parameters: {
+                  type: "object",
+                  properties: { task_name: { type: "string" } },
+                  required: ["task_name"],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ] as any,
+      });
+
+      const tools = result.tools as any[];
+      expect(tools).toHaveLength(1);
+      expect(tools[0].type).toBe("namespace");
+      expect(tools[0].name).toBe("agents");
+      expect(tools[0].tools[0]).toMatchObject({ type: "function", name: "spawn_agent" });
+    });
+
     it("maps finish_reason length to incomplete status", () => {
       const result = converter.convertResponse(
         makeCCResponse({
@@ -735,6 +799,30 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(itemAdded).toBeDefined();
       expect(itemAdded.item.type).toBe("function_call");
       expect(itemAdded.item.name).toBe("get_weather");
+    });
+
+    it("splits a namespaced function_call name in streaming events", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
+
+      const events = c.convertStreamChunk(
+        makeChunk({
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: { name: "agents___spawn_agent", arguments: "" },
+              },
+            ],
+          },
+        })
+      );
+
+      const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
+      expect(itemAdded.item.name).toBe("spawn_agent");
+      expect(itemAdded.item.namespace).toBe("agents");
     });
 
     it("emits function_call_arguments.delta for tool arguments", () => {

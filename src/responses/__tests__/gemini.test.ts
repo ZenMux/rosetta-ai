@@ -312,6 +312,34 @@ describe("ResponsesToGeminiConverter", () => {
       expect(result.status).toBe("completed");
     });
 
+    it("splits a namespaced functionCall name into { namespace, name }", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    functionCall: {
+                      id: "call_1",
+                      name: "agents___spawn_agent",
+                      args: { task_name: "child" },
+                    },
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            } as any,
+          ],
+        })
+      );
+
+      const fcOutput = result.output.find((o: any) => o.type === "function_call") as any;
+      expect(fcOutput.name).toBe("spawn_agent");
+      expect(fcOutput.namespace).toBe("agents");
+    });
+
     it("converts thought parts to reasoning output", () => {
       const result = converter.convertResponse(
         makeResponse({
