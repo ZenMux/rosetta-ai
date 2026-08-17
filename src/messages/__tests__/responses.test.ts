@@ -341,22 +341,25 @@ describe("MessagesToResponsesConverter", () => {
       expect(result.stop_reason).toBe("max_tokens");
     });
 
-    it("includes cache tokens in usage", () => {
+    it("separates cache read and write tokens from input_tokens", () => {
       const result = converter.convertResponse(
         makeResponse({
           usage: {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
-            input_tokens_details: { cached_tokens: 30 },
+            input_tokens_details: { cached_tokens: 30, cache_write_tokens: 20 },
             output_tokens_details: { reasoning_tokens: 0 },
-          },
+          } as any,
         })
       );
 
-      expect(result.usage.input_tokens).toBe(100);
+      expect(result.usage.input_tokens).toBe(50);
       expect(result.usage.output_tokens).toBe(50);
       expect(result.usage.cache_read_input_tokens).toBe(30);
+      expect(result.usage.cache_creation_input_tokens).toBe(20);
+      expect((result.usage as any).prompt_tokens).toBe(100);
+      expect((result.usage as any).total_tokens).toBe(150);
     });
 
     it("counts only completed web search calls", () => {
@@ -651,7 +654,7 @@ describe("MessagesToResponsesConverter", () => {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-            input_tokens_details: { cached_tokens: 3 },
+            input_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 },
             output_tokens_details: { reasoning_tokens: 0 },
           },
         } as any,
@@ -661,7 +664,10 @@ describe("MessagesToResponsesConverter", () => {
       const msgDelta = events.find(
         e => e.type === "message_delta"
       ) as Anthropic.RawMessageDeltaEvent;
+      expect(msgDelta.usage.input_tokens).toBe(5);
       expect(msgDelta.usage.output_tokens).toBe(5);
+      expect(msgDelta.usage.cache_read_input_tokens).toBe(3);
+      expect(msgDelta.usage.cache_creation_input_tokens).toBe(2);
     });
 
     it("emits tool_use stop_reason when function_call is in output", () => {
