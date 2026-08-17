@@ -693,6 +693,9 @@ describe("MessagesToGeminiConverter", () => {
       expect(usage.prompt_tokens).toBe(110);
       expect(usage.completion_tokens).toBe(70);
       expect(usage.total_tokens).toBe(180);
+      expect(usage.input_tokens).toBe(80);
+      expect(usage.cache_read_input_tokens).toBe(30);
+      expect(usage.cache_creation_input_tokens).toBe(0);
       expect(usage.prompt_tokens_details.cached_tokens).toBe(30);
       expect(usage.completion_tokens_details.reasoning_tokens).toBe(20);
       expect(usage.tool_use).toBe(10);
@@ -945,6 +948,7 @@ describe("MessagesToGeminiConverter", () => {
             promptTokenCount: 10,
             candidatesTokenCount: 5,
             totalTokenCount: 15,
+            cachedContentTokenCount: 3,
           } as any,
         })
       );
@@ -952,6 +956,8 @@ describe("MessagesToGeminiConverter", () => {
       const msgDelta = events.find(e => e.type === "message_delta") as any;
       expect(msgDelta).toBeDefined();
       expect(msgDelta.delta.stop_reason).toBe("end_turn");
+      expect(msgDelta.usage.input_tokens).toBe(7);
+      expect(msgDelta.usage.cache_read_input_tokens).toBe(3);
 
       const msgStop = events.find(e => e.type === "message_stop");
       expect(msgStop).toBeDefined();
