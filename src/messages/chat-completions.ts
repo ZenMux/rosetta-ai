@@ -183,6 +183,8 @@ export class MessagesToChatCompletionConverter {
     const outputTokens = u.completion_tokens ?? 0;
     const totalTokens = u.total_tokens ?? inputTokens + outputTokens;
     const cachedTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
+    const cacheWriteTokens = (u.prompt_tokens_details as any)?.cache_write_tokens ?? 0;
+    const uncachedInputTokens = Math.max(0, inputTokens - cachedTokens - cacheWriteTokens);
     const reasoningTokens = u.completion_tokens_details?.reasoning_tokens ?? 0;
     const webSearch: number = (u.prompt_tokens_details as any)?.web_search ?? 0;
 
@@ -199,7 +201,7 @@ export class MessagesToChatCompletionConverter {
         cached_tokens: cachedTokens,
         ...(webSearch > 0 ? { web_search: webSearch } : {}),
       },
-      input_tokens: inputTokens,
+      input_tokens: uncachedInputTokens,
       output_tokens: outputTokens,
       cache_read_input_tokens: cachedTokens,
       server_tool_use:
@@ -209,7 +211,7 @@ export class MessagesToChatCompletionConverter {
               web_search_requests: webSearch,
             }
           : null,
-      cache_creation_input_tokens: 0,
+      cache_creation_input_tokens: cacheWriteTokens,
       service_tier: "standard",
       audio_input_tokens: u.prompt_tokens_details?.audio_tokens ?? 0,
       audio_cache_read_tokens: (u.prompt_tokens_details as any)?.audio_cached_tokens ?? 0,

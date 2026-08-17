@@ -972,7 +972,7 @@ describe("MessagesToChatCompletionConverter", () => {
       expect(converter.convertResponse(input).stop_reason).toBe("tool_use");
     });
 
-    it("converts usage with cache details", () => {
+    it("separates cache read and write tokens from input_tokens", () => {
       const input: OpenAI.ChatCompletion = {
         id: "id",
         object: "chat.completion",
@@ -990,13 +990,16 @@ describe("MessagesToChatCompletionConverter", () => {
           prompt_tokens: 100,
           completion_tokens: 50,
           total_tokens: 150,
-          prompt_tokens_details: { cached_tokens: 30 },
-        },
+          prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: 20 },
+        } as any,
       };
       const result = converter.convertResponse(input);
-      expect(result.usage.input_tokens).toBe(100);
+      expect(result.usage.input_tokens).toBe(50);
       expect(result.usage.output_tokens).toBe(50);
       expect(result.usage.cache_read_input_tokens).toBe(30);
+      expect(result.usage.cache_creation_input_tokens).toBe(20);
+      expect((result.usage as any).prompt_tokens).toBe(100);
+      expect((result.usage as any).total_tokens).toBe(150);
     });
 
     it("enriches usage with OpenAI-style fields", () => {
@@ -1030,6 +1033,7 @@ describe("MessagesToChatCompletionConverter", () => {
       expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 30, audio_tokens: 4 });
       expect(usage.audio_input_tokens).toBe(4);
       expect(usage.service_tier).toBe("standard");
+      expect(usage.input_tokens).toBe(70);
       expect(usage.cache_creation_input_tokens).toBe(0);
     });
 
@@ -1491,7 +1495,12 @@ describe("MessagesToChatCompletionConverter", () => {
             created: 1700000000,
             model: "gpt-4o",
             choices: [],
-            usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
+            usage: {
+              prompt_tokens: 12,
+              completion_tokens: 7,
+              total_tokens: 19,
+              prompt_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 },
+            },
           } as unknown as OpenAI.ChatCompletionChunk,
         ];
 
@@ -1502,7 +1511,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(msgDelta).toBeDefined();
         expect(msgDelta.usage.output_tokens).toBe(7);
-        expect(msgDelta.usage.input_tokens).toBe(12);
+        expect(msgDelta.usage.input_tokens).toBe(7);
+        expect(msgDelta.usage.cache_read_input_tokens).toBe(3);
+        expect(msgDelta.usage.cache_creation_input_tokens).toBe(2);
         expect((msgDelta.usage as any).completion_tokens).toBe(7);
         expect((msgDelta.usage as any).prompt_tokens).toBe(12);
         expect((msgDelta.usage as any).total_tokens).toBe(19);

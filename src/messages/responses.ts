@@ -170,6 +170,8 @@ export class MessagesToResponsesConverter {
     const outputTokens = u.output_tokens ?? 0;
     const totalTokens = u.total_tokens ?? inputTokens + outputTokens;
     const cachedTokens = u.input_tokens_details?.cached_tokens ?? 0;
+    const cacheWriteTokens = u.input_tokens_details?.cache_write_tokens ?? 0;
+    const uncachedInputTokens = Math.max(0, inputTokens - cachedTokens - cacheWriteTokens);
     const reasoningTokens = u.output_tokens_details?.reasoning_tokens ?? 0;
 
     return {
@@ -185,7 +187,7 @@ export class MessagesToResponsesConverter {
         cached_tokens: cachedTokens,
         ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
       },
-      input_tokens: inputTokens,
+      input_tokens: uncachedInputTokens,
       output_tokens: outputTokens,
       cache_read_input_tokens: cachedTokens,
       server_tool_use:
@@ -195,7 +197,7 @@ export class MessagesToResponsesConverter {
               web_search_requests: webSearchCount,
             }
           : null,
-      cache_creation_input_tokens: 0,
+      cache_creation_input_tokens: cacheWriteTokens,
       service_tier: "standard",
       audio_input_tokens: 0,
       audio_cache_read_tokens: 0,
