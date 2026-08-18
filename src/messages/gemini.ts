@@ -216,6 +216,7 @@ export class MessagesToGeminiConverter {
 
     const promptTokens = promptTokenCount + toolUsePromptTokenCount;
     const completionTokens = candidatesTokenCount + thoughtsTokenCount;
+    const uncachedInputTokens = Math.max(0, promptTokens - cachedContentTokenCount);
 
     return {
       prompt_tokens: promptTokens,
@@ -233,7 +234,7 @@ export class MessagesToGeminiConverter {
       web_search_queries: webSearchQueriesCount,
       tool_use: toolUsePromptTokenCount,
       trafficType,
-      input_tokens: promptTokens,
+      input_tokens: uncachedInputTokens,
       output_tokens: completionTokens,
       cache_read_input_tokens: cachedContentTokenCount,
       cache_creation_input_tokens: 0,

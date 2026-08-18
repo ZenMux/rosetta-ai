@@ -188,9 +188,10 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `choices[0].message.annotations` | `content[]` web_search_tool_result | |
 | `choices[0].message.tool_calls` | `content[]` tool_use | |
 | `finish_reason` | `stop_reason` | stop→end_turn, tool_calls→tool_use, length→max_tokens, content_filter→refusal |
-| `usage.prompt_tokens` | `usage.input_tokens` | |
+| `usage.prompt_tokens` - (`cached_tokens` + `cache_write_tokens`) | `usage.input_tokens` | |
 | `usage.completion_tokens` | `usage.output_tokens` | |
 | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | |
+| `prompt_tokens_details.cache_write_tokens` | `cache_creation_input_tokens` | |
 | `prompt_tokens_details.web_search` | `server_tool_use.web_search_requests` | |
 
 Usage also re-emits enriched OpenAI-style fields (`prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details`, `completion_tokens_details`, audio token fields); origin `*_details` objects are merged in to preserve extra fields. Streaming reuses the same `buildUsage`, so `message_delta` carries real `output_tokens` from the trailing usage chunk.
@@ -233,7 +234,10 @@ Usage also re-emits enriched OpenAI-style fields (`prompt_tokens`, `completion_t
 | `output[]` function_call | `content[]` tool_use | |
 | `output[]` message | `content[]` text | |
 | `status` | `stop_reason` | completed→end_turn/tool_use, incomplete→max_tokens, failed→end_turn |
-| `usage.*` | `usage.*` | cached_tokens→cache_read_input_tokens |
+| `usage.input_tokens` - (`cached_tokens` + `cache_write_tokens`) | `usage.input_tokens` | |
+| `usage.input_tokens_details.cached_tokens` | `usage.cache_read_input_tokens` | |
+| `usage.input_tokens_details.cache_write_tokens` | `usage.cache_creation_input_tokens` | |
+| Other `usage.*` | `usage.*` | Reasoning and enriched OpenAI-style fields preserved |
 
 ### Stream: text ✅ tool_calls ✅ thinking ✅ usage ✅
 
@@ -273,7 +277,7 @@ Usage also re-emits enriched OpenAI-style fields (`prompt_tokens`, `completion_t
 | `candidates[0].content.parts[]` text | `content[]` text | |
 | `candidates[0].content.parts[]` functionCall | `content[]` tool_use | |
 | `candidates[0].finishReason` | `stop_reason` | STOP→end_turn, MAX_TOKENS→max_tokens, SAFETY→refusal |
-| `usageMetadata.promptTokenCount` + `toolUsePromptTokenCount` | `usage.input_tokens` | Combined |
+| `usageMetadata.promptTokenCount` + `toolUsePromptTokenCount` - `cachedContentTokenCount` | `usage.input_tokens` | Combined |
 | `usageMetadata.candidatesTokenCount` + `thoughtsTokenCount` | `usage.output_tokens` | Combined |
 | `usageMetadata.cachedContentTokenCount` | `cache_read_input_tokens` | |
 
