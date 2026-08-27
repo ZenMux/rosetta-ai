@@ -217,6 +217,29 @@ describe("ChatCompletionToMessagesConverter", () => {
         });
       });
 
+      it("tolerates malformed function arguments", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "assistant",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_weather", arguments: "not-json" },
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(result.messages[0]).toEqual({
+          role: "assistant",
+          content: [{ type: "tool_use", id: "call_1", name: "get_weather", input: {} }],
+        });
+      });
+
       it("merges consecutive tool messages into one user message", () => {
         const input: OpenAI.ChatCompletionCreateParams = {
           model: "gpt-4o",
@@ -301,6 +324,54 @@ describe("ChatCompletionToMessagesConverter", () => {
           source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
         });
       });
+
+      it("converts file_data to an Anthropic document", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "file",
+                  file: { file_data: "data:application/pdf;base64,JVBERi0=" },
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(result.messages[0]).toEqual({
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" },
+            },
+          ],
+        });
+      });
+
+      it("rejects missing or non-data-URI file_data", () => {
+        expect(() =>
+          converter.convertRequest({
+            model: "gpt-4o",
+            messages: [{ role: "user", content: [{ type: "file", file: {} }] }],
+          })
+        ).toThrow("no file data found");
+
+        expect(() =>
+          converter.convertRequest({
+            model: "gpt-4o",
+            messages: [
+              {
+                role: "user",
+                content: [{ type: "file", file: { file_data: "not-a-data-uri" } }],
+              },
+            ],
+          })
+        ).toThrow("invalid base64 file data");
+      });
     });
 
     describe("params mapping", () => {
@@ -326,6 +397,16 @@ describe("ChatCompletionToMessagesConverter", () => {
         const result = converter.convertRequest({
           model: "gpt-4o",
           messages: [{ role: "user", content: "Hi" }],
+          max_completion_tokens: 500,
+        });
+        expect(result.max_tokens).toBe(500);
+      });
+
+      it("prefers max_completion_tokens when both token limits are present", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          max_tokens: 1000,
           max_completion_tokens: 500,
         });
         expect(result.max_tokens).toBe(500);
@@ -372,6 +453,7 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         expect(result.tools).toEqual([
           {
+            type: "custom",
             name: "get_weather",
             description: "Get weather info",
             input_schema: {
@@ -381,6 +463,54 @@ describe("ChatCompletionToMessagesConverter", () => {
             },
           },
         ]);
+      });
+
+      it("converts custom tools to Anthropic custom tools", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          tools: [
+            {
+              type: "custom",
+              custom: {
+                name: "shell",
+                description: "Run shell input",
+                format: {
+                  type: "grammar",
+                  grammar: { syntax: "lark", definition: "start: WORD" },
+                },
+              },
+            },
+          ],
+        });
+
+        expect(result.tools).toEqual([
+          {
+            type: "custom",
+            name: "shell",
+            description: "Run shell input",
+            input_schema: {
+              type: "object",
+              properties: {
+                content: {
+                  type: "string",
+                  description: "Content must follow grammar (lark): start: WORD",
+                },
+              },
+              required: ["content"],
+            },
+          },
+        ]);
+      });
+
+      it("converts web_search_options to the Anthropic web search tool", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          web_search_options: { max_uses: 3 } as any,
+        });
+
+        expect(result.tools).toEqual([{ type: "web_search_20250305", name: "web_search" }]);
       });
 
       it('maps tool_choice "auto"', () => {
@@ -505,6 +635,16 @@ describe("ChatCompletionToMessagesConverter", () => {
         });
         expect(result.metadata).toEqual({ user_id: "user-123" });
       });
+
+      it("prefers metadata.user_id over user", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          user: "legacy-user",
+          metadata: { user_id: "metadata-user" },
+        });
+        expect(result.metadata).toEqual({ user_id: "metadata-user" });
+      });
     });
 
     describe("parallel_tool_calls mapping", () => {
@@ -529,6 +669,16 @@ describe("ChatCompletionToMessagesConverter", () => {
         } as any);
         expect(result.tool_choice).toEqual({ type: "auto" });
       });
+
+      it("creates an auto tool choice when only parallel_tool_calls=false is provided", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          tools: [{ type: "function", function: { name: "fn", parameters: { type: "object" } } }],
+          parallel_tool_calls: false,
+        } as any);
+        expect(result.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      });
     });
 
     describe("stream mapping", () => {
@@ -539,6 +689,15 @@ describe("ChatCompletionToMessagesConverter", () => {
           stream: true,
         } as any);
         expect((result as any).stream).toBe(true);
+      });
+
+      it("passes stream=false through", () => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          stream: false,
+        });
+        expect((result as any).stream).toBe(false);
       });
 
       it("does not set stream when not provided", () => {
@@ -606,12 +765,44 @@ describe("ChatCompletionToMessagesConverter", () => {
       );
 
       expect(result.choices[0].finish_reason).toBe("tool_calls");
-      expect(result.choices[0].message.content).toBeNull();
+      expect(result.choices[0].message.content).toBe("");
       expect(result.choices[0].message.tool_calls).toEqual([
         {
           id: "toolu_123",
           type: "function",
           function: { name: "get_weather", arguments: '{"location":"SF"}' },
+        },
+      ]);
+    });
+
+    it("restores custom tool calls after converting the matching request", () => {
+      const c = new ChatCompletionToMessagesConverter();
+      c.convertRequest({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "Run a command" }],
+        tools: [{ type: "custom", custom: { name: "shell" } }],
+      });
+
+      const result = c.convertResponse(
+        makeMessage({
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_123",
+              name: "shell",
+              input: { content: "pwd" },
+              caller: { type: "direct" },
+            },
+          ],
+          stop_reason: "tool_use",
+        })
+      );
+
+      expect(result.choices[0].message.tool_calls).toEqual([
+        {
+          id: "toolu_123",
+          type: "custom",
+          custom: { name: "shell", input: '{"content":"pwd"}' },
         },
       ]);
     });
@@ -819,6 +1010,7 @@ describe("ChatCompletionToMessagesConverter", () => {
         expect(result).not.toBeNull();
         expect(result!.id).toBe("msg_123");
         expect(result!.model).toBe("claude-sonnet-4-20250514");
+        expect(result!.service_tier).toBeNull();
         expect(result!.choices[0].delta.role).toBe("assistant");
       });
 
@@ -879,6 +1071,7 @@ describe("ChatCompletionToMessagesConverter", () => {
         expect(result!.usage?.prompt_tokens).toBe(10);
         expect(result!.usage?.completion_tokens).toBe(5);
         expect(result!.usage?.total_tokens).toBe(15);
+        expect(result!.service_tier).toBeNull();
         expect(result!.usage?.completion_tokens_details).toEqual({ reasoning_tokens: 0 });
       });
     });

@@ -22,6 +22,7 @@ interface StreamState {
 
 export class ChatCompletionToMessagesConverter {
   private streamState: StreamState;
+  private customToolNames = new Set<string>();
 
   constructor() {
     this.streamState = this.createStreamState();
@@ -30,6 +31,7 @@ export class ChatCompletionToMessagesConverter {
   // --- Request conversion (CC → Messages, forward) ---
 
   convertRequest(params: OpenAI.ChatCompletionCreateParams): Anthropic.MessageCreateParams {
+    this.customToolNames.clear();
     const systemBlocks: Anthropic.TextBlockParam[] = [];
     const messages: AnthropicMessage[] = [];
 
@@ -53,7 +55,7 @@ export class ChatCompletionToMessagesConverter {
 
     const result: Anthropic.MessageCreateParams = {
       model: params.model,
-      max_tokens: params.max_tokens ?? params.max_completion_tokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: params.max_completion_tokens ?? params.max_tokens ?? DEFAULT_MAX_TOKENS,
       messages,
     };
 
@@ -70,11 +72,18 @@ export class ChatCompletionToMessagesConverter {
       const stop = params.stop;
       result.stop_sequences = typeof stop === "string" ? [stop] : (stop as string[]);
     }
-    if (params.tools) {
-      result.tools = this.convertTools(params.tools);
+    const tools = this.convertTools(params.tools ?? []);
+    const webSearchTool = this.convertWebSearchOptions((params as any).web_search_options);
+    if (webSearchTool) {
+      tools.push(webSearchTool);
+    }
+    if (tools.length > 0) {
+      result.tools = tools;
     }
     if (params.tool_choice !== undefined) {
       result.tool_choice = this.convertToolChoice(params.tool_choice, params.parallel_tool_calls);
+    } else if (params.parallel_tool_calls === false) {
+      result.tool_choice = { type: "auto", disable_parallel_tool_use: true };
     }
     if (params.response_format) {
       result.output_config = this.convertResponseFormat(params.response_format);
@@ -82,8 +91,9 @@ export class ChatCompletionToMessagesConverter {
     if (params.reasoning_effort != null) {
       result.thinking = this.convertReasoningEffort(params.reasoning_effort as string);
     }
-    if (params.user) {
-      result.metadata = { user_id: params.user };
+    const metadataUserId = (params.metadata as Record<string, string> | null | undefined)?.user_id;
+    if (metadataUserId != null || params.user != null) {
+      result.metadata = { user_id: metadataUserId ?? params.user! };
     }
     if (params.service_tier != null) {
       const tier = params.service_tier as string;
@@ -91,8 +101,8 @@ export class ChatCompletionToMessagesConverter {
         result.service_tier = tier;
       }
     }
-    if (params.stream === true) {
-      (result as any).stream = true;
+    if (params.stream != null) {
+      (result as any).stream = params.stream;
     }
 
     return result;
@@ -120,14 +130,25 @@ export class ChatCompletionToMessagesConverter {
           index: 0,
         });
       } else if (block.type === "tool_use" || block.type === "server_tool_use") {
-        toolCalls.push({
-          id: block.id,
-          type: "function",
-          function: {
-            name: block.name,
-            arguments: JSON.stringify(block.input),
-          },
-        });
+        if (this.customToolNames.has(block.name)) {
+          toolCalls.push({
+            id: block.id,
+            type: "custom",
+            custom: {
+              name: block.name,
+              input: JSON.stringify(block.input),
+            },
+          });
+        } else {
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: {
+              name: block.name,
+              arguments: JSON.stringify(block.input),
+            },
+          });
+        }
       } else if (block.type === "web_search_tool_result") {
         const content = block.content;
         if (Array.isArray(content)) {
@@ -148,7 +169,7 @@ export class ChatCompletionToMessagesConverter {
 
     const assistantMessage: OpenAI.ChatCompletionMessage = {
       role: "assistant",
-      content: textParts.length > 0 ? textParts.join("") : null,
+      content: textParts.join(""),
       refusal: null,
     };
 
@@ -264,6 +285,7 @@ export class ChatCompletionToMessagesConverter {
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
       model: this.streamState.model,
+      service_tier: null,
       choices: [{ index: 0, delta, finish_reason }],
     };
   }
@@ -435,6 +457,7 @@ export class ChatCompletionToMessagesConverter {
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
       model: state.model,
+      service_tier: null,
       choices: [],
       usage,
     };
@@ -486,6 +509,8 @@ export class ChatCompletionToMessagesConverter {
         return { type: "text", text: part.text };
       case "image_url":
         return this.convertImageUrl(part);
+      case "file":
+        return this.convertFile(part);
       default:
         return { type: "text", text: `[Unsupported content type: ${part.type}]` };
     }
@@ -536,7 +561,14 @@ export class ChatCompletionToMessagesConverter {
             type: "tool_use",
             id: tc.id,
             name: tc.function.name,
-            input: JSON.parse(tc.function.arguments || "{}"),
+            input: this.safeParseObject(tc.function.arguments),
+          });
+        } else if (tc.type === "custom") {
+          blocks.push({
+            type: "tool_use",
+            id: tc.id,
+            name: tc.custom.name,
+            input: this.safeParseObject(tc.custom.input),
           });
         }
       }
@@ -570,14 +602,89 @@ export class ChatCompletionToMessagesConverter {
     messages.push({ role: "user", content: [toolResult] });
   }
 
-  private convertTools(tools: OpenAI.ChatCompletionTool[]): Anthropic.Tool[] {
-    return tools
-      .filter((t): t is OpenAI.ChatCompletionFunctionTool => t.type === "function")
-      .map(t => ({
-        name: t.function.name,
-        description: t.function.description,
-        input_schema: (t.function.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema,
-      }));
+  private convertTools(tools: OpenAI.ChatCompletionTool[]): Anthropic.ToolUnion[] {
+    return tools.map(tool => {
+      if (tool.type === "function") {
+        return {
+          type: "custom",
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: (tool.function.parameters ?? {
+            type: "object",
+          }) as Anthropic.Tool.InputSchema,
+        };
+      }
+
+      this.customToolNames.add(tool.custom.name);
+      return {
+        type: "custom",
+        name: tool.custom.name,
+        description: tool.custom.description ?? "",
+        input_schema: this.customToolInputSchema(tool.custom.format),
+      };
+    });
+  }
+
+  private customToolInputSchema(
+    format: OpenAI.ChatCompletionCustomTool.Custom["format"]
+  ): Anthropic.Tool.InputSchema {
+    if (format?.type === "grammar") {
+      return {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description: `Content must follow grammar (${format.grammar.syntax}): ${format.grammar.definition}`,
+          },
+        },
+        required: ["content"],
+      };
+    }
+
+    return {
+      type: "object",
+      properties: { content: { type: "string" } },
+      required: ["content"],
+    };
+  }
+
+  private convertWebSearchOptions(options: unknown): Anthropic.WebSearchTool20250305 | null {
+    if (options == null) return null;
+
+    return {
+      name: "web_search",
+      type: "web_search_20250305",
+    };
+  }
+
+  private convertFile(part: OpenAI.ChatCompletionContentPart.File): Anthropic.DocumentBlockParam {
+    const fileData = part.file.file_data;
+    if (!fileData) {
+      throw new Error("no file data found");
+    }
+
+    const dataUriMatch = fileData.match(/^data:([^;]+);base64,(.+)$/);
+    if (!dataUriMatch) {
+      throw new Error("invalid base64 file data");
+    }
+
+    return {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: dataUriMatch[1] as "application/pdf",
+        data: dataUriMatch[2],
+      },
+    };
+  }
+
+  private safeParseObject(value: string | null | undefined): Record<string, unknown> {
+    if (!value) return {};
+    try {
+      return JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
   }
 
   private convertToolChoice(
