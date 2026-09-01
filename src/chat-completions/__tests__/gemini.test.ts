@@ -98,6 +98,7 @@ describe("ChatCompletionToGeminiConverter", () => {
       const toolParts = (result.contents as any[])[2].parts!;
       expect(toolParts[0].functionResponse).toBeDefined();
       expect(toolParts[0].functionResponse!.id).toBe("call_1");
+      expect(toolParts[0].functionResponse!.name).toBe("get_weather");
       expect(toolParts[0].functionResponse!.response).toEqual({
         output: "72F",
       });
@@ -133,6 +134,17 @@ describe("ChatCompletionToGeminiConverter", () => {
         messages: [{ role: "user", content: "Hi" }],
         max_completion_tokens: 1000,
       });
+      expect(result.config?.maxOutputTokens).toBe(1000);
+    });
+
+    it("prefers max_completion_tokens over deprecated max_tokens", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [{ role: "user", content: "Hi" }],
+        max_completion_tokens: 1000,
+        max_tokens: 500,
+      });
+
       expect(result.config?.maxOutputTokens).toBe(1000);
     });
 
@@ -257,6 +269,16 @@ describe("ChatCompletionToGeminiConverter", () => {
       expect(result.config?.responseMimeType).toBe("application/json");
     });
 
+    it("converts text response_format", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [{ role: "user", content: "Hi" }],
+        response_format: { type: "text" },
+      });
+
+      expect(result.config?.responseMimeType).toBe("text/plain");
+    });
+
     it("maps reasoning_effort to thinkingConfig", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
@@ -324,7 +346,7 @@ describe("ChatCompletionToGeminiConverter", () => {
 
       const parts = (result.contents as any[])[0].parts!;
       expect(parts[0]).toEqual({
-        fileData: { fileUri: "https://example.com/img.png", mimeType: "image/*" },
+        fileData: { fileUri: "https://example.com/img.png", mimeType: "image/jpeg" },
       });
     });
 
@@ -389,6 +411,27 @@ describe("ChatCompletionToGeminiConverter", () => {
       const parts = (result.contents as any[])[0].parts!;
       expect(parts[0]).toEqual({
         inlineData: { mimeType: "application/pdf", data: "abc123" },
+      });
+    });
+
+    it("infers PDF MIME type for remote file data", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "file", file: { file_data: "https://example.com/document.pdf?x=1" } },
+            ],
+          },
+        ],
+      } as any);
+
+      expect((result.contents as any[])[0].parts![0]).toEqual({
+        fileData: {
+          fileUri: "https://example.com/document.pdf?x=1",
+          mimeType: "application/pdf",
+        },
       });
     });
 
@@ -503,7 +546,7 @@ describe("ChatCompletionToGeminiConverter", () => {
       ]);
     });
 
-    it("converts thought parts to reasoning", () => {
+    it("leaves non-standard thought fields out of the standard response", () => {
       const result = converter.convertResponse(
         makeResponse({
           candidates: [
@@ -522,12 +565,8 @@ describe("ChatCompletionToGeminiConverter", () => {
       );
 
       expect(result.choices[0].message.content).toBe("42");
-      expect((result.choices[0].message as any).reasoning).toBe("Let me think...");
-      expect((result.choices[0].message as any).reasoning_details[0]).toEqual({
-        type: "reasoning.text",
-        text: "Let me think...",
-        signature: "sig123",
-      });
+      expect((result.choices[0].message as any).reasoning).toBeUndefined();
+      expect((result.choices[0].message as any).reasoning_details).toBeUndefined();
     });
 
     it("maps MAX_TOKENS finish reason to length", () => {
@@ -576,6 +615,7 @@ describe("ChatCompletionToGeminiConverter", () => {
       expect(result.usage?.prompt_tokens).toBe(100);
       expect(result.usage?.completion_tokens).toBe(70);
       expect(result.usage?.prompt_tokens_details?.cached_tokens).toBe(30);
+      expect(result.usage?.prompt_tokens_details?.audio_tokens).toBe(0);
       expect(result.usage?.completion_tokens_details?.reasoning_tokens).toBe(20);
     });
 
@@ -643,8 +683,106 @@ describe("ChatCompletionToGeminiConverter", () => {
     it("handles empty candidates", () => {
       const result = converter.convertResponse(makeResponse({ candidates: [] }));
 
-      expect(result.choices[0].message.content).toBeNull();
-      expect(result.choices[0].finish_reason).toBe("stop");
+      expect(result.choices).toEqual([]);
+    });
+
+    it("converts prompt safety feedback to a filtered refusal", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [],
+          promptFeedback: {
+            blockReason: "SAFETY",
+            blockReasonMessage: "Blocked by safety policy",
+          } as any,
+        })
+      );
+
+      expect(result.choices).toEqual([
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            refusal: "Blocked by safety policy",
+          },
+          finish_reason: "content_filter",
+          logprobs: null,
+        },
+      ]);
+    });
+
+    it("converts all candidates and preserves candidate indexes", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              index: 2,
+              content: { role: "model", parts: [{ text: "Second" }] },
+              finishReason: "STOP",
+            } as Candidate,
+            {
+              index: 4,
+              content: { role: "model", parts: [{ text: "Fourth" }] },
+              finishReason: "MAX_TOKENS",
+            } as Candidate,
+          ],
+        })
+      );
+
+      expect(result.choices.map(choice => choice.index)).toEqual([2, 4]);
+      expect(result.choices.map(choice => choice.message.content)).toEqual(["Second", "Fourth"]);
+      expect(result.choices.map(choice => choice.finish_reason)).toEqual(["stop", "length"]);
+    });
+
+    it("omits usage when Gemini does not return usage metadata", () => {
+      const result = converter.convertResponse(makeResponse({ usageMetadata: undefined }));
+
+      expect(result.usage).toBeUndefined();
+    });
+
+    it("omits usage when Gemini returns empty usage metadata", () => {
+      const result = converter.convertResponse(makeResponse({ usageMetadata: {} as any }));
+
+      expect(result.usage).toBeUndefined();
+    });
+
+    it("converts Gemini token log probabilities", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "A" }] },
+              finishReason: "STOP",
+              logprobsResult: {
+                chosenCandidates: [{ token: "A", logProbability: -0.1 }],
+                topCandidates: [
+                  {
+                    candidates: [
+                      { token: "A", logProbability: -0.1 },
+                      { token: "B", logProbability: -1.2 },
+                    ],
+                  },
+                ],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+
+      expect(result.choices[0].logprobs).toEqual({
+        content: [
+          {
+            token: "A",
+            bytes: [65],
+            logprob: -0.1,
+            top_logprobs: [
+              { token: "A", bytes: [65], logprob: -0.1 },
+              { token: "B", bytes: [66], logprob: -1.2 },
+            ],
+          },
+        ],
+        refusal: null,
+      });
     });
   });
 
@@ -690,6 +828,60 @@ describe("ChatCompletionToGeminiConverter", () => {
 
       const textChunk = events.find(e => e.choices[0]?.delta?.content === "Hello");
       expect(textChunk).toBeDefined();
+    });
+
+    it("emits explicit null logprobs for stream choices without probability data", () => {
+      const c = new ChatCompletionToGeminiConverter();
+      const events = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text: "Hello" },
+                  {
+                    functionCall: {
+                      id: "call_1",
+                      name: "get_weather",
+                      args: { city: "SF" },
+                    },
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            } as Candidate,
+          ],
+        })
+      );
+
+      const choices = events.flatMap(event => event.choices);
+      expect(choices.length).toBeGreaterThan(0);
+      expect(choices.every(choice => choice.logprobs === null)).toBe(true);
+    });
+
+    it("preserves real logprobs on stream content choices", () => {
+      const c = new ChatCompletionToGeminiConverter();
+      const events = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "Hello" }] },
+              logprobsResult: {
+                chosenCandidates: [{ token: "Hello", logProbability: -0.1 }],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+
+      const textChoice = events
+        .flatMap(event => event.choices)
+        .find(choice => choice.delta.content === "Hello");
+      expect(textChoice?.logprobs?.content?.[0]).toMatchObject({
+        token: "Hello",
+        logprob: -0.1,
+      });
     });
 
     it("emits each incremental text chunk", () => {
@@ -751,7 +943,42 @@ describe("ChatCompletionToGeminiConverter", () => {
       expect(toolChunk).toBeDefined();
     });
 
-    it("emits reasoning for thought parts", () => {
+    it("keeps a stable tool call index when Gemini repeats the same call ID", () => {
+      const c = new ChatCompletionToGeminiConverter();
+      c.convertStreamChunk(makeStreamChunk());
+
+      const functionCall = {
+        id: "call_1",
+        name: "get_weather",
+        args: { city: "SF" },
+      };
+      const firstEvents = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ functionCall }] },
+            } as Candidate,
+          ],
+        })
+      );
+      const repeatedEvents = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ functionCall }] },
+            } as Candidate,
+          ],
+        })
+      );
+
+      const firstToolCall = firstEvents.flatMap(event => event.choices)[0].delta.tool_calls?.[0];
+      const repeatedToolCall = repeatedEvents.flatMap(event => event.choices)[0].delta
+        .tool_calls?.[0];
+      expect(firstToolCall?.index).toBe(0);
+      expect(repeatedToolCall?.index).toBe(0);
+    });
+
+    it("leaves non-standard thought fields out of standard stream chunks", () => {
       const c = new ChatCompletionToGeminiConverter();
       c.convertStreamChunk(makeStreamChunk());
 
@@ -771,7 +998,7 @@ describe("ChatCompletionToGeminiConverter", () => {
       const reasoningChunk = events.find(
         e => (e.choices[0]?.delta as any)?.reasoning === "Thinking..."
       );
-      expect(reasoningChunk).toBeDefined();
+      expect(reasoningChunk).toBeUndefined();
     });
 
     it("emits finish_reason on final chunk", () => {
@@ -804,9 +1031,59 @@ describe("ChatCompletionToGeminiConverter", () => {
       );
 
       const finishChunk = events.find(e => e.choices[0]?.finish_reason === "stop");
+      const usageChunk = events.find(e => e.choices.length === 0 && e.usage != null);
       expect(finishChunk).toBeDefined();
-      expect(finishChunk!.usage?.prompt_tokens).toBe(10);
-      expect(finishChunk!.usage?.completion_tokens).toBe(5);
+      expect(usageChunk?.usage?.prompt_tokens).toBe(10);
+      expect(usageChunk?.usage?.completion_tokens).toBe(5);
+    });
+
+    it("emits stream choices for every Gemini candidate", () => {
+      const c = new ChatCompletionToGeminiConverter();
+      const events = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [
+            {
+              index: 1,
+              content: { role: "model", parts: [{ text: "One" }] },
+              finishReason: "STOP",
+            } as Candidate,
+            {
+              index: 3,
+              content: { role: "model", parts: [{ text: "Three" }] },
+              finishReason: "STOP",
+            } as Candidate,
+          ],
+        })
+      );
+
+      const choices = events.flatMap(event => event.choices);
+      expect(choices.some(choice => choice.index === 1 && choice.delta.content === "One")).toBe(
+        true
+      );
+      expect(choices.some(choice => choice.index === 3 && choice.delta.content === "Three")).toBe(
+        true
+      );
+      expect(
+        choices.filter(choice => choice.finish_reason === "stop").map(choice => choice.index)
+      ).toEqual([1, 3]);
+    });
+
+    it("emits a filtered refusal for prompt safety feedback", () => {
+      const c = new ChatCompletionToGeminiConverter();
+      const events = c.convertStreamChunk(
+        makeStreamChunk({
+          candidates: [],
+          promptFeedback: {
+            blockReason: "SAFETY",
+            blockReasonMessage: "Blocked by safety policy",
+          } as any,
+        })
+      );
+
+      const refusalChoice = events
+        .flatMap(event => event.choices)
+        .find(choice => choice.finish_reason === "content_filter");
+      expect(refusalChoice?.delta.refusal).toBe("Blocked by safety policy");
     });
   });
 
