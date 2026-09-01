@@ -309,14 +309,18 @@ for await (const chunk of converter.convertStream(responsesStream)) {
 | OpenAI Chat Completions | OpenAI Responses |
 |---|---|
 | `messages` | `input` (ResponseInputItem[]) |
-| `system` / `developer` messages | `instructions` |
-| `max_completion_tokens` | `max_output_tokens` |
-| `tools` (function) | `tools` (function) |
-| `tool_choice` | `tool_choice` |
+| `system` / `developer` messages | `input` messages with the same role |
+| `max_completion_tokens` / `max_tokens` | `max_output_tokens` |
+| `tools` (function/custom), deprecated `functions` | `tools` (function/custom) |
+| `tool_choice`, deprecated `function_call` | `tool_choice` |
 | `response_format` | `text.format` |
+| `verbosity` | `text.verbosity` |
 | `reasoning_effort` | `reasoning.effort` |
 | `web_search_options` | `tools` (web_search) |
 | `parallel_tool_calls` | `parallel_tool_calls` |
+| `logprobs` / `top_logprobs` | `include` / `top_logprobs` |
+| `metadata`, `store`, `service_tier` | Same-name fields |
+| `safety_identifier`, `user` | Same-name fields |
 | `prompt_cache_key` / `prompt_cache_retention` | `prompt_cache_key` / `prompt_cache_retention` |
 
 ### Chat Completions → Gemini
