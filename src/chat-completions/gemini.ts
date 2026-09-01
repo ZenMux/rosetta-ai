@@ -3,6 +3,8 @@ import type {
   GenerateContentParameters,
   GenerateContentConfig,
   GenerateContentResponse,
+  GenerateContentResponseUsageMetadata,
+  Candidate,
   Content,
   Part,
   FunctionDeclaration,
@@ -10,14 +12,16 @@ import type {
   FinishReason,
 } from "@google/genai";
 
+interface ChoiceStreamState {
+  toolCallCounter: number;
+  toolCallIndexes: Map<string, number>;
+}
+
 interface StreamState {
   id: string;
   model: string;
   started: boolean;
-  toolCallCounter: number;
-  prevText: string;
-  prevThought: string;
-  seenFunctionCallIds: Set<string>;
+  choices: Map<number, ChoiceStreamState>;
 }
 
 export class ChatCompletionToGeminiConverter {
@@ -32,6 +36,7 @@ export class ChatCompletionToGeminiConverter {
   convertRequest(params: OpenAI.ChatCompletionCreateParams): GenerateContentParameters {
     const systemParts: Part[] = [];
     const contents: Content[] = [];
+    const toolCallNames = new Map<string, string>();
 
     for (const msg of params.messages) {
       if (msg.role === "system" || msg.role === "developer") {
@@ -44,12 +49,17 @@ export class ChatCompletionToGeminiConverter {
           parts: this.convertUserParts(msg.content),
         });
       } else if (msg.role === "assistant") {
+        for (const toolCall of msg.tool_calls ?? []) {
+          if (toolCall.type === "function") {
+            toolCallNames.set(toolCall.id, toolCall.function.name);
+          }
+        }
         contents.push({
           role: "model",
           parts: this.convertAssistantParts(msg),
         });
       } else if (msg.role === "tool") {
-        this.appendToolResponse(contents, msg);
+        this.appendToolResponse(contents, msg, toolCallNames.get(msg.tool_call_id));
       }
     }
 
@@ -58,8 +68,8 @@ export class ChatCompletionToGeminiConverter {
     if (systemParts.length > 0) {
       config.systemInstruction = { parts: systemParts };
     }
-    if (params.max_tokens != null || params.max_completion_tokens != null) {
-      config.maxOutputTokens = params.max_tokens ?? params.max_completion_tokens ?? undefined;
+    if (params.max_completion_tokens != null || params.max_tokens != null) {
+      config.maxOutputTokens = params.max_completion_tokens ?? params.max_tokens ?? undefined;
     }
     if (params.temperature != null) {
       config.temperature = params.temperature as number;
@@ -123,93 +133,31 @@ export class ChatCompletionToGeminiConverter {
   // --- Response conversion (Gemini → CC, backward) ---
 
   convertResponse(response: GenerateContentResponse): OpenAI.ChatCompletion {
-    const candidate = response.candidates?.[0];
-    const parts = candidate?.content?.parts ?? [];
+    const choices = (response.candidates ?? []).map((candidate, index) =>
+      this.convertCandidate(candidate, candidate.index ?? index)
+    );
 
-    const textParts: string[] = [];
-    const thinkingParts: string[] = [];
-    const reasoningDetails: Array<Record<string, unknown>> = [];
-    const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
-    const annotations: OpenAI.ChatCompletionMessage.Annotation[] = [];
-
-    for (const part of parts) {
-      if (part.thought && part.text) {
-        thinkingParts.push(part.text);
-        reasoningDetails.push({
-          type: "reasoning.text",
-          text: part.text,
-          signature: part.thoughtSignature ?? undefined,
+    if (choices.length === 0) {
+      const refusal = this.getPromptFeedbackRefusal(response);
+      if (refusal) {
+        choices.push({
+          index: 0,
+          message: { role: "assistant", content: null, refusal },
+          finish_reason: "content_filter",
+          logprobs: null,
         });
-      } else if (part.functionCall) {
-        const fc = part.functionCall;
-        toolCalls.push({
-          id: fc.id ?? fc.name ?? `call_${this.generateId()}`,
-          type: "function",
-          function: {
-            name: fc.name ?? "",
-            arguments: JSON.stringify(fc.args ?? {}),
-          },
-        });
-      } else if (part.text != null) {
-        textParts.push(part.text);
       }
     }
 
-    this.extractGroundingAnnotations(candidate, annotations);
-
-    const assistantMessage: OpenAI.ChatCompletionMessage = {
-      role: "assistant",
-      content: textParts.length > 0 ? textParts.join("") : null,
-      refusal: null,
-    };
-
-    if (thinkingParts.length > 0) {
-      Object.assign(assistantMessage, {
-        reasoning: thinkingParts.join(""),
-        reasoning_details: reasoningDetails,
-      });
-    }
-    if (toolCalls.length > 0) {
-      assistantMessage.tool_calls = toolCalls;
-    }
-    if (annotations.length > 0) {
-      assistantMessage.annotations = annotations;
-    }
-
-    let finishReason = this.mapFinishReason(candidate?.finishReason);
-    if (toolCalls.length > 0) {
-      finishReason = "tool_calls";
-    }
-
-    const usage = response.usageMetadata;
-    const promptTokens = (usage?.promptTokenCount ?? 0) + (usage?.toolUsePromptTokenCount ?? 0);
-    const thoughtsTokens = usage?.thoughtsTokenCount ?? 0;
-    const candidatesTokens = (usage?.candidatesTokenCount ?? 0) + thoughtsTokens;
+    const usage = this.convertUsage(response.usageMetadata);
 
     return {
       id: response.responseId ?? `chatcmpl-${this.generateId()}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
       model: response.modelVersion ?? "",
-      choices: [
-        {
-          index: 0,
-          message: assistantMessage,
-          finish_reason: finishReason,
-          logprobs: null,
-        },
-      ],
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: candidatesTokens,
-        total_tokens: usage?.totalTokenCount ?? 0,
-        prompt_tokens_details: {
-          cached_tokens: usage?.cachedContentTokenCount ?? 0,
-        },
-        completion_tokens_details: {
-          reasoning_tokens: thoughtsTokens,
-        },
-      },
+      choices,
+      ...(usage && { usage }),
     };
   }
 
@@ -218,6 +166,7 @@ export class ChatCompletionToGeminiConverter {
   async *convertStream(
     stream: AsyncIterable<GenerateContentResponse>
   ): AsyncIterable<OpenAI.ChatCompletionChunk> {
+    this.streamState = this.createStreamState();
     for await (const chunk of stream) {
       const events = this.convertStreamChunk(chunk);
       for (const event of events) {
@@ -229,8 +178,7 @@ export class ChatCompletionToGeminiConverter {
   convertStreamChunk(chunk: GenerateContentResponse): OpenAI.ChatCompletionChunk[] {
     const state = this.streamState;
     const events: OpenAI.ChatCompletionChunk[] = [];
-    const candidate = chunk.candidates?.[0];
-    const parts = candidate?.content?.parts ?? [];
+    const candidates = chunk.candidates ?? [];
 
     if (chunk.modelVersion) {
       state.model = chunk.modelVersion;
@@ -244,91 +192,124 @@ export class ChatCompletionToGeminiConverter {
       if (!state.id) {
         state.id = `chatcmpl-${this.generateId()}`;
       }
-      events.push(this.makeChunk({ role: "assistant" }));
-    }
-
-    for (const part of parts) {
-      if (part.thought && part.text) {
-        events.push(
-          this.makeChunk({
-            content: "",
-            ...{
-              reasoning: part.text,
-            },
-          })
-        );
-      } else if (part.functionCall) {
-        const fc = part.functionCall;
-        const fcId = fc.id ?? fc.name ?? "";
-        if (!state.seenFunctionCallIds.has(fcId)) {
-          state.seenFunctionCallIds.add(fcId);
-          const index = state.toolCallCounter++;
-          events.push(
-            this.makeChunk({
-              tool_calls: [
-                {
-                  index,
-                  id: fc.id ?? `call_${this.generateId()}`,
-                  type: "function",
-                  function: {
-                    name: fc.name ?? "",
-                    arguments: JSON.stringify(fc.args ?? {}),
-                  },
-                },
-              ],
-            })
-          );
-        }
-      } else if (part.text != null && part.text !== "") {
-        events.push(this.makeChunk({ content: part.text }));
-      }
-    }
-
-    const annotations: OpenAI.ChatCompletionMessage.Annotation[] = [];
-    this.extractGroundingAnnotations(candidate, annotations);
-    if (annotations.length > 0) {
+      const indexes =
+        candidates.length > 0
+          ? candidates.map((candidate, index) => candidate.index ?? index)
+          : [0];
       events.push(
-        this.makeChunk({
-          content: "",
-          ...{ annotations },
-        })
+        this.makeChunk(
+          indexes.map(index => ({
+            index,
+            delta: { role: "assistant" },
+            finish_reason: null,
+          }))
+        )
       );
     }
 
-    if (candidate?.finishReason) {
-      let finishReason = this.mapFinishReason(candidate.finishReason);
-      if (state.toolCallCounter > 0) {
-        finishReason = "tool_calls";
+    if (candidates.length === 0) {
+      const refusal = this.getPromptFeedbackRefusal(chunk);
+      if (refusal) {
+        events.push(
+          this.makeChunk([
+            {
+              index: 0,
+              delta: { refusal },
+              finish_reason: "content_filter",
+            },
+          ])
+        );
       }
-      const usage = chunk.usageMetadata;
+    }
 
-      const finishChunk: OpenAI.ChatCompletionChunk = {
-        id: state.id,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: state.model,
-        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-      };
+    for (let position = 0; position < candidates.length; position++) {
+      const candidate = candidates[position];
+      const choiceIndex = candidate.index ?? position;
+      const choiceState = this.getChoiceStreamState(choiceIndex);
 
-      if (usage) {
-        const promptTokens = (usage.promptTokenCount ?? 0) + (usage.toolUsePromptTokenCount ?? 0);
-        const thoughtsTokens = usage.thoughtsTokenCount ?? 0;
-        const candidatesTokens = (usage.candidatesTokenCount ?? 0) + thoughtsTokens;
-
-        finishChunk.usage = {
-          prompt_tokens: promptTokens,
-          completion_tokens: candidatesTokens,
-          total_tokens: usage.totalTokenCount ?? 0,
-          prompt_tokens_details: {
-            cached_tokens: usage.cachedContentTokenCount ?? 0,
-          },
-          completion_tokens_details: {
-            reasoning_tokens: thoughtsTokens,
-          },
-        };
+      for (const part of candidate.content?.parts ?? []) {
+        if (part.thought) {
+          continue;
+        }
+        if (part.functionCall) {
+          const functionCall = part.functionCall;
+          const functionCallId = functionCall.id ?? `call_${this.generateId()}`;
+          let toolCallIndex = choiceState.toolCallIndexes.get(functionCallId);
+          if (toolCallIndex == null) {
+            toolCallIndex = choiceState.toolCallCounter++;
+            choiceState.toolCallIndexes.set(functionCallId, toolCallIndex);
+          }
+          events.push(
+            this.makeChunk([
+              {
+                index: choiceIndex,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: toolCallIndex,
+                      id: functionCallId,
+                      type: "function",
+                      function: {
+                        name: functionCall.name ?? "",
+                        arguments: JSON.stringify(functionCall.args ?? {}),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ])
+          );
+        } else if (part.text != null && part.text !== "") {
+          events.push(
+            this.makeChunk([
+              {
+                index: choiceIndex,
+                delta: { content: part.text },
+                finish_reason: null,
+                logprobs: this.convertLogprobs(candidate),
+              },
+            ])
+          );
+        }
       }
 
-      events.push(finishChunk);
+      const annotations: OpenAI.ChatCompletionMessage.Annotation[] = [];
+      this.extractGroundingAnnotations(candidate, annotations);
+      if (annotations.length > 0) {
+        events.push(
+          this.makeChunk([
+            {
+              index: choiceIndex,
+              delta: { content: "", ...{ annotations } },
+              finish_reason: null,
+            },
+          ])
+        );
+      }
+
+      if (candidate.finishReason) {
+        events.push(
+          this.makeChunk([
+            {
+              index: choiceIndex,
+              delta: {},
+              finish_reason:
+                choiceState.toolCallCounter > 0
+                  ? "tool_calls"
+                  : this.mapFinishReason(candidate.finishReason),
+            },
+          ])
+        );
+      }
+    }
+
+    const usage = this.convertUsage(chunk.usageMetadata);
+    if (usage) {
+      events.push({
+        ...this.makeChunk([]),
+        usage,
+      });
     }
 
     return events;
@@ -340,20 +321,20 @@ export class ChatCompletionToGeminiConverter {
     if (typeof content === "string") {
       return [{ text: content }];
     }
-    return content.map(part => {
+    return content.flatMap(part => {
       if (part.type === "text") {
-        return { text: part.text };
+        return [{ text: part.text }];
       }
       if (part.type === "image_url") {
-        return this.convertImageUrl(part);
+        return [this.convertImageUrl(part)];
       }
       if (part.type === "file") {
-        return this.convertFile(part as any);
+        return [this.convertFile(part)];
       }
       if (part.type === "input_audio") {
-        return this.convertInputAudio(part as any);
+        return [this.convertInputAudio(part)];
       }
-      return { text: `[Unsupported content type: ${(part as any).type}]` };
+      return [];
     });
   }
 
@@ -373,7 +354,7 @@ export class ChatCompletionToGeminiConverter {
     return {
       fileData: {
         fileUri: url,
-        mimeType: "image/*",
+        mimeType: "image/jpeg",
       },
     };
   }
@@ -418,12 +399,13 @@ export class ChatCompletionToGeminiConverter {
 
   private appendToolResponse(
     contents: Content[],
-    msg: OpenAI.ChatCompletionToolMessageParam
+    msg: OpenAI.ChatCompletionToolMessageParam,
+    functionName?: string
   ): void {
     const responsePart: Part = {
       functionResponse: {
         id: msg.tool_call_id,
-        name: msg.tool_call_id,
+        name: functionName ?? msg.tool_call_id,
         response: {
           output:
             typeof msg.content === "string" ? msg.content : msg.content.map(p => p.text).join("\n"),
@@ -443,9 +425,11 @@ export class ChatCompletionToGeminiConverter {
     contents.push({ role: "user", parts: [responsePart] });
   }
 
-  private convertFile(part: any): Part {
+  private convertFile(part: OpenAI.ChatCompletionContentPart.File): Part {
     const fileData = part.file?.file_data;
-    if (!fileData) return { text: "[Missing file data]" };
+    if (!fileData) {
+      throw new Error("Chat Completions file content requires file_data for Gemini conversion");
+    }
 
     if (fileData.startsWith("data:")) {
       const match = fileData.match(/^data:([^;]+);base64,(.+)$/);
@@ -454,12 +438,33 @@ export class ChatCompletionToGeminiConverter {
       }
     }
 
-    return { fileData: { fileUri: fileData, mimeType: "application/octet-stream" } };
+    return {
+      fileData: {
+        fileUri: fileData,
+        mimeType: this.inferFileMimeType(part.file.filename ?? fileData),
+      },
+    };
   }
 
-  private convertInputAudio(part: any): Part {
+  private inferFileMimeType(source: string): string {
+    const pathname = source.split(/[?#]/, 1)[0].toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".mp4": "video/mp4",
+      ".avi": "video/x-msvideo",
+      ".mov": "video/quicktime",
+      ".mpeg": "video/mpeg",
+      ".webm": "video/webm",
+    };
+    const extension = Object.keys(mimeTypes).find(candidate => pathname.endsWith(candidate));
+    return extension ? mimeTypes[extension] : "application/octet-stream";
+  }
+
+  private convertInputAudio(part: OpenAI.ChatCompletionContentPartInputAudio): Part {
     const inputAudio = part.input_audio;
-    if (!inputAudio) return { inlineData: {} };
+    if (!inputAudio) {
+      return { inlineData: {} };
+    }
 
     const mimeMap: Record<string, string> = {
       mp3: "audio/mp3",
@@ -524,7 +529,9 @@ export class ChatCompletionToGeminiConverter {
     config: GenerateContentConfig,
     format: NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>
   ): void {
-    if ("json_schema" in format && format.type === "json_schema") {
+    if (format.type === "text") {
+      config.responseMimeType = "text/plain";
+    } else if ("json_schema" in format && format.type === "json_schema") {
       config.responseMimeType = "application/json";
       config.responseJsonSchema = format.json_schema.schema;
     } else if (format.type === "json_object") {
@@ -552,6 +559,124 @@ export class ChatCompletionToGeminiConverter {
   }
 
   // --- Private: response helpers ---
+
+  private convertCandidate(candidate: Candidate, index: number): OpenAI.ChatCompletion.Choice {
+    const textParts: string[] = [];
+    const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
+    const annotations: OpenAI.ChatCompletionMessage.Annotation[] = [];
+
+    for (const part of candidate.content?.parts ?? []) {
+      if (part.thought) {
+        continue;
+      }
+      if (part.functionCall) {
+        const functionCall = part.functionCall;
+        toolCalls.push({
+          id: functionCall.id ?? functionCall.name ?? `call_${this.generateId()}`,
+          type: "function",
+          function: {
+            name: functionCall.name ?? "",
+            arguments: JSON.stringify(functionCall.args ?? {}),
+          },
+        });
+      } else if (part.text != null) {
+        textParts.push(part.text);
+      }
+    }
+
+    this.extractGroundingAnnotations(candidate, annotations);
+
+    return {
+      index,
+      message: {
+        role: "assistant",
+        content: textParts.join(""),
+        refusal: null,
+        ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
+        ...(annotations.length > 0 && { annotations }),
+      },
+      finish_reason:
+        toolCalls.length > 0 ? "tool_calls" : this.mapFinishReason(candidate.finishReason),
+      logprobs: this.convertLogprobs(candidate),
+    };
+  }
+
+  private getPromptFeedbackRefusal(response: GenerateContentResponse): string | null {
+    const feedback = response.promptFeedback;
+    if (!feedback?.blockReason) {
+      return null;
+    }
+    return feedback.blockReasonMessage ?? feedback.blockReason;
+  }
+
+  private convertUsage(
+    usage?: GenerateContentResponseUsageMetadata
+  ): OpenAI.CompletionUsage | undefined {
+    if (
+      !usage ||
+      [
+        usage.promptTokenCount,
+        usage.candidatesTokenCount,
+        usage.totalTokenCount,
+        usage.cachedContentTokenCount,
+        usage.thoughtsTokenCount,
+        usage.toolUsePromptTokenCount,
+        usage.promptTokensDetails,
+        usage.candidatesTokensDetails,
+        usage.cacheTokensDetails,
+        usage.toolUsePromptTokensDetails,
+      ].every(value => value == null)
+    ) {
+      return undefined;
+    }
+
+    const thoughtsTokens = usage.thoughtsTokenCount ?? 0;
+    const promptTokens = (usage.promptTokenCount ?? 0) + (usage.toolUsePromptTokenCount ?? 0);
+    const completionTokens = (usage.candidatesTokenCount ?? 0) + thoughtsTokens;
+    const promptAudioTokens = usage.promptTokensDetails?.find(
+      detail => detail.modality === "AUDIO"
+    )?.tokenCount;
+
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: usage.totalTokenCount ?? 0,
+      prompt_tokens_details: {
+        cached_tokens: usage.cachedContentTokenCount ?? 0,
+        audio_tokens: promptAudioTokens ?? 0,
+      },
+      completion_tokens_details: {
+        reasoning_tokens: thoughtsTokens,
+      },
+    };
+  }
+
+  private convertLogprobs(candidate: Candidate): OpenAI.ChatCompletion.Choice.Logprobs | null {
+    const chosenCandidates = candidate.logprobsResult?.chosenCandidates;
+    if (!chosenCandidates || chosenCandidates.length === 0) {
+      return null;
+    }
+
+    return {
+      content: chosenCandidates.map((chosen, index) => ({
+        token: chosen.token ?? "",
+        bytes: this.toUtf8Bytes(chosen.token),
+        logprob: chosen.logProbability ?? -9999,
+        top_logprobs: (candidate.logprobsResult?.topCandidates?.[index]?.candidates ?? []).map(
+          topCandidate => ({
+            token: topCandidate.token ?? "",
+            bytes: this.toUtf8Bytes(topCandidate.token),
+            logprob: topCandidate.logProbability ?? -9999,
+          })
+        ),
+      })),
+      refusal: null,
+    };
+  }
+
+  private toUtf8Bytes(value?: string): number[] | null {
+    return value == null ? null : Array.from(new TextEncoder().encode(value));
+  }
 
   private extractGroundingAnnotations(
     candidate: any,
@@ -583,7 +708,6 @@ export class ChatCompletionToGeminiConverter {
       case "MAX_TOKENS":
         return "length";
       case "SAFETY":
-      case "RECITATION":
       case "BLOCKLIST":
       case "PROHIBITED_CONTENT":
         return "content_filter";
@@ -603,23 +727,32 @@ export class ChatCompletionToGeminiConverter {
       id: "",
       model: "",
       started: false,
-      toolCallCounter: 0,
-      prevText: "",
-      prevThought: "",
-      seenFunctionCallIds: new Set(),
+      choices: new Map(),
     };
   }
 
-  private makeChunk(
-    delta: OpenAI.ChatCompletionChunk.Choice.Delta,
-    finish_reason: OpenAI.ChatCompletionChunk.Choice["finish_reason"] = null
-  ): OpenAI.ChatCompletionChunk {
+  private getChoiceStreamState(index: number): ChoiceStreamState {
+    let choiceState = this.streamState.choices.get(index);
+    if (!choiceState) {
+      choiceState = {
+        toolCallCounter: 0,
+        toolCallIndexes: new Map(),
+      };
+      this.streamState.choices.set(index, choiceState);
+    }
+    return choiceState;
+  }
+
+  private makeChunk(choices: OpenAI.ChatCompletionChunk.Choice[]): OpenAI.ChatCompletionChunk {
     return {
       id: this.streamState.id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
       model: this.streamState.model,
-      choices: [{ index: 0, delta, finish_reason }],
+      choices: choices.map(choice => ({
+        ...choice,
+        logprobs: choice.logprobs ?? null,
+      })),
     };
   }
 }
