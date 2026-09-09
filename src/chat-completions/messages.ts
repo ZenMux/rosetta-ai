@@ -86,7 +86,10 @@ export class ChatCompletionToMessagesConverter {
       result.tool_choice = { type: "auto", disable_parallel_tool_use: true };
     }
     if (params.response_format) {
-      result.output_config = this.convertResponseFormat(params.response_format);
+      const outputConfig = this.convertResponseFormat(params.response_format);
+      if (outputConfig !== undefined) {
+        result.output_config = outputConfig;
+      }
     }
     if (params.reasoning_effort != null) {
       result.thinking = this.convertReasoningEffort(params.reasoning_effort as string);
@@ -715,7 +718,7 @@ export class ChatCompletionToMessagesConverter {
 
   private convertResponseFormat(
     format: NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>
-  ): Anthropic.OutputConfig {
+  ): Anthropic.OutputConfig | undefined {
     if ("json_schema" in format && format.type === "json_schema") {
       return {
         format: {
@@ -725,12 +728,9 @@ export class ChatCompletionToMessagesConverter {
       };
     }
     if (format.type === "json_object") {
-      return {
-        format: {
-          type: "json_schema",
-          schema: { type: "object" },
-        },
-      };
+      // Messages has no lossless equivalent for Chat Completions JSON object mode.
+      // Omitting output_config preserves compatibility instead of emitting an invalid strict schema.
+      return undefined;
     }
     // text format — no output_config needed, return empty
     return {};
