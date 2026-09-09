@@ -576,15 +576,13 @@ describe("ChatCompletionToMessagesConverter", () => {
         });
       });
 
-      it("maps json_object response_format to output_config", () => {
+      it("omits output_config for json_object response_format", () => {
         const result = converter.convertRequest({
           model: "gpt-4o",
           messages: [{ role: "user", content: "Hi" }],
           response_format: { type: "json_object" },
         });
-        expect(result.output_config).toEqual({
-          format: { type: "json_schema", schema: { type: "object" } },
-        });
+        expect(result.output_config).toBeUndefined();
       });
 
       it("does not set output_config for text format", () => {

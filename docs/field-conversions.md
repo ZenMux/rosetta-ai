@@ -27,6 +27,8 @@ Complete mapping of all fields across the 12 pairwise converters between OpenAI 
 | `service_tier` | `service_tier` | auto/standard_only only |
 | `stream` | `stream` | |
 
+`response_format.type = "json_object"` is omitted because Messages has no lossless equivalent for unrestricted JSON object mode.
+
 **Not converted:** `frequency_penalty`, `presence_penalty`, `seed`, `n`, `logprobs`, `top_logprobs`, `logit_bias`
 
 ### Response (Messages → CC)
