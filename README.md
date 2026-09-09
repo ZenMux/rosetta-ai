@@ -298,7 +298,7 @@ for await (const chunk of converter.convertStream(responsesStream)) {
 | `tools` (function) | `tools` (custom) |
 | `tool_choice` (auto/required/none/named) | `tool_choice` (auto/any/none/tool) |
 | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` |
-| `response_format` (json_schema/json_object) | `output_config.format` |
+| `response_format` (json_schema) | `output_config.format` |
 | `reasoning_effort` | `thinking` (enabled/disabled/adaptive) |
 | `user` | `metadata.user_id` |
 | `service_tier` | `service_tier` |
