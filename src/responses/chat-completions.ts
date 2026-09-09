@@ -981,7 +981,10 @@ export class ResponsesToChatCompletionConverter {
       if (typed.type === "message") {
         flushToolCalls();
         if (typed.role === "user" || typed.role === "system" || typed.role === "developer") {
-          const content = this.convertInputContent(typed.content);
+          const content =
+            typeof typed.content === "string"
+              ? typed.content
+              : this.convertInputContent(typed.content);
           messages.push({
             role: typed.role,
             content,
