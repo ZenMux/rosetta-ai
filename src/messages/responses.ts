@@ -100,7 +100,7 @@ export class MessagesToResponsesConverter {
         content.push({
           type: "thinking",
           thinking: summaryText,
-          signature: ri.encrypted_content ?? "",
+          signature: this.packReasoningSignature(ri.id, ri.encrypted_content),
         });
       } else if (
         item.type === "web_search_call" &&
@@ -345,7 +345,7 @@ export class MessagesToResponsesConverter {
               index: state.currentBlockIndex,
               delta: {
                 type: "signature_delta",
-                signature: ri.encrypted_content,
+                signature: this.packReasoningSignature(ri.id, ri.encrypted_content),
               } as any,
             });
           }
@@ -485,14 +485,12 @@ export class MessagesToResponsesConverter {
         } else {
           for (const block of msg.content) {
             if (block.type === "thinking") {
-              // ponytail: fresh reasoning id, not the backend's original. Fine for
-              // stateless (store:false) encrypted reasoning; if a backend rejects
-              // mismatched ids, the original id would need a carrier channel.
+              const { id, encryptedContent } = this.unpackReasoningSignature(block.signature);
               input.push({
                 type: "reasoning",
-                id: `rs_${this.generateId()}`,
+                id: id ?? `rs_${this.generateId()}`,
                 summary: block.thinking ? [{ type: "summary_text", text: block.thinking }] : [],
-                encrypted_content: block.signature || null,
+                encrypted_content: encryptedContent,
               } as any);
             } else if (block.type === "text") {
               input.push({
@@ -593,6 +591,39 @@ export class MessagesToResponsesConverter {
 
   private generateId(): string {
     return Math.random().toString(36).substring(2, 15);
+  }
+
+  // Pack the Responses reasoning id + encrypted_content into the opaque Anthropic
+  // `signature` (base64url JSON, no prefix) so the backend-bound id survives the
+  // round-trip. Returns "" when there is no encrypted_content to preserve.
+  private packReasoningSignature(id: string, encryptedContent?: string | null): string {
+    if (!encryptedContent) return "";
+    return Buffer.from(
+      JSON.stringify({ id, encrypted_content: encryptedContent }),
+      "utf8"
+    ).toString("base64url");
+  }
+
+  // Recover { id, encrypted_content } from a packed signature. Signatures not
+  // produced by this converter (or otherwise undecodable) fall back to being
+  // treated as raw encrypted_content with no id.
+  private unpackReasoningSignature(signature?: string): {
+    id?: string;
+    encryptedContent: string | null;
+  } {
+    if (!signature) return { encryptedContent: null };
+    try {
+      const parsed = JSON.parse(Buffer.from(signature, "base64url").toString("utf8"));
+      if (parsed && typeof parsed.encrypted_content === "string") {
+        return {
+          id: typeof parsed.id === "string" ? parsed.id : undefined,
+          encryptedContent: parsed.encrypted_content,
+        };
+      }
+    } catch {
+      // not a packed signature
+    }
+    return { encryptedContent: signature };
   }
 
   private createStreamState(): StreamState {
