@@ -4,6 +4,12 @@ import type Anthropic from "@anthropic-ai/sdk";
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 
+// The Responses backend binds a reasoning item's encrypted_content to its id, so
+// the id must survive the round-trip. Anthropic thinking blocks carry no id, so
+// we pack {id, encrypted_content} into the opaque `signature` string and unpack
+// it when converting the follow-up request back to Responses input.
+const REASONING_SIG_PREFIX = "rosetta-ai/responses-reasoning:v1:";
+
 interface StreamState {
   id: string;
   model: string;
@@ -61,6 +67,9 @@ export class MessagesToResponsesConverter {
     }
     if (params.thinking) {
       result.reasoning = this.convertThinking(params.thinking);
+      // Ask the backend to return encrypted reasoning so we can reconstruct the
+      // Anthropic thinking `signature` on the way back.
+      result.include = ["reasoning.encrypted_content"];
     }
     if (params.output_config?.format?.type === "json_schema") {
       result.text = {
@@ -97,7 +106,7 @@ export class MessagesToResponsesConverter {
         content.push({
           type: "thinking",
           thinking: summaryText,
-          signature: "",
+          signature: this.packReasoningSignature(ri.id, ri.encrypted_content),
         });
       } else if (
         item.type === "web_search_call" &&
@@ -332,6 +341,22 @@ export class MessagesToResponsesConverter {
           break;
         }
 
+        // Emit the thinking signature (Responses encrypted_content) before closing
+        // the reasoning block, mirroring Anthropic's signature_delta event.
+        if (item?.type === "reasoning") {
+          const ri = item as OpenAI.Responses.ResponseReasoningItem;
+          if (ri.encrypted_content) {
+            events.push({
+              type: "content_block_delta",
+              index: state.currentBlockIndex,
+              delta: {
+                type: "signature_delta",
+                signature: this.packReasoningSignature(ri.id, ri.encrypted_content),
+              } as any,
+            });
+          }
+        }
+
         events.push({
           type: "content_block_stop",
           index: state.currentBlockIndex,
@@ -465,7 +490,15 @@ export class MessagesToResponsesConverter {
           } as any);
         } else {
           for (const block of msg.content) {
-            if (block.type === "text") {
+            if (block.type === "thinking") {
+              const { id, encryptedContent } = this.unpackReasoningSignature(block.signature);
+              input.push({
+                type: "reasoning",
+                id: id ?? `rs_${this.generateId()}`,
+                summary: block.thinking ? [{ type: "summary_text", text: block.thinking }] : [],
+                encrypted_content: encryptedContent,
+              } as any);
+            } else if (block.type === "text") {
               input.push({
                 role: "assistant",
                 type: "message",
@@ -561,6 +594,47 @@ export class MessagesToResponsesConverter {
   }
 
   // --- Private: stream helpers ---
+
+  private generateId(): string {
+    return Math.random().toString(36).substring(2, 15);
+  }
+
+  // Encode the Responses reasoning id + encrypted_content into an opaque signature
+  // string. Returns "" when there is no encrypted_content to preserve.
+  private packReasoningSignature(id: string, encryptedContent?: string | null): string {
+    if (!encryptedContent) return "";
+    const data = Buffer.from(
+      JSON.stringify({ id, encrypted_content: encryptedContent }),
+      "utf8"
+    ).toString("base64url");
+    return `${REASONING_SIG_PREFIX}${data}`;
+  }
+
+  // Recover { id, encrypted_content } from a packed signature. Falls back to
+  // treating the raw signature as encrypted_content (id undefined) for
+  // signatures not produced by this converter.
+  private unpackReasoningSignature(signature?: string): {
+    id?: string;
+    encryptedContent: string | null;
+  } {
+    if (!signature) return { encryptedContent: null };
+    if (!signature.startsWith(REASONING_SIG_PREFIX)) {
+      return { encryptedContent: signature };
+    }
+    try {
+      const encoded = signature.slice(REASONING_SIG_PREFIX.length);
+      const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+      if (parsed && typeof parsed.encrypted_content === "string") {
+        return {
+          id: typeof parsed.id === "string" ? parsed.id : undefined,
+          encryptedContent: parsed.encrypted_content,
+        };
+      }
+    } catch {
+      // fall through
+    }
+    return { encryptedContent: signature };
+  }
 
   private createStreamState(): StreamState {
     return {
