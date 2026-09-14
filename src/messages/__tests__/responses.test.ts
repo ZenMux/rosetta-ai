@@ -151,6 +151,28 @@ describe("MessagesToResponsesConverter", () => {
       });
 
       expect((result.reasoning as any).effort).toBe("high");
+      expect(result.include).toEqual(["reasoning.encrypted_content"]);
+    });
+
+    it("sends assistant thinking block back as reasoning with encrypted_content", () => {
+      const result = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "hmm", signature: "sig-abc" } as any,
+              { type: "text", text: "Hi" },
+            ],
+          },
+        ],
+      });
+
+      const reasoning = (result.input as any[]).find(i => i.type === "reasoning");
+      expect(reasoning).toBeDefined();
+      expect(reasoning.encrypted_content).toBe("sig-abc");
+      expect(reasoning.summary).toEqual([{ type: "summary_text", text: "hmm" }]);
     });
 
     it("converts output_config to text.format", () => {
@@ -331,6 +353,34 @@ describe("MessagesToResponsesConverter", () => {
       expect(textBlock.text).toBe("42");
     });
 
+    it("packs reasoning id + encrypted_content into thinking signature and round-trips", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_original",
+              summary: [{ type: "summary_text", text: "Let me think..." }],
+              encrypted_content: "sig-abc123",
+            } as any,
+          ],
+        })
+      );
+
+      const thinkingBlock = result.content.find((b: any) => b.type === "thinking") as any;
+      expect(thinkingBlock.signature).not.toBe("");
+
+      // Feeding the thinking block back must recover the original id + encrypted_content.
+      const req = converter.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [{ role: "assistant", content: [thinkingBlock] }],
+      });
+      const reasoning = (req.input as any[]).find(i => i.type === "reasoning");
+      expect(reasoning.id).toBe("rs_original");
+      expect(reasoning.encrypted_content).toBe("sig-abc123");
+    });
+
     it("maps incomplete status to max_tokens", () => {
       const result = converter.convertResponse(
         makeResponse({
@@ -478,6 +528,50 @@ describe("MessagesToResponsesConverter", () => {
       expect(textDelta).toBeDefined();
       expect(textDelta.delta.type).toBe("text_delta");
       expect(textDelta.delta.text).toBe("Hello");
+    });
+
+    it("emits signature_delta from reasoning encrypted_content on output_item.done", () => {
+      const c = new MessagesToResponsesConverter();
+      c.convertStreamEvent(responseCreated());
+      c.convertStreamEvent({
+        type: "response.output_item.added",
+        item: { type: "reasoning", id: "r_1", summary: [] },
+        output_index: 0,
+        sequence_number: 1,
+      } as any);
+
+      const events = c.convertStreamEvent({
+        type: "response.output_item.done",
+        item: {
+          type: "reasoning",
+          id: "r_1",
+          summary: [{ type: "summary_text", text: "hmm" }],
+          encrypted_content: "sig-xyz",
+        },
+        output_index: 0,
+        sequence_number: 2,
+      } as any);
+
+      const sigDelta = events.find(
+        e => e.type === "content_block_delta" && (e as any).delta.type === "signature_delta"
+      ) as any;
+      expect(sigDelta).toBeDefined();
+      // Signature is packed; unpacking must recover the original id + content.
+      const rt = new MessagesToResponsesConverter();
+      const req = rt.convertRequest({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "hmm", signature: sigDelta.delta.signature }],
+          },
+        ],
+      });
+      const reasoning = (req.input as any[]).find(i => i.type === "reasoning");
+      expect(reasoning.id).toBe("r_1");
+      expect(reasoning.encrypted_content).toBe("sig-xyz");
+      expect(events.some(e => e.type === "content_block_stop")).toBe(true);
     });
 
     it("emits content_block_start for function_call (tool_use)", () => {
