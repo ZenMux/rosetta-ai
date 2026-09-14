@@ -346,8 +346,7 @@ export class ChatCompletionToResponsesConverter {
       case "response.web_search_call.completed":
         return null;
       case "response.output_item.done":
-        this.handleOutputItemDone(event as OpenAI.Responses.ResponseOutputItemDoneEvent);
-        return null;
+        return this.handleOutputItemDone(event as OpenAI.Responses.ResponseOutputItemDoneEvent);
       case "response.output_text.annotation.added":
         this.recordStreamAnnotation(event.annotation);
         return null;
@@ -385,6 +384,11 @@ export class ChatCompletionToResponsesConverter {
           });
         }
       } else if (msg.role === "assistant") {
+        // Reconstruct reasoning items (with encrypted_content + id) so the backend
+        // sees the same reasoning it produced. Reasoning precedes the message.
+        for (const reasoningItem of this.convertReasoningInput(msg)) {
+          input.push(reasoningItem);
+        }
         const toolCalls = msg.tool_calls ?? [];
         const hasToolCalls = toolCalls.length > 0;
         const hasLegacyFunctionCall = msg.function_call != null;
@@ -455,6 +459,54 @@ export class ChatCompletionToResponsesConverter {
     }
 
     return input;
+  }
+
+  // Rebuild Responses reasoning input items from a CC assistant message's
+  // `reasoning_details` (produced by convertReasoning), preserving the original
+  // reasoning id + encrypted_content that the Responses backend binds together.
+  private convertReasoningInput(
+    message: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam
+  ): OpenAI.Responses.ResponseReasoningItem[] {
+    const items: OpenAI.Responses.ResponseReasoningItem[] = [];
+    const details = (message as any).reasoning_details;
+
+    if (Array.isArray(details) && details.length > 0) {
+      let summary: { type: "summary_text"; text: string }[] = [];
+      const flush = (id?: string, encrypted?: string | null) => {
+        if (summary.length === 0 && !encrypted) return;
+        items.push({
+          type: "reasoning",
+          id: id ?? `rs_${this.generateId()}`,
+          summary,
+          ...(encrypted ? { encrypted_content: encrypted } : {}),
+        } as any);
+        summary = [];
+      };
+      for (const d of details) {
+        if (d?.type === "reasoning.summary" && typeof d.summary === "string") {
+          summary.push({ type: "summary_text", text: d.summary });
+        } else if (d?.type === "reasoning.encrypted" && typeof d.data === "string") {
+          flush(typeof d.id === "string" ? d.id : undefined, d.data);
+        }
+      }
+      flush();
+      return items;
+    }
+
+    // Fallback: only a plain `reasoning` string, no structured details.
+    const reasoning = (message as any).reasoning;
+    if (typeof reasoning === "string" && reasoning.length > 0) {
+      items.push({
+        type: "reasoning",
+        id: `rs_${this.generateId()}`,
+        summary: [{ type: "summary_text", text: reasoning }],
+      } as any);
+    }
+    return items;
+  }
+
+  private generateId(): string {
+    return Math.random().toString(36).substring(2, 15);
   }
 
   private convertAssistantMessage(
@@ -869,13 +921,39 @@ export class ChatCompletionToResponsesConverter {
     return null;
   }
 
-  private handleOutputItemDone(event: OpenAI.Responses.ResponseOutputItemDoneEvent): void {
+  private handleOutputItemDone(
+    event: OpenAI.Responses.ResponseOutputItemDoneEvent
+  ): OpenAI.ChatCompletionChunk | null {
     const item = event.item;
     if (item?.type === "web_search_call") {
       if (item.status === "completed" && item.action.type === "search") {
         this.streamState.webSearchCount++;
       }
+      return null;
     }
+    // Emit the encrypted reasoning (the Responses "signature") once the reasoning
+    // item is complete, mirroring the non-streaming convertReasoning output.
+    if (item?.type === "reasoning") {
+      const ri = item as OpenAI.Responses.ResponseReasoningItem;
+      if (ri.encrypted_content) {
+        return this.makeChunk({
+          role: "assistant",
+          content: "",
+          ...{
+            reasoning_details: [
+              {
+                id: ri.id,
+                index: "0",
+                type: "reasoning.encrypted",
+                format: "openai-responses-v1",
+                data: ri.encrypted_content,
+              },
+            ],
+          },
+        } as any);
+      }
+    }
+    return null;
   }
 
   private handleTextDelta(

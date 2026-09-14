@@ -218,6 +218,55 @@ describe("ChatCompletionToResponsesConverter", () => {
       expect((result.reasoning as any).effort).toBe("high");
     });
 
+    it("rebuilds reasoning input items from assistant reasoning_details", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "Hi" },
+          {
+            role: "assistant",
+            content: "Hello",
+            reasoning_details: [
+              {
+                index: "0",
+                type: "reasoning.summary",
+                format: "openai-responses-v1",
+                summary: "Think ",
+              },
+              {
+                index: "0",
+                type: "reasoning.summary",
+                format: "openai-responses-v1",
+                summary: "hard.",
+              },
+              {
+                id: "rs_orig",
+                index: "0",
+                type: "reasoning.encrypted",
+                format: "openai-responses-v1",
+                data: "enc-1",
+              },
+            ],
+          } as any,
+        ],
+      });
+
+      const reasoning = (result.input as any[]).find(i => i.type === "reasoning");
+      expect(reasoning).toBeDefined();
+      expect(reasoning.id).toBe("rs_orig");
+      expect(reasoning.encrypted_content).toBe("enc-1");
+      expect(reasoning.summary).toEqual([
+        { type: "summary_text", text: "Think " },
+        { type: "summary_text", text: "hard." },
+      ]);
+      // Reasoning must precede the assistant message in Responses input order.
+      const reasoningIdx = (result.input as any[]).findIndex(i => i.type === "reasoning");
+      const msgIdx = (result.input as any[]).findIndex(
+        i => i.type === "message" && i.role === "assistant"
+      );
+      expect(reasoningIdx).toBeLessThan(msgIdx);
+    });
+
     it("maps top_logprobs to include", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",
@@ -1370,6 +1419,35 @@ describe("ChatCompletionToResponsesConverter", () => {
       );
 
       expect((result.choices[0].delta as any).reasoning).toBe("Thinking...");
+    });
+
+    it("emits reasoning.encrypted on reasoning output_item.done", () => {
+      const c = new ChatCompletionToResponsesConverter();
+      initStream(c);
+
+      const result = first(
+        c.convertStreamEvent({
+          type: "response.output_item.done",
+          output_index: 0,
+          item: {
+            type: "reasoning",
+            id: "rs_1",
+            summary: [{ type: "summary_text", text: "Thinking..." }],
+            encrypted_content: "enc-abc",
+          },
+          sequence_number: 2,
+        } as any)
+      );
+
+      expect((result.choices[0].delta as any).reasoning_details).toEqual([
+        {
+          id: "rs_1",
+          index: "0",
+          type: "reasoning.encrypted",
+          format: "openai-responses-v1",
+          data: "enc-abc",
+        },
+      ]);
     });
 
     it("counts web search when output_item.done completes a search", () => {
