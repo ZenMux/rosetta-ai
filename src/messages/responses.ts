@@ -4,12 +4,6 @@ import type Anthropic from "@anthropic-ai/sdk";
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 
-// The Responses backend binds a reasoning item's encrypted_content to its id, so
-// the id must survive the round-trip. Anthropic thinking blocks carry no id, so
-// we pack {id, encrypted_content} into the opaque `signature` string and unpack
-// it when converting the follow-up request back to Responses input.
-const REASONING_SIG_PREFIX = "rosetta-ai/responses-reasoning:v1:";
-
 interface StreamState {
   id: string;
   model: string;
@@ -599,31 +593,27 @@ export class MessagesToResponsesConverter {
     return Math.random().toString(36).substring(2, 15);
   }
 
-  // Encode the Responses reasoning id + encrypted_content into an opaque signature
-  // string. Returns "" when there is no encrypted_content to preserve.
+  // Pack the Responses reasoning id + encrypted_content into the opaque Anthropic
+  // `signature` (base64url JSON, no prefix) so the backend-bound id survives the
+  // round-trip. Returns "" when there is no encrypted_content to preserve.
   private packReasoningSignature(id: string, encryptedContent?: string | null): string {
     if (!encryptedContent) return "";
-    const data = Buffer.from(
+    return Buffer.from(
       JSON.stringify({ id, encrypted_content: encryptedContent }),
       "utf8"
     ).toString("base64url");
-    return `${REASONING_SIG_PREFIX}${data}`;
   }
 
-  // Recover { id, encrypted_content } from a packed signature. Falls back to
-  // treating the raw signature as encrypted_content (id undefined) for
-  // signatures not produced by this converter.
+  // Recover { id, encrypted_content } from a packed signature. Signatures not
+  // produced by this converter (or otherwise undecodable) fall back to being
+  // treated as raw encrypted_content with no id.
   private unpackReasoningSignature(signature?: string): {
     id?: string;
     encryptedContent: string | null;
   } {
     if (!signature) return { encryptedContent: null };
-    if (!signature.startsWith(REASONING_SIG_PREFIX)) {
-      return { encryptedContent: signature };
-    }
     try {
-      const encoded = signature.slice(REASONING_SIG_PREFIX.length);
-      const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+      const parsed = JSON.parse(Buffer.from(signature, "base64url").toString("utf8"));
       if (parsed && typeof parsed.encrypted_content === "string") {
         return {
           id: typeof parsed.id === "string" ? parsed.id : undefined,
@@ -631,7 +621,7 @@ export class MessagesToResponsesConverter {
         };
       }
     } catch {
-      // fall through
+      // not a packed signature
     }
     return { encryptedContent: signature };
   }
