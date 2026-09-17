@@ -267,6 +267,30 @@ describe("ChatCompletionToResponsesConverter", () => {
       expect(reasoningIdx).toBeLessThan(msgIdx);
     });
 
+    it("drops reasoning without encrypted_content (avoids fabricated-id error)", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "Hi" },
+          {
+            role: "assistant",
+            content: null,
+            reasoning: "Some thoughts with no encrypted content.",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "read", arguments: "{}" },
+              },
+            ],
+          } as any,
+        ],
+      });
+
+      expect((result.input as any[]).some(i => i.type === "reasoning")).toBe(false);
+      expect((result.input as any[]).some(i => i.type === "function_call")).toBe(true);
+    });
+
     it("maps top_logprobs to include", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",
