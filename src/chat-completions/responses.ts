@@ -469,38 +469,25 @@ export class ChatCompletionToResponsesConverter {
   ): OpenAI.Responses.ResponseReasoningItem[] {
     const items: OpenAI.Responses.ResponseReasoningItem[] = [];
     const details = (message as any).reasoning_details;
+    if (!Array.isArray(details) || details.length === 0) return items;
 
-    if (Array.isArray(details) && details.length > 0) {
-      let summary: { type: "summary_text"; text: string }[] = [];
-      const flush = (id?: string, encrypted?: string | null) => {
-        if (summary.length === 0 && !encrypted) return;
+    // Only reasoning that carries encrypted_content can be sent back: the
+    // Responses backend either matches a real stored id or reconstructs from
+    // encrypted_content. A summary-only item with a fabricated id is rejected
+    // ("item with id rs_... not found"), so drop those groups.
+    let summary: { type: "summary_text"; text: string }[] = [];
+    for (const d of details) {
+      if (d?.type === "reasoning.summary" && typeof d.summary === "string") {
+        summary.push({ type: "summary_text", text: d.summary });
+      } else if (d?.type === "reasoning.encrypted" && typeof d.data === "string") {
         items.push({
           type: "reasoning",
-          id: id ?? `rs_${this.generateId()}`,
+          id: typeof d.id === "string" ? d.id : `rs_${this.generateId()}`,
           summary,
-          ...(encrypted ? { encrypted_content: encrypted } : {}),
+          encrypted_content: d.data,
         } as any);
         summary = [];
-      };
-      for (const d of details) {
-        if (d?.type === "reasoning.summary" && typeof d.summary === "string") {
-          summary.push({ type: "summary_text", text: d.summary });
-        } else if (d?.type === "reasoning.encrypted" && typeof d.data === "string") {
-          flush(typeof d.id === "string" ? d.id : undefined, d.data);
-        }
       }
-      flush();
-      return items;
-    }
-
-    // Fallback: only a plain `reasoning` string, no structured details.
-    const reasoning = (message as any).reasoning;
-    if (typeof reasoning === "string" && reasoning.length > 0) {
-      items.push({
-        type: "reasoning",
-        id: `rs_${this.generateId()}`,
-        summary: [{ type: "summary_text", text: reasoning }],
-      } as any);
     }
     return items;
   }
