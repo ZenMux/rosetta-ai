@@ -991,16 +991,21 @@ export class ResponsesToChatCompletionConverter {
           } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
         } else if (typed.role === "assistant") {
           const textParts: string[] = [];
-          if (Array.isArray(typed.content)) {
+          if (typeof typed.content === "string") {
+            textParts.push(typed.content);
+          } else if (Array.isArray(typed.content)) {
             for (const part of typed.content) {
-              if (part.type === "output_text") textParts.push(part.text);
+              if (part.type === "output_text" || part.type === "input_text") {
+                textParts.push(part.text);
+              }
             }
           }
-          const msg: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = {
-            role: "assistant",
-          };
-          if (textParts.length > 0) msg.content = textParts.join("");
-          messages.push(msg);
+          if (textParts.length > 0) {
+            messages.push({
+              role: "assistant",
+              content: textParts.join(""),
+            });
+          }
         }
       } else if (typed.type === "reasoning") {
         flushToolCalls();

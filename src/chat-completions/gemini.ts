@@ -44,20 +44,26 @@ export class ChatCompletionToGeminiConverter {
           typeof msg.content === "string" ? msg.content : msg.content.map(p => p.text).join("\n");
         systemParts.push({ text });
       } else if (msg.role === "user") {
-        contents.push({
-          role: "user",
-          parts: this.convertUserParts(msg.content),
-        });
+        const parts = this.convertUserParts(msg.content);
+        if (parts.length > 0) {
+          contents.push({
+            role: "user",
+            parts,
+          });
+        }
       } else if (msg.role === "assistant") {
         for (const toolCall of msg.tool_calls ?? []) {
           if (toolCall.type === "function") {
             toolCallNames.set(toolCall.id, toolCall.function.name);
           }
         }
-        contents.push({
-          role: "model",
-          parts: this.convertAssistantParts(msg),
-        });
+        const parts = this.convertAssistantParts(msg);
+        if (parts.length > 0) {
+          contents.push({
+            role: "model",
+            parts,
+          });
+        }
       } else if (msg.role === "tool") {
         this.appendToolResponse(contents, msg, toolCallNames.get(msg.tool_call_id));
       }
@@ -391,6 +397,16 @@ export class ChatCompletionToGeminiConverter {
             },
           });
         }
+      }
+    }
+
+    // Responses reasoning history is represented as the non-standard
+    // reasoning_content field in Chat Completions. The legacy conversion sent
+    // standalone reasoning summaries to Gemini as ordinary model text.
+    if (parts.length === 0) {
+      const reasoningContent = (msg as any).reasoning_content;
+      if (typeof reasoningContent === "string" && reasoningContent.length > 0) {
+        parts.push({ text: reasoningContent });
       }
     }
 

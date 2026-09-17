@@ -78,6 +78,52 @@ describe("ResponsesToChatCompletionConverter", () => {
       ]);
     });
 
+    it("preserves explicitly typed assistant string content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { type: "message", role: "assistant", content: "Earlier assistant answer." },
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect(result.messages).toEqual([
+        { role: "assistant", content: "Earlier assistant answer." },
+        { role: "user", content: "Continue" },
+      ]);
+    });
+
+    it("preserves input_text content on explicitly typed assistant messages", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "input_text", text: "Earlier assistant answer." }],
+          },
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect(result.messages).toEqual([
+        { role: "assistant", content: "Earlier assistant answer." },
+        { role: "user", content: "Continue" },
+      ]);
+    });
+
+    it("omits explicitly typed assistant messages without usable content", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        input: [
+          { type: "message", role: "assistant", content: [] },
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect(result.messages).toEqual([{ role: "user", content: "Continue" }]);
+    });
+
     it("converts easy messages with multiple input parts", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",
