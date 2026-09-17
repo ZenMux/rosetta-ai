@@ -69,6 +69,59 @@ describe("ChatCompletionToGeminiConverter", () => {
       });
     });
 
+    it("converts standalone reasoning_content to legacy model text", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [
+          {
+            role: "assistant",
+            reasoning_content: "Earlier hidden reasoning summary.",
+          } as any,
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect(result.contents as any[]).toEqual([
+        {
+          role: "model",
+          parts: [{ text: "Earlier hidden reasoning summary." }],
+        },
+        { role: "user", parts: [{ text: "Continue" }] },
+      ]);
+    });
+
+    it("does not duplicate reasoning_content when assistant content is present", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [
+          {
+            role: "assistant",
+            content: "Visible answer.",
+            reasoning_content: "Hidden reasoning.",
+          } as any,
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect((result.contents as any[])[0]).toEqual({
+        role: "model",
+        parts: [{ text: "Visible answer." }],
+      });
+    });
+
+    it("omits messages that convert to empty parts", () => {
+      const result = converter.convertRequest({
+        model: "gemini-2.0-flash",
+        messages: [
+          { role: "assistant", content: null },
+          { role: "user", content: [] },
+          { role: "user", content: "Continue" },
+        ],
+      });
+
+      expect(result.contents as any[]).toEqual([{ role: "user", parts: [{ text: "Continue" }] }]);
+    });
+
     it("converts assistant tool_calls to functionCall parts", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
