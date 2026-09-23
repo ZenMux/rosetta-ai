@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
 import type {
   GenerateContentParameters,
   GenerateContentResponse,
@@ -339,8 +340,10 @@ export class GeminiToMessagesConverter {
           result.push({
             name: fd.name ?? "",
             description: fd.description,
-            input_schema: (fd.parametersJsonSchema ??
-              fd.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema,
+            input_schema: sanitizeAnthropicInputSchema(
+              (fd.parametersJsonSchema ??
+                fd.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema
+            ),
           });
         }
       }
