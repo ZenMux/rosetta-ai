@@ -72,7 +72,16 @@ describe("ResponsesToGeminiConverter", () => {
       });
     });
 
-    it("converts function_call and function_call_output", () => {
+    it.each([
+      { output: "72F" },
+      {
+        output: [
+          { type: "input_text" as const, text: "72" },
+          { type: "input_text" as const, text: "F" },
+        ],
+      },
+      { output: [] },
+    ])("converts function_call and preserves function_call_output: %j", ({ output }) => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
         input: [
@@ -89,7 +98,7 @@ describe("ResponsesToGeminiConverter", () => {
             type: "function_call_output",
             id: "fco_1",
             call_id: "call_1",
-            output: "72F",
+            output,
           },
         ],
       });
@@ -102,8 +111,11 @@ describe("ResponsesToGeminiConverter", () => {
       });
 
       const toolParts = (result.contents as any[])[2].parts;
-      expect(toolParts[0].functionResponse).toBeDefined();
-      expect(toolParts[0].functionResponse.id).toBe("call_1");
+      expect(toolParts[0].functionResponse).toEqual({
+        id: "call_1",
+        name: "get_weather",
+        response: { output },
+      });
     });
 
     it("converts function tools to functionDeclarations", () => {
@@ -413,6 +425,80 @@ describe("ResponsesToGeminiConverter", () => {
       expect(msg.content[0].annotations[0].url).toBe("https://example.com");
     });
 
+    it.each([
+      {},
+      { segment: { partIndex: 1, text: "北京" } },
+      { segment: { partIndex: 1, endIndex: 6 } },
+      { segment: { partIndex: 1, startIndex: 0 } },
+      { segment: { partIndex: 9, startIndex: 0, endIndex: 6 } },
+      { segment: { partIndex: 1, startIndex: 0, endIndex: 999 } },
+      { segment: { partIndex: 1, startIndex: 6, endIndex: 0 } },
+    ])("retains the source at 0–0 when its citation cannot be located: %j", support => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: { parts: [{ text: "参考：" }, { text: "北京" }] },
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [{ web: { uri: "https://example.com", title: "Source" } }],
+                groundingSupports: [{ ...support, groundingChunkIndices: [0] }],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const message = result.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({
+        annotations: [
+          {
+            type: "url_citation",
+            url: "https://example.com",
+            title: "Source",
+            start_index: 0,
+            end_index: 0,
+          },
+        ],
+      });
+    });
+
+    it("keeps accurate citations alongside sources with missing or unusable associations", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: { parts: [{ text: "参考：" }, { text: "北京" }] },
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [
+                  { web: { uri: "https://example.com", title: "Located" } },
+                  { web: { title: "Unassociated" } },
+                  { web: { uri: "https://example.com/missing", title: "No indices" } },
+                ],
+                groundingSupports: [
+                  {
+                    segment: { partIndex: 1, startIndex: 0, endIndex: 6 },
+                    groundingChunkIndices: [0, 0],
+                  },
+                  { segment: { partIndex: 1, startIndex: 0, endIndex: 6 } },
+                  { groundingChunkIndices: [99] },
+                ],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const message = result.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({
+        annotations: [
+          { url: "https://example.com", start_index: 3, end_index: 5 },
+          { url: "https://example.com", start_index: 3, end_index: 5 },
+          { url: "", title: "Unassociated", start_index: 0, end_index: 0 },
+          { url: "https://example.com/missing", start_index: 0, end_index: 0 },
+        ],
+      });
+    });
+
     it("converts usage with toolUsePromptTokenCount and thoughtsTokenCount", () => {
       const result = converter.convertResponse(
         makeResponse({
@@ -429,6 +515,203 @@ describe("ResponsesToGeminiConverter", () => {
       expect(result.usage?.input_tokens).toBe(110);
       expect(result.usage?.output_tokens).toBe(70);
       expect(result.usage?.output_tokens_details?.reasoning_tokens).toBe(20);
+    });
+
+    it("keeps the original reasoning/tool/text grouping and distinct unnamed call IDs", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text: "Before " },
+                  { thought: true, text: "First thought" },
+                  { functionCall: { name: "lookup", args: { key: 1 } } },
+                  { text: "after" },
+                  { thought: true, text: "Second thought" },
+                  { functionCall: { name: "lookup", args: { key: 2 } } },
+                ],
+              },
+              finishReason: "STOP",
+            } as Candidate,
+          ],
+        })
+      );
+      expect(result.output.map(item => item.type)).toEqual([
+        "reasoning",
+        "reasoning",
+        "function_call",
+        "function_call",
+        "message",
+      ]);
+      const calls = result.output.filter(item => item.type === "function_call");
+      expect(calls[0].call_id).not.toBe(calls[1].call_id);
+      const message = result.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({ text: "Before after" });
+    });
+
+    it("converts responses independently without consuming an existing stream", () => {
+      const converter = new ResponsesToGeminiConverter();
+      converter.convertStreamChunk(
+        makeResponse({
+          responseId: "stream_id",
+          candidates: [{ content: { parts: [{ text: "Stream " }] } } as Candidate],
+        })
+      );
+      const first = converter.convertResponse(makeResponse({ responseId: "first" }));
+      const second = converter.convertResponse(makeResponse({ responseId: "second" }));
+      expect(first.id).toBe("first");
+      expect(second.id).toBe("second");
+      expect(second.output).toHaveLength(1);
+      expect(second.output[0]).toMatchObject({ content: [{ text: "Hello!" }] });
+      const terminal = converter
+        .convertStreamChunk(
+          makeResponse({
+            responseId: "stream_id",
+            candidates: [
+              {
+                content: { parts: [{ text: "end" }] },
+                finishReason: "STOP",
+              } as Candidate,
+            ],
+          })
+        )
+        .find(event => event.type === "response.completed")!;
+      expect(terminal.response.id).toBe("stream_id");
+      expect(terminal.response.output[0]).toMatchObject({ content: [{ text: "Stream end" }] });
+    });
+
+    it("preserves signatures and namespaced function calls when replaying the output", () => {
+      const response = makeResponse({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { thought: true, text: "Thinking", thoughtSignature: "thought-signature" },
+                { functionCall: { name: "agents___lookup", args: { key: 1 } } },
+                { thoughtSignature: "call-signature" },
+                { text: "Answer", thoughtSignature: "text-signature" },
+                { text: " tail" },
+              ],
+            },
+            finishReason: "STOP",
+          } as Candidate,
+        ],
+      });
+      const original = structuredClone(response);
+      const result = converter.convertResponse(response);
+      const replay = converter.convertRequest({
+        model: "gemini",
+        input: result.output.filter(
+          item =>
+            item.type === "message" || item.type === "reasoning" || item.type === "function_call"
+        ),
+      });
+      const parts = (replay.contents as any[]).flatMap(content => content.parts);
+      expect(parts).toEqual([
+        { thought: true, text: "Thinking", thoughtSignature: "thought-signature" },
+        {
+          functionCall: {
+            id: expect.any(String),
+            name: "agents___lookup",
+            args: { key: 1 },
+          },
+          thoughtSignature: "call-signature",
+        },
+        { text: "Answer", thoughtSignature: "text-signature" },
+        { text: " tail" },
+      ]);
+      expect(response).toEqual(original);
+    });
+
+    it("maps citation byte offsets to the merged text and keeps logprobs null", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                parts: [{ thought: true, text: "Thinking" }, { text: "前缀" }, { text: "你好🌍" }],
+              },
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [{ web: { uri: "https://example.com", title: "Source" } }],
+                groundingSupports: [
+                  {
+                    segment: { partIndex: 2, startIndex: 6, endIndex: 10 },
+                    groundingChunkIndices: [0],
+                  },
+                ],
+              },
+              logprobsResult: {
+                chosenCandidates: [{ token: "前缀你好🌍", logProbability: -0.2 }],
+                topCandidates: [{ candidates: [{ token: "前缀你好🌍", logProbability: -0.2 }] }],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const message = result.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({
+        text: "前缀你好🌍",
+        annotations: [{ url: "https://example.com", start_index: 4, end_index: 5 }],
+        logprobs: [],
+      });
+    });
+
+    it("does not mark truncated tool responses or blocked prompts as completed", () => {
+      const truncated = converter.convertResponse(
+        makeResponse({
+          candidates: [
+            {
+              content: {
+                parts: [{ functionCall: { name: "lookup", args: {} } }, { text: "Partial" }],
+              },
+              finishReason: "MAX_TOKENS",
+            } as Candidate,
+          ],
+        })
+      );
+      expect(truncated.status).toBe("incomplete");
+      expect(truncated.output.find(item => item.type === "message")?.status).toBe("incomplete");
+      const blocked = converter.convertResponse(
+        makeResponse({
+          candidates: [],
+          promptFeedback: { blockReason: "SAFETY" } as any,
+        })
+      );
+      expect(blocked.status).toBe("failed");
+      expect(blocked.error).toMatchObject({ code: "invalid_prompt" });
+      expect(blocked.output).toEqual([]);
+    });
+
+    it("uses default response configuration in both response modes", () => {
+      const converter = new ResponsesToGeminiConverter();
+      const params: OpenAI.Responses.ResponseCreateParams = {
+        model: "gemini",
+        input: "Hello",
+        instructions: "Use JSON",
+        temperature: 0.4,
+        max_output_tokens: 100,
+        parallel_tool_calls: false,
+        tools: [{ type: "function", name: "lookup", parameters: null, strict: false }],
+        text: { format: { type: "json_object" } },
+      };
+      converter.convertRequest(params);
+      const expected = {
+        instructions: null,
+        temperature: null,
+        max_output_tokens: null,
+        parallel_tool_calls: true,
+        text: { format: { type: "text" } },
+        tools: [],
+      };
+      expect(converter.convertResponse(makeResponse())).toMatchObject(expected);
+      const terminal = converter
+        .convertStreamChunk(makeResponse())
+        .find(event => event.type === "response.completed")!;
+      expect(terminal.response).toMatchObject(expected);
     });
   });
 
@@ -468,7 +751,7 @@ describe("ResponsesToGeminiConverter", () => {
       expect(textDelta.delta).toBe("Hello");
     });
 
-    it("emits output_item.added for function_call", () => {
+    it("emits a complete function call once per call ID", () => {
       const c = new ResponsesToGeminiConverter();
       c.convertStreamChunk(makeChunk());
 
@@ -490,6 +773,34 @@ describe("ResponsesToGeminiConverter", () => {
       const itemAdded = events.find(e => e.type === "response.output_item.added") as any;
       expect(itemAdded).toBeDefined();
       expect(itemAdded.item.type).toBe("function_call");
+      expect(
+        events.find(event => event.type === "response.function_call_arguments.delta")
+      ).toMatchObject({ item_id: itemAdded.item.id, delta: '{"city":"SF"}' });
+      const itemDone = events.find(event => event.type === "response.output_item.done")!;
+      expect(itemDone.item).toMatchObject({
+        id: itemAdded.item.id,
+        call_id: "call_1",
+        arguments: '{"city":"SF"}',
+        status: "completed",
+      });
+
+      const terminalEvents = c.convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { functionCall: { id: "call_1", name: "get_weather", args: { city: "NY" } } },
+                ],
+              },
+              finishReason: "STOP",
+            } as Candidate,
+          ],
+        })
+      );
+      expect(terminalEvents.map(event => event.type)).toEqual(["response.completed"]);
+      const terminal = terminalEvents.find(event => event.type === "response.completed")!;
+      expect(terminal.response.output).toEqual([itemDone.item]);
     });
 
     it("emits reasoning_summary_text.delta for thought parts", () => {
@@ -514,6 +825,139 @@ describe("ResponsesToGeminiConverter", () => {
       ) as any;
       expect(reasoningDelta).toBeDefined();
       expect(reasoningDelta.delta).toBe("Thinking...");
+    });
+
+    it.each([
+      {},
+      { segment: { partIndex: 2, text: "北京" } },
+      { segment: { partIndex: 2, endIndex: 6 } },
+      { segment: { partIndex: 2, startIndex: 0 } },
+      { segment: { partIndex: 9, startIndex: 0, endIndex: 6 } },
+      { segment: { partIndex: 0, startIndex: 0, endIndex: 3 } },
+      { segment: { partIndex: 2, startIndex: 0, endIndex: 999 } },
+      { segment: { partIndex: 2, startIndex: 6, endIndex: 0 } },
+      { segment: { partIndex: 2, startIndex: -1, endIndex: 6 } },
+      { segment: { partIndex: 2, startIndex: 0.5, endIndex: 6 } },
+    ])("keeps an unlocatable streamed citation at 0–0: %j", support => {
+      const c = new ResponsesToGeminiConverter();
+      c.convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: {
+                parts: [{ thought: true, text: "Thinking" }, { text: "参考：" }, { text: "北京" }],
+              },
+            },
+          ],
+        })
+      );
+      const events = c.convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [{ web: { uri: "https://example.com", title: "Source" } }],
+                groundingSupports: [{ ...support, groundingChunkIndices: [0] }],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const expected = {
+        type: "url_citation",
+        url: "https://example.com",
+        title: "Source",
+        start_index: 0,
+        end_index: 0,
+      };
+      const terminal = events.find(event => event.type === "response.completed")!;
+      const message = terminal.response.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({ annotations: [expected] });
+      expect(
+        events.find(event => event.type === "response.output_text.annotation.added")
+      ).toMatchObject({ output_index: 1, annotation: expected });
+    });
+
+    it("keeps streamed sources at 0–0 when supports are absent", () => {
+      const events = new ResponsesToGeminiConverter().convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: { parts: [{ text: "Answer" }] },
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [{ web: { uri: "https://example.com", title: "Source" } }],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const terminal = events.find(event => event.type === "response.completed")!;
+      const message = terminal.response.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({
+        annotations: [{ url: "https://example.com", start_index: 0, end_index: 0 }],
+      });
+    });
+
+    it("keeps precise streamed spans, duplicate references and unassociated sources", () => {
+      const events = new ResponsesToGeminiConverter().convertStreamChunk(
+        makeChunk({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { text: "First" },
+                  { functionCall: { id: "call_1", name: "lookup", args: {} } },
+                  { text: "参考：" },
+                  { text: "你好🌍" },
+                ],
+              },
+              finishReason: "STOP",
+              groundingMetadata: {
+                groundingChunks: [
+                  { web: { uri: "https://example.com", title: "Located" } },
+                  { web: { title: "No text association" } },
+                  { web: { uri: "https://example.com/extra", title: "Unassociated" } },
+                ],
+                groundingSupports: [
+                  {
+                    segment: { partIndex: 3, startIndex: 6, endIndex: 10 },
+                    groundingChunkIndices: [0, 0],
+                  },
+                  {
+                    segment: { partIndex: 1, startIndex: 0, endIndex: 1 },
+                    groundingChunkIndices: [1],
+                  },
+                ],
+              },
+            } as Candidate,
+          ],
+        })
+      );
+      const terminal = events.find(event => event.type === "response.completed")!;
+      const messages = terminal.response.output.filter(item => item.type === "message");
+      expect(messages[0].content[0]).toMatchObject({
+        annotations: [
+          { url: "", title: "No text association", start_index: 0, end_index: 0 },
+          { url: "https://example.com/extra", start_index: 0, end_index: 0 },
+        ],
+      });
+      expect(messages[1].content[0]).toMatchObject({
+        text: "参考：你好🌍",
+        annotations: [
+          { url: "https://example.com", start_index: 5, end_index: 6 },
+          { url: "https://example.com", start_index: 5, end_index: 6 },
+        ],
+      });
+      expect(
+        events.filter(event => event.type === "response.output_text.annotation.added")
+      ).toMatchObject([
+        { output_index: 0, annotation_index: 0 },
+        { output_index: 0, annotation_index: 1 },
+        { output_index: 2, annotation_index: 0 },
+        { output_index: 2, annotation_index: 1 },
+      ]);
     });
 
     it("emits response.completed on finish", () => {
@@ -586,6 +1030,9 @@ describe("ResponsesToGeminiConverter", () => {
             {
               content: { role: "model", parts: [{ text: "Hello world" }] },
               finishReason: "STOP",
+              logprobsResult: {
+                chosenCandidates: [{ token: "Hello world", logProbability: -0.2 }],
+              },
             } as any,
           ],
           usageMetadata: {
@@ -606,6 +1053,16 @@ describe("ResponsesToGeminiConverter", () => {
       expect(types).toContain("response.in_progress");
       expect(types).toContain("response.output_text.delta");
       expect(types).toContain("response.completed");
+      const terminal = events.find(event => event.type === "response.completed")!;
+      const message = terminal.response.output.find(item => item.type === "message")!;
+      expect(message.content[0]).toMatchObject({ type: "output_text", logprobs: [] });
+      for (const event of events) {
+        if (
+          event.type === "response.output_text.delta" ||
+          event.type === "response.output_text.done"
+        )
+          expect(event.logprobs).toEqual([]);
+      }
     });
   });
 
@@ -625,6 +1082,7 @@ describe("ResponsesToGeminiConverter", () => {
       const result = converter.convertRequest({
         model: "gemini-2.0-flash",
         input: [
+          { type: "message", role: "assistant", content: [] },
           {
             type: "message",
             role: "assistant",
@@ -633,6 +1091,7 @@ describe("ResponsesToGeminiConverter", () => {
         ],
       } as any);
 
+      expect(result.contents).toHaveLength(1);
       expect((result.contents as any[])[0].role).toBe("model");
       expect((result.contents as any[])[0].parts[0].text).toBe("Hello");
     });
