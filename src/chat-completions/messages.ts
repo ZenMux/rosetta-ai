@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
+import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
 
 type AnthropicMessage = Anthropic.MessageParam;
 type AnthropicContentBlock = Anthropic.ContentBlockParam;
@@ -612,9 +613,11 @@ export class ChatCompletionToMessagesConverter {
           type: "custom",
           name: tool.function.name,
           description: tool.function.description,
-          input_schema: (tool.function.parameters ?? {
-            type: "object",
-          }) as Anthropic.Tool.InputSchema,
+          input_schema: sanitizeAnthropicInputSchema(
+            (tool.function.parameters ?? {
+              type: "object",
+            }) as Anthropic.Tool.InputSchema
+          ),
         };
       }
 

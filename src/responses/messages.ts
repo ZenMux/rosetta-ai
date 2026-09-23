@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
 import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
+import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
 
 type RespResponse = OpenAI.Responses.Response;
 type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
@@ -1018,7 +1019,9 @@ export class ResponsesToMessagesConverter {
         result.push({
           name: tt.name,
           description: tt.description,
-          input_schema: (tt.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema,
+          input_schema: sanitizeAnthropicInputSchema(
+            (tt.parameters ?? { type: "object" }) as Anthropic.Tool.InputSchema
+          ),
         });
       } else if (this.isWebSearch(tt)) {
         result.push({ type: "web_search_20250305", name: "web_search" } as any);
