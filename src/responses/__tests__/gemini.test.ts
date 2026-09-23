@@ -677,7 +677,7 @@ describe("ResponsesToGeminiConverter", () => {
       const parts = (result.contents as any[])[0].parts;
       expect(parts[0].fileData).toEqual({
         fileUri: "https://example.com/img.png",
-        mimeType: "image/*",
+        mimeType: "image/png",
       });
     });
 
