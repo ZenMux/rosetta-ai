@@ -29,6 +29,7 @@ One converter instance handles the full round-trip for a single gateway route.
 | `ChatCompletionToMessagesConverter` | OpenAI Chat Completions | Anthropic Messages |
 | `ChatCompletionToResponsesConverter` | OpenAI Chat Completions | OpenAI Responses |
 | `ChatCompletionToGeminiConverter` | OpenAI Chat Completions | Google Gemini |
+| `ChatCompletionToInteractionsConverter` | OpenAI Chat Completions | Google Interactions V1 |
 | `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
 | `MessagesToResponsesConverter` | Anthropic Messages | OpenAI Responses |
 | `MessagesToGeminiConverter` | Anthropic Messages | Google Gemini |
@@ -40,6 +41,41 @@ One converter instance handles the full round-trip for a single gateway route.
 | `GeminiToResponsesConverter` | Google Gemini | OpenAI Responses |
 
 ## Usage
+
+### OpenAI Chat Completions → Google Interactions V1
+
+```typescript
+import { ChatCompletionToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ChatCompletionToInteractionsConverter();
+const request = converter.convertRequest(openaiRequest);
+// Send request to POST /v1/interactions using your own transport.
+const completion = converter.convertResponse(interaction);
+// Pass parsed V1 events, not raw SSE bytes:
+for await (const chunk of converter.convertStream(interactionEvents)) {
+  // Consume CC chunks.
+}
+```
+
+This converter uses the [V1 steps/step.delta contract](https://ai.google.dev/api/interactions-api-v1),
+not the outputs/content.delta types shipped in `@google/genai@1.52`. Use one instance per request.
+Request conversion supports full-history steps, function calls/results, standard CC image/audio/file
+inputs, JSON output, tool choice and supported generation settings. Explicit settings without a V1
+equivalent (including temperature/top_p, n>1 and parallel_tool_calls=false) raise `InteractionsRequestError`.
+CC's default `store=false` is sent explicitly.
+
+Media generation has no general standard CC output container. By default conversion raises an error
+on media output. A gateway that separately retains native steps/events may opt into
+`new ChatCompletionToInteractionsConverter({ allowUnmappedContent: true })`. In that mode Rosetta
+converts representable CC fields; the gateway must return the native media through its documented
+extension. Reasoning/signature carriers and native history replay are also gateway responsibilities.
+
+Usage preserves the raw snapshot in `usage.interactions`, including unknown fields. Prompt tokens
+come from `total_input_tokens`; completion tokens are visible output plus thought tokens. Tool-use
+tokens are retained separately, following the official V1 example (100 input, 25 output, 50 tool-use,
+125 total). Cumulative SSE usage replaces counters instead of being summed. Missing counters stay
+missing, so usage is typed as partial; callers must check completeness before billing.
+When driving `convertStreamEvent()` manually, call `finishStream()` at EOF to detect truncation.
 
 ### OpenAI Chat Completions → Anthropic Messages
 
