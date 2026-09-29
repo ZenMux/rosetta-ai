@@ -502,3 +502,47 @@ npm run build        # Build
 ## License
 
 Apache-2.0
+
+### OpenAI Responses ↔ Google Interactions V1
+
+The development branch exports `ResponsesToInteractionsConverter` and
+`convertInteractionResponseUsage`. Conversion is direct and uses the V1
+`steps` / `step.delta` contract.
+
+```typescript
+import { ResponsesToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ResponsesToInteractionsConverter();
+const request = converter.convertRequest({
+  model: "your-interactions-model",
+  input: "Hello",
+  store: false,
+});
+// Send request to the Interactions endpoint, then use one response path:
+const response = converter.convertResponse(nativeInteraction);
+// Or: for await (const event of converter.convertStream(nativeEvents)) { ... }
+```
+
+Create a converter per request. It maps Responses items, call IDs, instructions,
+function tools, structured output and supported reasoning controls. Responses
+`store` defaults to true. Unsupported stateful/background execution, strict
+constraints, sampling controls and provider-owned file IDs fail explicitly.
+Function arguments remain JSON objects, and streamed item identities remain
+stable. Terminals wait until EOF so late cumulative usage and malformed streams
+can be checked before reporting completion.
+
+`convertInteractionResponseUsage` preserves the complete source snapshot under
+`interactions`; output tokens include thought tokens exactly once. Missing
+usage returns null and partial snapshots remain partial.
+
+Standard-only conversion rejects media/signatures without a Responses
+representation. Integrators that preserve native extensions can opt into
+`allowUnmappedContent: true`, use `getOutputStepEntries()` to attach complete
+native steps to output items, and use `getInputStepRanges()` to restore native
+history. These hooks do not implement platform storage, routing or credential
+handling. When applying explicit native overrides, call
+`setEffectiveRequest(finalRequest)` before processing the response. Standard
+configuration echoes reflect the effective request; native-only fields without
+an equivalent standard value are omitted and must be retained by the integrator.
+
+This implementation is not yet published as a Responses-capable npm release.

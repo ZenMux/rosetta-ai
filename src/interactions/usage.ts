@@ -7,6 +7,26 @@ export interface InteractionCompletionUsage extends Partial<OpenAI.CompletionUsa
   interactions: InteractionUsage;
 }
 
+export interface InteractionResponseUsage extends Partial<OpenAI.Responses.ResponseUsage> {
+  interactions: InteractionUsage;
+}
+
+export function convertInteractionResponseUsage(
+  usage: InteractionUsage | undefined
+): InteractionResponseUsage | null {
+  if (!usage) return null;
+  const result: InteractionResponseUsage = { interactions: structuredClone(usage) };
+  if (usage.total_input_tokens != null) result.input_tokens = usage.total_input_tokens;
+  if (usage.total_output_tokens != null && usage.total_thought_tokens != null)
+    result.output_tokens = usage.total_output_tokens + usage.total_thought_tokens;
+  if (usage.total_tokens != null) result.total_tokens = usage.total_tokens;
+  if (usage.total_cached_tokens != null)
+    result.input_tokens_details = { cached_tokens: usage.total_cached_tokens };
+  if (usage.total_thought_tokens != null)
+    result.output_tokens_details = { reasoning_tokens: usage.total_thought_tokens };
+  return result;
+}
+
 function modalityTokens(
   items: InteractionModalityTokens[] | undefined,
   modality: string
