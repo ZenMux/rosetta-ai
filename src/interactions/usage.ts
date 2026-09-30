@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { InteractionModalityTokens, InteractionUsage } from "./types";
 
 // A partial provider snapshot must stay partial. Filling absent counters with 0
@@ -9,6 +10,24 @@ export interface InteractionCompletionUsage extends Partial<OpenAI.CompletionUsa
 
 export interface InteractionResponseUsage extends Partial<OpenAI.Responses.ResponseUsage> {
   interactions: InteractionUsage;
+}
+
+export interface InteractionMessageUsage extends Partial<Anthropic.Usage> {
+  interactions: InteractionUsage;
+}
+
+/** Messages separates uncached input from cache reads; native fee aliases keep the total. */
+export function convertInteractionMessageUsage(
+  usage: InteractionUsage | undefined
+): InteractionMessageUsage | undefined {
+  if (!usage) return undefined;
+  const result: InteractionMessageUsage = { interactions: structuredClone(usage) };
+  if (usage.total_input_tokens != null)
+    result.input_tokens = usage.total_input_tokens - (usage.total_cached_tokens ?? 0);
+  if (usage.total_cached_tokens != null) result.cache_read_input_tokens = usage.total_cached_tokens;
+  if (usage.total_output_tokens != null && usage.total_thought_tokens != null)
+    result.output_tokens = usage.total_output_tokens + usage.total_thought_tokens;
+  return result;
 }
 
 export function convertInteractionResponseUsage(

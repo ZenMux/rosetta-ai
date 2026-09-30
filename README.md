@@ -546,3 +546,13 @@ configuration echoes reflect the effective request; native-only fields without
 an equivalent standard value are omitted and must be retained by the integrator.
 
 This implementation is not yet published as a Responses-capable npm release.
+
+## Messages → Google Interactions (development)
+
+`MessagesToInteractionsConverter` directly translates Messages requests and Interactions V1 JSON/SSE responses. It supports text, image/document inputs, function calls/results (including `is_error`), system text, stop sequences, JSON Schema, and adaptive thinking with low/medium/high effort. Model support is separate from protocol support. Unsupported sampling, thinking budgets/disable, strict guarantees, cache controls, built-in Anthropic tools and stored-history parameters are rejected explicitly.
+
+Messages `input_tokens` excludes reported cache reads: `total_input_tokens - (total_cached_tokens ?? 0)`. `cache_read_input_tokens` is emitted only when reported, `output_tokens` includes output plus thought once, and `usage.interactions` preserves the complete original usage. Missing counters are not filled with zero; cache creation is not inferred. Stream usage is cumulative and completed only after the native terminal event and EOF, including late metadata.
+
+The converter exposes `getOutputStepEntries()` and `getInputStepRanges()` for gateway-owned media and signature envelopes. Set `allowUnmappedContent: true` only when the caller preserves those native steps; the default rejects content that needs an extension. Empty stateless native IDs are accepted and a client message ID is generated. Unspecified native `incomplete` results retain a null stop reason instead of inventing a token-limit cause.
+
+The package version remains inherited from the CC base. Release order is CC, then Responses, then Messages; each stage publishes Rosetta before the consuming serverless dependency is updated. Version changes belong in a separate commit.
