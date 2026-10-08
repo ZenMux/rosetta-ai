@@ -247,6 +247,8 @@ describe("GeminiToMessagesConverter", () => {
   describe("convertResponse", () => {
     function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Message {
       return {
+        diagnostics: null,
+        stop_details: null,
         id: "msg_123",
         type: "message",
         role: "assistant",
@@ -255,6 +257,7 @@ describe("GeminiToMessagesConverter", () => {
         stop_reason: "end_turn",
         stop_sequence: null,
         usage: {
+          output_tokens_details: null,
           input_tokens: 10,
           output_tokens: 5,
           cache_creation_input_tokens: null,
@@ -327,6 +330,7 @@ describe("GeminiToMessagesConverter", () => {
       const result = converter.convertResponse(
         makeMessage({
           usage: {
+            output_tokens_details: null,
             input_tokens: 100,
             output_tokens: 50,
             cache_creation_input_tokens: null,
@@ -353,6 +357,8 @@ describe("GeminiToMessagesConverter", () => {
       c.convertStreamEvent({
         type: "message_start",
         message: {
+          diagnostics: null,
+          stop_details: null,
           id: "msg_1",
           type: "message",
           role: "assistant",
@@ -361,6 +367,7 @@ describe("GeminiToMessagesConverter", () => {
           stop_reason: null,
           stop_sequence: null,
           usage: {
+            output_tokens_details: null,
             input_tokens: 10,
             output_tokens: 0,
             cache_creation_input_tokens: null,
@@ -380,6 +387,8 @@ describe("GeminiToMessagesConverter", () => {
       const result = c.convertStreamEvent({
         type: "message_start",
         message: {
+          diagnostics: null,
+          stop_details: null,
           id: "msg_1",
           type: "message",
           role: "assistant",
@@ -388,6 +397,7 @@ describe("GeminiToMessagesConverter", () => {
           stop_reason: null,
           stop_sequence: null,
           usage: {
+            output_tokens_details: null,
             input_tokens: 10,
             output_tokens: 0,
             cache_creation_input_tokens: null,
@@ -484,8 +494,14 @@ describe("GeminiToMessagesConverter", () => {
       c.convertStreamEvent({ type: "content_block_stop", index: 0 });
       c.convertStreamEvent({
         type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        delta: {
+          stop_details: null,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          container: null,
+        },
         usage: {
+          output_tokens_details: null,
           output_tokens: 5,
           input_tokens: null,
           cache_creation_input_tokens: null,
@@ -510,6 +526,8 @@ describe("GeminiToMessagesConverter", () => {
         yield {
           type: "message_start",
           message: {
+            diagnostics: null,
+            stop_details: null,
             id: "msg_1",
             type: "message",
             role: "assistant",
@@ -518,6 +536,7 @@ describe("GeminiToMessagesConverter", () => {
             stop_reason: null,
             stop_sequence: null,
             usage: {
+              output_tokens_details: null,
               input_tokens: 10,
               output_tokens: 0,
               cache_creation_input_tokens: null,
@@ -543,8 +562,14 @@ describe("GeminiToMessagesConverter", () => {
         yield { type: "content_block_stop", index: 0 };
         yield {
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: {
+            output_tokens_details: null,
             output_tokens: 5,
             input_tokens: null,
             cache_creation_input_tokens: null,

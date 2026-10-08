@@ -742,6 +742,10 @@ describe("MessagesToChatCompletionConverter", () => {
 
       const result = converter.convertResponse(input);
 
+      expect(result.diagnostics).toBeNull();
+      expect(result.stop_details).toBeNull();
+      expect(result.usage.output_tokens_details).toBeNull();
+
       expect(result.id).toBe("chatcmpl-123");
       expect(result.model).toBe("gpt-4o");
       expect(result.content).toEqual([{ type: "text", text: "Hello!", citations: null }]);
@@ -1179,6 +1183,9 @@ describe("MessagesToChatCompletionConverter", () => {
 
         expect(types).toContain("content_block_stop");
         expect(types).toContain("message_delta");
+        const sdkDelta = events.find(e => e.type === "message_delta");
+        expect(sdkDelta?.delta.stop_details).toBeNull();
+        expect(sdkDelta?.usage.output_tokens_details).toBeNull();
         expect(types).toContain("message_stop");
       });
 
@@ -1440,6 +1447,9 @@ describe("MessagesToChatCompletionConverter", () => {
         expect(types.filter(t => t === "content_block_delta").length).toBe(2);
         expect(types).toContain("content_block_stop");
         expect(types).toContain("message_delta");
+        const sdkDelta = events.find(e => e.type === "message_delta");
+        expect(sdkDelta?.delta.stop_details).toBeNull();
+        expect(sdkDelta?.usage.output_tokens_details).toBeNull();
         expect(types).toContain("message_stop");
       });
 
@@ -1469,6 +1479,10 @@ describe("MessagesToChatCompletionConverter", () => {
         const types = events.map(e => e.type);
 
         expect(types).toContain("message_start");
+        const sdkStart = events.find(e => e.type === "message_start");
+        expect(sdkStart?.message.diagnostics).toBeNull();
+        expect(sdkStart?.message.stop_details).toBeNull();
+        expect(sdkStart?.message.usage.output_tokens_details).toBeNull();
         expect(types).toContain("content_block_start");
         expect(types.filter(t => t === "content_block_delta").length).toBeGreaterThanOrEqual(1);
         expect(types).toContain("message_stop");
