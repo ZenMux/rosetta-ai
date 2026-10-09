@@ -184,9 +184,11 @@ export class MessagesToGeminiConverter {
       content,
       stop_reason: stopReason,
       stop_sequence: null,
+      diagnostics: null,
+      stop_details: null,
       usage,
       container: null,
-    } as any;
+    };
   }
 
   private buildUsage(metadata: any, candidates?: any[]): any {
@@ -236,6 +238,7 @@ export class MessagesToGeminiConverter {
       trafficType,
       input_tokens: uncachedInputTokens,
       output_tokens: completionTokens,
+      output_tokens_details: null,
       cache_read_input_tokens: cachedContentTokenCount,
       cache_creation_input_tokens: 0,
       server_tool_use: null,
@@ -286,9 +289,12 @@ export class MessagesToGeminiConverter {
           content: [],
           stop_reason: null,
           stop_sequence: null,
+          diagnostics: null,
+          stop_details: null,
           usage: {
             input_tokens: 0,
             output_tokens: 0,
+            output_tokens_details: null,
             cache_creation_input_tokens: null,
             cache_read_input_tokens: null,
             cache_creation: null,
@@ -400,10 +406,11 @@ export class MessagesToGeminiConverter {
         delta: {
           stop_reason: stopReason,
           stop_sequence: null,
+          stop_details: null,
           container: null,
         },
         usage: this.buildUsage(chunk.usageMetadata, chunk.candidates),
-      } as any);
+      });
 
       events.push({ type: "message_stop" });
     }
