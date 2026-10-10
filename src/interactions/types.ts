@@ -1,131 +1,54 @@
-// Interactions V1 uses steps/step.delta. @google/genai 1.52's outputs/content.delta
-// types describe a different wire contract; do not use them for this converter.
-// Source: https://ai.google.dev/static/api/interactions-v1.openapi.json
-export interface InteractionContent {
-  type: string;
-  text?: string;
-  data?: string;
-  uri?: string;
-  mime_type?: string;
-  annotations?: InteractionAnnotation[];
-  [key: string]: unknown;
-}
+import type { Interactions } from "@google/genai";
 
-export interface InteractionAnnotation {
-  type: string;
-  url?: string;
-  title?: string;
-  start_index?: number;
-  end_index?: number;
-  [key: string]: unknown;
-}
+// Standard protocol shapes have one source of truth: the pinned GenAI SDK.
+export type InteractionContent = Interactions.Content;
+export type InteractionAnnotation = Interactions.Annotation;
+export type InteractionStep = Interactions.Step;
+export type InteractionUsage = Interactions.Usage;
+export type InteractionModalityTokens = NonNullable<
+  InteractionUsage["input_tokens_by_modality"]
+>[number];
+export type Interaction = Interactions.Interaction;
+export type InteractionStatus = Interaction["status"];
+export type InteractionGenerationConfig = Interactions.GenerationConfig;
+export type InteractionResponseFormat = Exclude<
+  NonNullable<Interactions.Interaction["response_format"]>,
+  unknown[]
+>;
 
-export interface InteractionStep {
-  type: string;
-  content?: InteractionContent[];
-  summary?: InteractionContent[];
-  signature?: string;
-  id?: string;
-  name?: string;
-  arguments?: Record<string, unknown>;
-  call_id?: string;
-  result?: unknown;
-  [key: string]: unknown;
-}
+// The converter builds a model request body, not SDK transport/agent options.
+export type InteractionCreateParams = Omit<
+  Interactions.CreateModelInteractionParamsNonStreaming,
+  "input"
+> & { input: string | InteractionStep[] };
 
-export interface InteractionModalityTokens {
-  modality?: string;
-  tokens?: number;
-  [key: string]: unknown;
-}
+// Existing stream fixtures start function calls before arguments are available.
+// Keep that tolerance local to start events; complete steps retain SDK requirements.
+export type InteractionStartStep =
+  | Exclude<InteractionStep, { type: "function_call" }>
+  | (Omit<Interactions.FunctionCallStep, "arguments"> &
+      Partial<Pick<Interactions.FunctionCallStep, "arguments">>);
+export type InteractionSnapshot = Interactions.InteractionCompletedEvent["interaction"] &
+  Pick<Interaction, "errors">;
 
-export interface InteractionUsage {
-  total_input_tokens?: number;
-  total_output_tokens?: number;
-  total_thought_tokens?: number;
-  total_tool_use_tokens?: number;
-  total_cached_tokens?: number;
-  total_tokens?: number;
-  input_tokens_by_modality?: InteractionModalityTokens[];
-  output_tokens_by_modality?: InteractionModalityTokens[];
-  cached_tokens_by_modality?: InteractionModalityTokens[];
-  tool_use_tokens_by_modality?: InteractionModalityTokens[];
-  grounding_tool_count?: { type?: string; count?: number; [key: string]: unknown }[];
-  [key: string]: unknown;
-}
-
-export type InteractionStatus =
-  | "in_progress"
-  | "requires_action"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "incomplete";
-
-export interface Interaction {
-  id: string;
-  status: InteractionStatus;
-  model?: string;
-  created?: string;
-  steps?: InteractionStep[];
+// The existing converters also accept independent/late cumulative metadata.
+// StepDelta documents metadata on any event; usage retains its existing precedence.
+type UsageEnvelope = {
+  metadata?: Interactions.StepDelta["metadata"];
   usage?: InteractionUsage;
-  errors?: { code?: string | number; message?: string }[];
-  [key: string]: unknown;
-}
-
-export interface InteractionEvent {
-  event_type: string;
-  event_id?: string;
-  interaction?: Interaction;
+  // Existing Vertex/fixture envelopes may carry the ID outside the resource.
   interaction_id?: string;
-  status?: InteractionStatus;
-  index?: number;
-  step?: InteractionStep;
-  delta?: InteractionContent & {
-    arguments?: string;
-    signature?: string;
-    content?: InteractionContent;
-  };
-  metadata?: { total_usage?: InteractionUsage; [key: string]: unknown };
-  usage?: InteractionUsage;
-  step_usage?: InteractionUsage;
-  error?: { code?: string | number; message?: string };
-  [key: string]: unknown;
-}
-
-export interface InteractionGenerationConfig {
-  max_output_tokens?: number;
-  seed?: number;
-  stop_sequences?: string[];
-  thinking_level?: "minimal" | "low" | "medium" | "high";
-  thinking_summaries?: "auto" | "none";
-  tool_choice?:
-    | "auto"
-    | "any"
-    | "none"
-    | "validated"
-    | { allowed_tools: { mode: "auto" | "any"; tools: string[] } };
-  [key: string]: unknown;
-}
-
-export interface InteractionCreateParams {
-  model: string;
-  input: string | InteractionStep[];
-  system_instruction?: string;
-  generation_config?: InteractionGenerationConfig;
-  tools?: { type: string; name?: string; description?: string; parameters?: object }[];
-  response_format?: InteractionResponseFormat | InteractionResponseFormat[];
-  store?: boolean;
-  stream?: boolean;
-  labels?: Record<string, string>;
-}
-
-export interface InteractionResponseFormat {
-  type: string;
-  mime_type?: string;
-  schema?: object;
-  [key: string]: unknown;
-}
+};
+export type InteractionEvent = (
+  | Exclude<Interactions.InteractionSSEEvent, { event_type: "step.start" | "error" }>
+  | (Omit<Interactions.StepStart, "step"> & { step: InteractionStartStep })
+  // Preserve numeric provider errors already handled by the gateway/tests.
+  | (Omit<Interactions.ErrorEvent, "error"> & {
+      error?: Omit<Interactions.Error, "code"> & { code?: Interactions.Error["code"] | number };
+    })
+  | { event_type: "metadata"; event_id?: string }
+) &
+  UsageEnvelope;
 
 export class InteractionsRequestError extends Error {
   constructor(message: string) {

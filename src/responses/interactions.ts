@@ -6,12 +6,21 @@ import {
   type InteractionCreateParams,
   type InteractionEvent,
   type InteractionStep,
+  type InteractionStartStep,
+  type InteractionSnapshot,
   type InteractionUsage,
 } from "../interactions/types";
 import {
   convertInteractionResponseUsage,
   type InteractionResponseUsage,
 } from "../interactions/usage";
+import {
+  eventInteraction,
+  eventInteractionId,
+  eventStatus,
+  eventUsage,
+} from "../interactions/events";
+import { sameJson, interactionStepContent } from "../interactions/steps";
 import { convertResponsesInteractionRequest } from "./interactions-request";
 
 type Item = OpenAI.Responses.ResponseOutputItem;
@@ -28,17 +37,34 @@ type ReplaceResponse<T> = T extends { response: OpenAI.Responses.Response }
 export type InteractionResponseStreamEvent = ReplaceResponse<OpenAI.Responses.ResponseStreamEvent>;
 type WithoutSequence<T> = T extends unknown ? Omit<T, "sequence_number"> : never;
 
-interface StepState {
-  step: InteractionStep;
-  item: Item;
+interface StateFields {
   outputIndex: number;
   text: string;
-  arguments: string;
-  hasArgumentDeltas: boolean;
-  hasFinalArguments: boolean;
   textStarted: boolean;
   stopped: boolean;
 }
+
+type StepState = StateFields &
+  (
+    | {
+        kind: "function_call";
+        step: Extract<InteractionStartStep, { type: "function_call" }>;
+        item: Extract<Item, { type: "function_call" }>;
+        arguments: string;
+        hasArgumentDeltas: boolean;
+        hasFinalArguments: boolean;
+      }
+    | {
+        kind: "thought";
+        step: Extract<InteractionStartStep, { type: "thought" }>;
+        item: Extract<Item, { type: "reasoning" }>;
+      }
+    | {
+        kind: "output";
+        step: Exclude<InteractionStartStep, { type: "thought" | "function_call" }>;
+        item: Extract<Item, { type: "message" }>;
+      }
+  );
 
 /** Direct Responses ↔ Interactions V1 conversion; platform extensions remain in adapters. */
 export class ResponsesToInteractionsConverter {
@@ -51,7 +77,7 @@ export class ResponsesToInteractionsConverter {
   private sequence = 0;
   private started = false;
   private finished = false;
-  private terminal?: Interaction;
+  private terminal?: InteractionSnapshot;
   private usage?: InteractionUsage;
   private steps = new Map<number, StepState>();
   private seen = new Set<string>();
@@ -78,7 +104,11 @@ export class ResponsesToInteractionsConverter {
   }
 
   /** Native step ownership is shared with adapters, not inferred from array positions there. */
-  getOutputStepEntries(): Array<{ itemId: string; outputIndex: number; step: InteractionStep }> {
+  getOutputStepEntries(): Array<{
+    itemId: string;
+    outputIndex: number;
+    step: InteractionStartStep;
+  }> {
     return [...this.steps.values()].map(state => ({
       itemId: state.item.id!,
       outputIndex: state.outputIndex,
@@ -113,18 +143,19 @@ export class ResponsesToInteractionsConverter {
     if (event.event_id && this.seen.has(event.event_id)) return [];
     if (event.event_id) this.seen.add(event.event_id);
     if (this.finished) throw new InteractionsResponseError("Received event after stream end");
-    const usage = event.interaction?.usage ?? event.metadata?.total_usage ?? event.usage;
+    const usage = eventUsage(event);
+    const interaction = eventInteraction(event);
+    const status = eventStatus(event);
     if (usage) this.usage = { ...this.usage, ...structuredClone(usage) };
     if (event.event_type === "error")
       throw new InteractionsResponseError(
         event.error?.message ?? "Interactions stream failed",
         event.error?.code
       );
-    if (["failed", "cancelled"].includes(event.interaction?.status ?? event.status ?? "")) {
+    if (["failed", "cancelled"].includes(status ?? "")) {
       throw new InteractionsResponseError(
-        event.interaction?.errors?.[0]?.message ??
-          `Interaction ${event.interaction?.status ?? event.status}`,
-        event.interaction?.errors?.[0]?.code
+        interaction?.errors?.[0]?.message ?? `Interaction ${status}`,
+        interaction?.errors?.[0]?.code
       );
     }
     // A terminal event may precede late cumulative usage metadata. Delay Responses' terminal
@@ -132,11 +163,11 @@ export class ResponsesToInteractionsConverter {
     if (this.terminal) {
       if (event.event_type === "interaction.completed")
         throw new InteractionsResponseError("Duplicate interaction.completed without event_id");
-      if (event.event_type.startsWith("step.") || event.interaction)
+      if (event.event_type.startsWith("step.") || interaction)
         throw new InteractionsResponseError("Output event after interaction.completed");
       return [];
     }
-    this.identity(event.interaction, event.interaction_id);
+    this.identity(interaction, eventInteractionId(event));
     const events: InteractionResponseStreamEvent[] = [];
     if (!this.started) {
       this.started = true;
@@ -157,7 +188,7 @@ export class ResponsesToInteractionsConverter {
         throw new InteractionsResponseError("step.delta has no active step");
       const delta = event.delta;
       if (delta.type === "text") {
-        if (state.step.type !== "model_output")
+        if (state.kind !== "output" || state.step.type !== "model_output")
           throw new InteractionsResponseError("Text delta outside model output");
         const text = delta.text ?? "";
         const content = (state.step.content ??= []);
@@ -166,17 +197,17 @@ export class ResponsesToInteractionsConverter {
         else content.push({ type: "text", text });
         events.push(...this.appendText(state, text));
       } else if (delta.type === "thought_summary") {
-        if (state.step.type !== "thought" || delta.content?.type !== "text")
+        if (state.kind !== "thought" || delta.content?.type !== "text")
           throw new InteractionsResponseError("Unsupported thought summary delta");
         (state.step.summary ??= []).push(structuredClone(delta.content));
         events.push(...this.appendText(state, delta.content.text ?? ""));
       } else if (delta.type === "thought_signature") {
-        if (state.step.type !== "thought" || typeof delta.signature !== "string")
+        if (state.kind !== "thought" || typeof delta.signature !== "string")
           throw new InteractionsResponseError("Invalid thought signature delta");
         this.unmapped("thought signature");
         state.step.signature = delta.signature;
       } else if (delta.type === "arguments_delta") {
-        if (state.item.type !== "function_call")
+        if (state.kind !== "function_call")
           throw new InteractionsResponseError("Arguments delta outside function call");
         state.hasArgumentDeltas = true;
         state.arguments += delta.arguments ?? "";
@@ -189,7 +220,7 @@ export class ResponsesToInteractionsConverter {
           })
         );
       } else if (delta.type === "text_annotation_delta") {
-        if (state.item.type !== "message")
+        if (state.kind !== "output" || state.step.type !== "model_output")
           throw new InteractionsResponseError("Text annotation outside model output");
         const last = (state.step.content ?? []).filter(part => part.type === "text").at(-1);
         if (!last) throw new InteractionsResponseError("Annotation without text");
@@ -197,8 +228,13 @@ export class ResponsesToInteractionsConverter {
           ...(last.annotations ?? []),
           ...structuredClone(delta.annotations ?? []),
         ];
-      } else if (["image", "audio", "video", "document"].includes(delta.type)) {
-        if (state.step.type !== "model_output")
+      } else if (
+        delta.type === "image" ||
+        delta.type === "audio" ||
+        delta.type === "video" ||
+        delta.type === "document"
+      ) {
+        if (state.kind !== "output" || state.step.type !== "model_output")
           throw new InteractionsResponseError("Media delta outside model output");
         this.unmapped(delta.type);
         (state.step.content ??= []).push(structuredClone(delta));
@@ -242,7 +278,7 @@ export class ResponsesToInteractionsConverter {
       throw new InteractionsResponseError("requires_action omitted function calls");
     for (const state of this.steps.values()) {
       const { item, outputIndex } = state;
-      if (item.type === "function_call") {
+      if (state.kind === "function_call" && item.type === "function_call") {
         const args = state.hasArgumentDeltas
           ? state.arguments
           : JSON.stringify(state.step.arguments ?? {});
@@ -355,9 +391,15 @@ export class ResponsesToInteractionsConverter {
     return events;
   }
 
-  private startStep(index: number, raw: InteractionStep): InteractionResponseStreamEvent[] {
+  private startStep(index: number, raw: InteractionStartStep): InteractionResponseStreamEvent[] {
     const step = structuredClone(raw);
-    let item: Item;
+    const fields: StateFields = {
+      outputIndex: this.steps.size,
+      text: "",
+      textStarted: false,
+      stopped: false,
+    };
+    let state: StepState;
     if (step.type === "function_call") {
       if (!step.id || !step.name)
         throw new InteractionsResponseError("Function call omitted id or name");
@@ -367,51 +409,59 @@ export class ResponsesToInteractionsConverter {
         )
       )
         throw new InteractionsResponseError("Duplicate function call ID");
-      item = {
-        type: "function_call",
-        id: this.newId("fc"),
-        call_id: step.id,
-        name: step.name,
+      state = {
+        ...fields,
+        kind: "function_call",
+        step,
         arguments: "",
-        status: "in_progress",
+        hasArgumentDeltas: false,
+        hasFinalArguments: false,
+        item: {
+          type: "function_call",
+          id: this.newId("fc"),
+          call_id: step.id,
+          name: step.name,
+          arguments: "",
+          status: "in_progress",
+        },
       };
     } else if (step.type === "thought") {
       if (step.signature) this.unmapped("thought signature");
       if (step.summary?.some(part => part.type !== "text"))
         this.unmapped("thought summary content");
-      item = { type: "reasoning", id: this.newId("rs"), summary: [], status: "in_progress" };
+      state = {
+        ...fields,
+        kind: "thought",
+        step,
+        item: { type: "reasoning", id: this.newId("rs"), summary: [], status: "in_progress" },
+      };
     } else {
       if (step.type !== "model_output") this.unmapped(step.type);
-      for (const part of step.content ?? []) if (part.type !== "text") this.unmapped(part.type);
-      item = {
-        type: "message",
-        id: this.newId("msg"),
-        role: "assistant",
-        status: "in_progress",
-        content: [],
+      for (const part of interactionStepContent(step))
+        if (part.type !== "text") this.unmapped(part.type);
+      state = {
+        ...fields,
+        kind: "output",
+        step,
+        item: {
+          type: "message",
+          id: this.newId("msg"),
+          role: "assistant",
+          status: "in_progress",
+          content: [],
+        },
       };
     }
-    const state: StepState = {
-      step,
-      item,
-      outputIndex: this.steps.size,
-      text: "",
-      arguments: "",
-      hasArgumentDeltas: false,
-      hasFinalArguments: false,
-      textStarted: false,
-      stopped: false,
-    };
     this.steps.set(index, state);
     const events = [
       this.event({
         type: "response.output_item.added",
         output_index: state.outputIndex,
-        item: structuredClone(item),
+        item: structuredClone(state.item),
       }),
     ];
     const text = this.text(step);
-    if (text || (step.content ?? step.summary)?.some(part => part.type === "text"))
+    if (text || interactionStepContent(step).some(part => part.type === "text"))
       events.push(...this.appendText(state, text));
     return events;
   }
@@ -470,29 +520,45 @@ export class ResponsesToInteractionsConverter {
   private reconcile(state: StepState, step: InteractionStep): InteractionResponseStreamEvent[] {
     if (step.type !== state.step.type)
       throw new InteractionsResponseError("Final step type disagrees with stream");
-    if (
-      step.type === "function_call" &&
-      (step.id !== state.step.id || step.name !== state.step.name)
-    )
-      throw new InteractionsResponseError("Final function identity disagrees with stream");
-    const merged = { ...state.step, ...structuredClone(step) };
-    const text = this.text(merged);
+    if (state.kind === "function_call" && step.type === "function_call") {
+      if (step.id !== state.step.id || step.name !== state.step.name)
+        throw new InteractionsResponseError("Final function identity disagrees with stream");
+      state.step = { ...state.step, ...structuredClone(step) };
+      state.hasFinalArguments = step.arguments != null;
+      return [];
+    }
+    if (state.kind === "thought" && step.type === "thought") {
+      if (state.step.signature && step.signature != null && step.signature !== state.step.signature)
+        throw new InteractionsResponseError("Final signature disagrees with stream");
+      if (step.signature) this.unmapped("thought signature");
+      state.step = { ...state.step, ...structuredClone(step) };
+    } else if (
+      state.kind === "output" &&
+      step.type !== "thought" &&
+      step.type !== "function_call"
+    ) {
+      const receivedMedia = interactionStepContent(state.step).filter(part => part.type !== "text");
+      const finalMedia = interactionStepContent(step).filter(part => part.type !== "text");
+      if (
+        "content" in step &&
+        step.content &&
+        receivedMedia.some((part, index) => !sameJson(part, finalMedia[index]))
+      )
+        throw new InteractionsResponseError("Final media disagrees with stream");
+      for (const part of interactionStepContent(step))
+        if (part.type !== "text") this.unmapped(part.type);
+      // Only model/user output has content to accumulate; other native steps are opaque.
+      if (state.step.type === "model_output" && step.type === "model_output")
+        state.step = { ...state.step, ...structuredClone(step) };
+      else if (state.step.type === "user_input" && step.type === "user_input")
+        state.step = { ...state.step, ...structuredClone(step) };
+      else state.step = structuredClone(step);
+    }
+    const text = this.text(state.step);
     if (!text.startsWith(state.text))
       throw new InteractionsResponseError("Final output disagrees with streamed text");
-    if (state.step.signature && step.signature != null && step.signature !== state.step.signature)
-      throw new InteractionsResponseError("Final signature disagrees with stream");
-    if (step.content) {
-      const receivedMedia = (state.step.content ?? []).filter(part => part.type !== "text");
-      const finalMedia = step.content.filter(part => part.type !== "text");
-      if (receivedMedia.some((part, index) => !sameJson(part, finalMedia[index])))
-        throw new InteractionsResponseError("Final media disagrees with stream");
-    }
-    for (const part of step.content ?? []) if (part.type !== "text") this.unmapped(part.type);
-    if (step.signature) this.unmapped("thought signature");
     const events =
       text.length > state.text.length ? this.appendText(state, text.slice(state.text.length)) : [];
-    state.step = merged;
-    state.hasFinalArguments = step.arguments != null;
     return events;
   }
 
@@ -537,22 +603,25 @@ export class ResponsesToInteractionsConverter {
     const format = request?.response_format;
     // Native-only options have no standard echo. Gateways retain the native request.
     const text =
-      format == null || (!Array.isArray(format) && format.mime_type === "text/plain")
+      format == null ||
+      (!Array.isArray(format) && "mime_type" in format && format.mime_type === "text/plain")
         ? { format: { type: "text" } }
         : !Array.isArray(format) &&
             format.type === "text" &&
+            "mime_type" in format &&
             format.mime_type === "application/json"
           ? {
-              format: format.schema
-                ? {
-                    type: "json_schema",
-                    name:
-                      this.params?.text?.format?.type === "json_schema"
-                        ? this.params.text.format.name
-                        : "response",
-                    schema: format.schema,
-                  }
-                : { type: "json_object" },
+              format:
+                "schema" in format && format.schema
+                  ? {
+                      type: "json_schema",
+                      name:
+                        this.params?.text?.format?.type === "json_schema"
+                          ? this.params.text.format.name
+                          : "response",
+                      schema: format.schema,
+                    }
+                  : { type: "json_object" },
             }
           : undefined;
     return {
@@ -562,11 +631,13 @@ export class ResponsesToInteractionsConverter {
           : choice === "any"
             ? "required"
             : typeof choice === "object"
-              ? {
-                  type: "allowed_tools",
-                  mode: choice.allowed_tools.mode === "any" ? "required" : "auto",
-                  tools: choice.allowed_tools.tools.map(name => ({ type: "function", name })),
-                }
+              ? choice.allowed_tools?.tools
+                ? {
+                    type: "allowed_tools",
+                    mode: choice.allowed_tools.mode === "any" ? "required" : "auto",
+                    tools: choice.allowed_tools.tools.map(name => ({ type: "function", name })),
+                  }
+                : undefined
               : choice === "validated"
                 ? undefined
                 : choice,
@@ -593,7 +664,7 @@ export class ResponsesToInteractionsConverter {
   ): InteractionResponseStreamEvent {
     return { ...event, sequence_number: this.sequence++ } as InteractionResponseStreamEvent;
   }
-  private identity(response?: Interaction, id?: string): void {
+  private identity(response?: InteractionSnapshot, id?: string): void {
     if (!this.id) this.id = response?.id || id || this.newId("resp");
     if (response?.model) this.model = response.model;
     const time = response?.created ? Date.parse(response.created) : NaN;
@@ -602,7 +673,7 @@ export class ResponsesToInteractionsConverter {
   private newId(prefix: string): string {
     return `${prefix}_${Math.random().toString(36).slice(2)}`;
   }
-  private checkStatus(response: Interaction): void {
+  private checkStatus(response: InteractionSnapshot): void {
     if (typeof response.id !== "string")
       throw new InteractionsResponseError("Missing interaction ID");
     if (!["completed", "requires_action", "incomplete"].includes(response.status))
@@ -615,8 +686,8 @@ export class ResponsesToInteractionsConverter {
     if (!this.options.allowUnmappedContent)
       throw new InteractionsResponseError(`Interactions ${type} requires a Responses extension`);
   }
-  private text(step: InteractionStep): string {
-    return (step.type === "thought" ? (step.summary ?? []) : (step.content ?? []))
+  private text(step: InteractionStartStep): string {
+    return interactionStepContent(step)
       .filter(part => part.type === "text")
       .map(part => part.text ?? "")
       .join("");
@@ -630,9 +701,11 @@ export class ResponsesToInteractionsConverter {
       throw new InteractionsResponseError("Incomplete or invalid function arguments in stream");
     }
   }
-  private annotations(step: InteractionStep): OpenAI.Responses.ResponseOutputText["annotations"] {
+  private annotations(
+    step: InteractionStartStep
+  ): OpenAI.Responses.ResponseOutputText["annotations"] {
     let offset = 0;
-    return (step.content ?? []).flatMap(part => {
+    return interactionStepContent(step).flatMap(part => {
       if (part.type !== "text") return [];
       const text = part.text ?? "";
       const annotations = (part.annotations ?? []).flatMap((annotation: InteractionAnnotation) => {
@@ -660,16 +733,4 @@ export class ResponsesToInteractionsConverter {
       return annotations;
     });
   }
-}
-
-function sameJson(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
-  const left = a as Record<string, unknown>,
-    right = b as Record<string, unknown>;
-  return (
-    Array.isArray(a) === Array.isArray(b) &&
-    Object.keys(left).length === Object.keys(right).length &&
-    Object.keys(left).every(key => Object.hasOwn(right, key) && sameJson(left[key], right[key]))
-  );
 }

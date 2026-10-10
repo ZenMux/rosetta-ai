@@ -172,6 +172,8 @@ export class MessagesToChatCompletionConverter {
       content,
       stop_reason: this.mapFinishReasonToStopReason(choice?.finish_reason),
       stop_sequence: null,
+      diagnostics: null,
+      stop_details: null,
       usage: this.buildUsage(response.usage),
       container: null,
     };
@@ -203,6 +205,7 @@ export class MessagesToChatCompletionConverter {
       },
       input_tokens: uncachedInputTokens,
       output_tokens: outputTokens,
+      output_tokens_details: null,
       cache_read_input_tokens: cachedTokens,
       server_tool_use:
         webSearch > 0
@@ -294,9 +297,12 @@ export class MessagesToChatCompletionConverter {
           content: [],
           stop_reason: null,
           stop_sequence: null,
+          diagnostics: null,
+          stop_details: null,
           usage: {
             input_tokens: 0,
             output_tokens: 0,
+            output_tokens_details: null,
             cache_creation_input_tokens: null,
             cache_read_input_tokens: null,
             cache_creation: null,
@@ -446,10 +452,11 @@ export class MessagesToChatCompletionConverter {
       delta: {
         stop_reason: state.stopReason,
         stop_sequence: null,
+        stop_details: null,
         container: null,
       },
       usage: this.buildUsage(usage),
-    } as any);
+    });
 
     events.push({ type: "message_stop" });
   }
