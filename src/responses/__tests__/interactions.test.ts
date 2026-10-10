@@ -446,3 +446,20 @@ describe("Interactions → Responses", () => {
     expect(result.usage).toMatchObject({ input_tokens: 7, output_tokens: 42, total_tokens: 49 });
   });
 });
+
+test("native builtin step signatures retain the existing conflict check", () => {
+  const converter = new ResponsesToInteractionsConverter({ allowUnmappedContent: true });
+  const step: InteractionStep = {
+    type: "code_execution_call",
+    id: "code",
+    arguments: { code: "1", language: "python" },
+    signature: "first",
+  };
+  converter.convertStreamEvent({ event_type: "step.start", index: 0, step });
+  expect(() =>
+    converter.convertStreamEvent({
+      event_type: "interaction.completed",
+      interaction: { id: "i", status: "completed", steps: [{ ...step, signature: "different" }] },
+    })
+  ).toThrow("Final signature disagrees");
+});
