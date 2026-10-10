@@ -19,7 +19,7 @@ import {
   eventStatus,
   eventUsage,
 } from "../interactions/events";
-import { interactionStepContent, sameJson } from "../interactions/steps";
+import { interactionStepContent, sameJson, validateFinalStep } from "../interactions/steps";
 import { convertMessagesInteractionRequest } from "./interactions-request";
 
 export type InteractionMessage = Omit<Anthropic.Message, "usage"> & {
@@ -357,36 +357,24 @@ export class MessagesToInteractionsConverter {
     return { type: "content_block_delta", index: state.index, delta: { type: "text_delta", text } };
   }
   private reconcile(state: State, step: InteractionStep): InteractionMessageStreamEvent[] {
-    if (step.type !== state.step.type) fail("Final step type disagrees with stream");
+    validateFinalStep(state.step, step);
     if (state.kind === "function_call" && step.type === "function_call") {
-      if (step.id !== state.step.id || step.name !== state.step.name)
-        fail("Final function identity disagrees with stream");
       state.step = { ...state.step, ...structuredClone(step) };
       state.finalArguments = step.arguments != null;
       return [];
     }
     if (state.kind === "thought" && step.type === "thought") {
-      if (state.step.signature && step.signature != null && state.step.signature !== step.signature)
-        fail("Final signature disagrees with stream");
       state.step = { ...state.step, ...structuredClone(step) };
     } else if (
       state.kind === "output" &&
       step.type !== "thought" &&
       step.type !== "function_call"
     ) {
-      const received = interactionStepContent(state.step).filter(p => p.type !== "text"),
-        final = interactionStepContent(step).filter(p => p.type !== "text");
-      if (
-        "content" in step &&
-        step.content &&
-        received.some((part, index) => !sameJson(part, final[index]))
-      )
-        fail("Final media disagrees with stream");
       if (state.step.type === "model_output" && step.type === "model_output")
         state.step = { ...state.step, ...structuredClone(step) };
       else if (state.step.type === "user_input" && step.type === "user_input")
         state.step = { ...state.step, ...structuredClone(step) };
-      else state.step = structuredClone(step);
+      else Object.assign(state.step, structuredClone(step));
     }
     this.validateContent(state.step);
     const text = this.text(state.step);
