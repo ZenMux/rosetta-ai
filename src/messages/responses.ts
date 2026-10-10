@@ -162,9 +162,11 @@ export class MessagesToResponsesConverter {
       content,
       stop_reason: stopReason,
       stop_sequence: null,
+      diagnostics: null,
+      stop_details: null,
       usage,
       container: null,
-    } as any;
+    };
   }
 
   private buildUsage(usage: any, webSearchCount: number): any {
@@ -192,6 +194,7 @@ export class MessagesToResponsesConverter {
       },
       input_tokens: uncachedInputTokens,
       output_tokens: outputTokens,
+      output_tokens_details: null,
       cache_read_input_tokens: cachedTokens,
       server_tool_use:
         webSearchCount > 0
@@ -240,9 +243,12 @@ export class MessagesToResponsesConverter {
             content: [],
             stop_reason: null,
             stop_sequence: null,
+            diagnostics: null,
+            stop_details: null,
             usage: {
               input_tokens: 0,
               output_tokens: 0,
+              output_tokens_details: null,
               cache_creation_input_tokens: null,
               cache_read_input_tokens: null,
               cache_creation: null,
@@ -365,9 +371,14 @@ export class MessagesToResponsesConverter {
 
         events.push({
           type: "message_delta",
-          delta: { stop_reason: stopReason, stop_sequence: null, container: null },
+          delta: {
+            stop_reason: stopReason,
+            stop_sequence: null,
+            stop_details: null,
+            container: null,
+          },
           usage: this.buildUsage(resp.usage, state.webSearchCount),
-        } as any);
+        });
         events.push({ type: "message_stop" });
         break;
       }
@@ -378,9 +389,14 @@ export class MessagesToResponsesConverter {
 
         events.push({
           type: "message_delta",
-          delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+          delta: {
+            stop_reason: "max_tokens",
+            stop_sequence: null,
+            stop_details: null,
+            container: null,
+          },
           usage: this.buildUsage(resp.usage, state.webSearchCount),
-        } as any);
+        });
         events.push({ type: "message_stop" });
         break;
       }
@@ -388,9 +404,14 @@ export class MessagesToResponsesConverter {
       case "response.failed": {
         events.push({
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            stop_details: null,
+            container: null,
+          },
           usage: this.buildUsage(null, state.webSearchCount),
-        } as any);
+        });
         events.push({ type: "message_stop" });
         break;
       }
