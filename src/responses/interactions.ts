@@ -20,7 +20,7 @@ import {
   eventStatus,
   eventUsage,
 } from "../interactions/events";
-import { sameJson, interactionStepContent } from "../interactions/steps";
+import { sameJson, interactionStepContent, validateFinalStep } from "../interactions/steps";
 import { convertResponsesInteractionRequest } from "./interactions-request";
 
 type Item = OpenAI.Responses.ResponseOutputItem;
@@ -518,33 +518,20 @@ export class ResponsesToInteractionsConverter {
   }
 
   private reconcile(state: StepState, step: InteractionStep): InteractionResponseStreamEvent[] {
-    if (step.type !== state.step.type)
-      throw new InteractionsResponseError("Final step type disagrees with stream");
+    validateFinalStep(state.step, step);
+    if ("signature" in step && step.signature) this.unmapped("thought signature");
     if (state.kind === "function_call" && step.type === "function_call") {
-      if (step.id !== state.step.id || step.name !== state.step.name)
-        throw new InteractionsResponseError("Final function identity disagrees with stream");
       state.step = { ...state.step, ...structuredClone(step) };
       state.hasFinalArguments = step.arguments != null;
       return [];
     }
     if (state.kind === "thought" && step.type === "thought") {
-      if (state.step.signature && step.signature != null && step.signature !== state.step.signature)
-        throw new InteractionsResponseError("Final signature disagrees with stream");
-      if (step.signature) this.unmapped("thought signature");
       state.step = { ...state.step, ...structuredClone(step) };
     } else if (
       state.kind === "output" &&
       step.type !== "thought" &&
       step.type !== "function_call"
     ) {
-      const receivedMedia = interactionStepContent(state.step).filter(part => part.type !== "text");
-      const finalMedia = interactionStepContent(step).filter(part => part.type !== "text");
-      if (
-        "content" in step &&
-        step.content &&
-        receivedMedia.some((part, index) => !sameJson(part, finalMedia[index]))
-      )
-        throw new InteractionsResponseError("Final media disagrees with stream");
       for (const part of interactionStepContent(step))
         if (part.type !== "text") this.unmapped(part.type);
       // Only model/user output has content to accumulate; other native steps are opaque.
@@ -552,7 +539,7 @@ export class ResponsesToInteractionsConverter {
         state.step = { ...state.step, ...structuredClone(step) };
       else if (state.step.type === "user_input" && step.type === "user_input")
         state.step = { ...state.step, ...structuredClone(step) };
-      else state.step = structuredClone(step);
+      else Object.assign(state.step, structuredClone(step));
     }
     const text = this.text(state.step);
     if (!text.startsWith(state.text))
