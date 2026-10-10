@@ -21,7 +21,10 @@ export function convertInteractionMessageUsage(
   usage: InteractionUsage | undefined
 ): InteractionMessageUsage | undefined {
   if (!usage) return undefined;
-  const result: InteractionMessageUsage = { interactions: structuredClone(usage) };
+  const result: InteractionMessageUsage = {
+    interactions: structuredClone(usage),
+    output_tokens_details: null,
+  };
   if (usage.total_input_tokens != null)
     result.input_tokens = usage.total_input_tokens - (usage.total_cached_tokens ?? 0);
   if (usage.total_cached_tokens != null) result.cache_read_input_tokens = usage.total_cached_tokens;

@@ -7,11 +7,11 @@ import {
   type InteractionStep,
 } from "../interactions/types";
 
-type RecordValue = Record<string, any>;
+type RecordValue = Record<string, unknown>;
 export function validateMessagesInteractionsParameters(
   params: Anthropic.MessageCreateParams
 ): void {
-  const p = params as unknown as RecordValue;
+  const p = params;
   const known = new Set([
     "model",
     "messages",
@@ -26,7 +26,7 @@ export function validateMessagesInteractionsParameters(
   ]);
   for (const [key, value] of Object.entries(p))
     if (value != null && !known.has(key))
-      fail(`${key} has no equivalent in Messages to Interactions V1`);
+      fail(`${key} is not supported by the Messages to Interactions converter`);
   if (p.max_tokens != null && (!Number.isSafeInteger(p.max_tokens) || p.max_tokens <= 0))
     fail("max_tokens must be a positive integer");
   if (p.stream != null && typeof p.stream !== "boolean") fail("stream must be a boolean");
@@ -42,7 +42,11 @@ export function validateMessagesInteractionsParameters(
       )
     )
       fail("Unsupported thinking option for Interactions V1");
-    if (thinking.display != null && !["summarized", "omitted"].includes(thinking.display))
+    if (
+      thinking.display != null &&
+      (typeof thinking.display !== "string" ||
+        !["summarized", "omitted"].includes(thinking.display))
+    )
       fail("Unsupported thinking.display");
   }
   if (p.output_config != null) {
@@ -53,7 +57,10 @@ export function validateMessagesInteractionsParameters(
       )
     )
       fail("Unsupported output_config option");
-    if (config.effort != null && !["low", "medium", "high"].includes(config.effort))
+    if (
+      config.effort != null &&
+      (typeof config.effort !== "string" || !["low", "medium", "high"].includes(config.effort))
+    )
       fail("Unsupported output_config.effort for Interactions V1");
     if (config.format != null) {
       const format = object(config.format, "output_config.format");
@@ -85,7 +92,7 @@ export function validateMessagesInteractionsParameters(
   }
   if (p.tool_choice != null) {
     const choice = object(p.tool_choice, "tool_choice");
-    if (!["auto", "any", "none", "tool"].includes(choice.type))
+    if (typeof choice.type !== "string" || !["auto", "any", "none", "tool"].includes(choice.type))
       fail("Unsupported tool_choice.type");
     if (choice.disable_parallel_tool_use === true)
       fail("Interactions V1 cannot enforce disable_parallel_tool_use=true");
@@ -97,7 +104,7 @@ export function convertMessagesInteractionRequest(
   onMessage: (index: number, start: number, end: number) => void
 ): InteractionCreateParams {
   validateMessagesInteractionsParameters(params);
-  const p = params as unknown as RecordValue;
+  const p = params;
   const model = nonempty(p.model, "model");
   if (!Array.isArray(p.messages) || !p.messages.length) fail("messages must be a nonempty array");
   const input: InteractionStep[] = [];
@@ -105,7 +112,7 @@ export function convertMessagesInteractionRequest(
   const results = new Set<string>();
   for (const [index, raw] of p.messages.entries()) {
     const message = object(raw, "message");
-    if (!["user", "assistant"].includes(message.role))
+    if (message.role !== "user" && message.role !== "assistant")
       fail("Messages role must be user or assistant");
     if (message.interactions != null)
       fail("Native history requires the gateway Interactions extension");
@@ -131,7 +138,8 @@ export function convertMessagesInteractionRequest(
         const id = nonempty(block.id, "tool_use.id"),
           name = nonempty(block.name, "tool_use.name");
         if (calls.has(id)) fail("Duplicate tool_use.id");
-        if (block.caller != null && block.caller.type !== "direct") fail("Unsupported tool caller");
+        if (block.caller != null && object(block.caller, "tool caller").type !== "direct")
+          fail("Unsupported tool caller");
         calls.set(id, name);
         input.push({
           type: "function_call",
@@ -179,10 +187,12 @@ export function convertMessagesInteractionRequest(
   if (p.stop_sequences != null) config.stop_sequences = [...p.stop_sequences];
   if (p.output_config?.effort != null) config.thinking_level = p.output_config.effort;
   if (p.thinking != null)
-    config.thinking_summaries = p.thinking.display === "omitted" ? "none" : "auto";
+    config.thinking_summaries =
+      object(p.thinking, "thinking").display === "omitted" ? "none" : "auto";
   const tools: NonNullable<InteractionCreateParams["tools"]> = [];
   const names = new Set<string>();
-  for (const tool of p.tools ?? []) {
+  for (const raw of p.tools ?? []) {
+    const tool = object(raw, "tool");
     const name = nonempty(tool.name, "tool.name");
     if (names.has(name)) fail("Duplicate tool name");
     names.add(name);

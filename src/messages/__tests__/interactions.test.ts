@@ -7,7 +7,7 @@ const params = {
   max_tokens: 1024,
   messages: [{ role: "user" as const, content: "hello" }],
 };
-const usage: InteractionUsage = {
+const usage: InteractionUsage & { future_usage: { count: number } } = {
   total_input_tokens: 100,
   total_cached_tokens: 30,
   total_output_tokens: 20,
@@ -55,7 +55,14 @@ function events(raw = response()): InteractionEvent[] {
     result.push({
       event_type: "step.start",
       index,
-      step: { type: step.type, ...(step.id && { id: step.id, name: step.name }) },
+      step:
+        step.type === "function_call"
+          ? { type: "function_call", id: step.id, name: step.name }
+          : step.type === "thought"
+            ? { type: "thought" }
+            : step.type === "model_output"
+              ? { type: "model_output" }
+              : step,
     });
     if (step.type === "thought") {
       result.push({
@@ -80,7 +87,7 @@ function events(raw = response()): InteractionEvent[] {
         delta: { type: "arguments_delta", arguments: '"杭州"}' },
       });
     } else
-      for (const part of step.content ?? [])
+      for (const part of "content" in step ? (step.content ?? []) : [])
         result.push({ event_type: "step.delta", index, delta: part });
     result.push({ event_type: "step.stop", index, step_usage: { total_input_tokens: 99999 } });
   });
@@ -96,6 +103,7 @@ describe("Messages Interactions usage", () => {
       cache_read_input_tokens: 30,
       output_tokens: 27,
       interactions: usage,
+      output_tokens_details: null,
     });
     expect(actual.interactions).not.toBe(usage);
     expect(actual.input_tokens! + actual.cache_read_input_tokens! + actual.output_tokens!).toBe(
@@ -126,7 +134,9 @@ describe("Messages Interactions usage", () => {
       { cache_read_input_tokens: 5, interactions: { total_cached_tokens: 5 } },
     ],
   ])("does not invent missing counters %#", (raw, expected) =>
-    expect(convertInteractionMessageUsage(raw as InteractionUsage)).toEqual(expected)
+    expect(convertInteractionMessageUsage(raw as InteractionUsage)).toEqual(
+      expected == null ? expected : { ...expected, output_tokens_details: null }
+    )
   );
   test("preserves contradictory counters for diagnostics", () => {
     const raw = {
@@ -137,6 +147,7 @@ describe("Messages Interactions usage", () => {
       total_tokens: 999,
     };
     expect(convertInteractionMessageUsage(raw)).toEqual({
+      output_tokens_details: null,
       input_tokens: -2,
       cache_read_input_tokens: 4,
       output_tokens: 2,
@@ -154,6 +165,7 @@ describe("Messages Interactions usage", () => {
       total_tokens: total,
     };
     expect(convertInteractionMessageUsage(raw)).toEqual({
+      output_tokens_details: null,
       input_tokens: input,
       output_tokens: expected,
       interactions: raw,
@@ -326,6 +338,9 @@ describe("Messages Interactions JSON/SSE", () => {
       { type: "text", text: "hello", citations: null },
     ]);
     expect(msg.usage?.interactions).toEqual(raw.usage);
+    expect(msg.diagnostics).toBeNull();
+    expect(msg.stop_details).toBeNull();
+    expect(msg.usage?.output_tokens_details).toBeNull();
     expect(msg.stop_reason).toBe("end_turn");
   });
   test("emits each block once and terminal usage after late cumulative metadata", () => {
@@ -344,6 +359,7 @@ describe("Messages Interactions JSON/SSE", () => {
     expect(out.at(-1)?.type).toBe("message_stop");
     const terminal = out.find(e => e.type === "message_delta")!;
     expect(terminal.type === "message_delta" && terminal.usage).toEqual({
+      output_tokens_details: null,
       input_tokens: 100,
       cache_read_input_tokens: 0,
       output_tokens: 28,
@@ -393,10 +409,8 @@ describe("Messages Interactions JSON/SSE", () => {
   });
   test("preserves media for the gateway and rejects it without extension support", () => {
     const raw = response();
-    raw.steps!.push({
-      type: "model_output",
-      content: [{ type: "video", data: "YWJj", mime_type: "video/mp4", future: "x" }],
-    });
+    const media = { type: "video" as const, data: "YWJj", mime_type: "video/mp4", future: "x" };
+    raw.steps!.push({ type: "model_output", content: [media] });
     const c = converter();
     c.convertResponse(raw);
     expect(c.getOutputStepEntries().map(e => e.step)).toEqual(raw.steps);
@@ -410,9 +424,15 @@ describe("Messages Interactions JSON/SSE", () => {
     const out = events(raw).flatMap(e => c.convertStreamEvent(e));
     out.push(...c.finishStream());
     const start = out[0];
-    expect(start.type === "message_start" && start.message.usage).toEqual({});
+    if (start.type !== "message_start") throw new Error("Missing start");
+    expect(start.message.diagnostics).toBeNull();
+    expect(start.message.stop_details).toBeNull();
+    expect(start.type === "message_start" && start.message.usage).toEqual({
+      output_tokens_details: null,
+    });
     const end = out.find(e => e.type === "message_delta");
-    expect(end?.type === "message_delta" && end.usage).toEqual({});
+    expect(end?.type === "message_delta" && end.delta.stop_details).toBeNull();
+    expect(end?.type === "message_delta" && end.usage).toEqual({ output_tokens_details: null });
   });
   test.each([
     "missing-terminal",
@@ -429,15 +449,28 @@ describe("Messages Interactions JSON/SSE", () => {
       ev.splice(2, 0, { event_type: "error", error: { code: 400, message: "bad" } });
     if (scenario === "after-terminal")
       ev.push({ event_type: "step.start", index: 9, step: { type: "model_output" } });
-    if (scenario === "mismatched-text")
-      ev.at(-1)!.interaction!.steps![1].content = [{ type: "text", text: "different" }];
-    if (scenario === "mismatched-signature")
-      ev.at(-1)!.interaction!.steps![0].signature = "different";
+    const last = ev.at(-1);
+    if (last?.event_type === "interaction.completed") {
+      const text = last.interaction.steps?.[1],
+        thought = last.interaction.steps?.[0];
+      if (scenario === "mismatched-text" && text?.type === "model_output")
+        text.content = [{ type: "text", text: "different" }];
+      if (scenario === "mismatched-signature" && thought?.type === "thought")
+        thought.signature = "different";
+    }
     if (scenario === "invalid-arguments") {
       const raw = response();
       raw.steps = [{ type: "function_call", id: "call_1", name: "f", arguments: {} }];
       ev.splice(0, ev.length, ...events(raw));
-      ev.find(e => e.delta?.type === "arguments_delta")!.delta!.arguments = "broken";
+      const argumentEvent = ev.find(
+        e => e.event_type === "step.delta" && e.delta.type === "arguments_delta"
+      );
+      if (
+        argumentEvent?.event_type !== "step.delta" ||
+        argumentEvent.delta.type !== "arguments_delta"
+      )
+        throw new Error("Missing argument fixture");
+      argumentEvent.delta.arguments = "broken";
     }
     expect(() => {
       ev.forEach(e => c.convertStreamEvent(e));
