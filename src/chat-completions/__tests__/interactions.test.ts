@@ -229,7 +229,7 @@ describe("CC to Interactions V1", () => {
   });
 
   test("preserves all modality, grounding and future usage fields exactly, including zero", () => {
-    const raw: InteractionUsage = {
+    const raw = {
       ...usage,
       total_cached_tokens: 3,
       input_tokens_by_modality: [
@@ -532,14 +532,14 @@ describe("CC to Interactions V1", () => {
     expect(result.usage?.total_tokens).toBe(49);
   });
 
-  test.each(["image", "audio", "video", "document"])(
+  test.each(["image", "audio", "video", "document"] as const)(
     "requires an explicit native carrier for %s output",
     type => {
       const media = {
         ...response,
         steps: [
           {
-            type: "model_output",
+            type: "model_output" as const,
             content: [{ type, mime_type: "application/octet-stream", data: "YWJj" }],
           },
         ],

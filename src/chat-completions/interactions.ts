@@ -5,10 +5,17 @@ import {
   type InteractionAnnotation,
   type InteractionCreateParams,
   type InteractionEvent,
-  type InteractionStep,
+  type InteractionStartStep,
+  type InteractionSnapshot,
   type InteractionUsage,
 } from "../interactions/types";
 import { convertInteractionUsage, type InteractionCompletionUsage } from "../interactions/usage";
+import {
+  eventInteraction,
+  eventInteractionId,
+  eventStatus,
+  eventUsage,
+} from "../interactions/events";
 import { convertChatCompletionRequest } from "./interactions-request";
 
 export type InteractionChatCompletion = Omit<OpenAI.ChatCompletion, "usage"> & {
@@ -18,15 +25,25 @@ export type InteractionChatCompletionChunk = Omit<OpenAI.ChatCompletionChunk, "u
   usage?: InteractionCompletionUsage;
 };
 
-interface StepState {
-  step: InteractionStep;
-  toolIndex?: number;
-  arguments: string;
-  sentArguments: boolean;
-  text: string;
-  textOffset: number;
-  stopped: boolean;
-}
+type StepState = { stopped: boolean } & (
+  | {
+      kind: "model_output";
+      step: Extract<InteractionStartStep, { type: "model_output" }>;
+      text: string;
+      textOffset: number;
+    }
+  | {
+      kind: "function_call";
+      step: Extract<InteractionStartStep, { type: "function_call" }>;
+      toolIndex: number;
+      arguments: string;
+      sentArguments: boolean;
+    }
+  | {
+      kind: "other";
+      step: Exclude<InteractionStartStep, { type: "model_output" | "function_call" }>;
+    }
+);
 
 export class ChatCompletionToInteractionsConverter {
   constructor(private readonly options: { allowUnmappedContent?: boolean } = {}) {}
@@ -117,25 +134,26 @@ export class ChatCompletionToInteractionsConverter {
     if (this.completed)
       throw new InteractionsResponseError("Received an event after interaction.completed");
     // Usage metadata and step.stop.usage are cumulative snapshots, not deltas.
-    const usage = event.interaction?.usage ?? event.metadata?.total_usage ?? event.usage;
+    const usage = eventUsage(event);
+    const interaction = eventInteraction(event);
+    const status = eventStatus(event);
     if (usage) this.usage = { ...this.usage, ...structuredClone(usage) };
     if (event.event_type === "error")
       throw new InteractionsResponseError(
         event.error?.message ?? "Interactions stream failed",
         event.error?.code
       );
-    if (event.interaction) {
-      this.model = event.interaction.model ?? this.model;
-      this.created = this.timestamp(event.interaction.created);
-      if (["failed", "cancelled"].includes(event.interaction.status))
-        this.checkStatus(event.interaction, true);
+    if (interaction) {
+      this.model = interaction.model ?? this.model;
+      this.created = this.timestamp(interaction.created);
+      if (["failed", "cancelled"].includes(interaction.status)) this.checkStatus(interaction, true);
     }
-    if (event.status === "failed" || event.status === "cancelled")
-      throw new InteractionsResponseError(`Interaction ${event.status}`);
+    if (status === "failed" || status === "cancelled")
+      throw new InteractionsResponseError(`Interaction ${status}`);
     if (!this.id) {
       // Vertex may leave the interaction ID empty throughout a stream. Choose the CC ID
       // once; a later native ID must not change chunks already sent to clients.
-      this.id = event.interaction?.id || event.interaction_id || `chatcmpl-${this.generateId()}`;
+      this.id = interaction?.id || eventInteractionId(event) || `chatcmpl-${this.generateId()}`;
     }
 
     const chunks: InteractionChatCompletionChunk[] = [];
@@ -155,14 +173,14 @@ export class ChatCompletionToInteractionsConverter {
         throw new InteractionsResponseError("step.delta has no active step");
       const delta = event.delta;
       if (delta.type === "text") {
-        if (state.step.type !== "model_output")
+        if (state.kind !== "model_output")
           throw new InteractionsResponseError("Text delta outside model output");
         const text = delta.text ?? "";
         state.text += text;
         this.textLength += Array.from(text).length;
         chunks.push(this.chunk({ content: text }));
       } else if (delta.type === "arguments_delta") {
-        if (state.toolIndex == null)
+        if (state.kind !== "function_call")
           throw new InteractionsResponseError("Arguments delta outside function call");
         const value = delta.arguments ?? "";
         state.arguments += value;
@@ -171,6 +189,8 @@ export class ChatCompletionToInteractionsConverter {
           this.chunk({ tool_calls: [{ index: state.toolIndex, function: { arguments: value } }] })
         );
       } else if (delta.type === "text_annotation_delta") {
+        if (state.kind !== "model_output")
+          throw new InteractionsResponseError("Text annotation outside model output");
         const annotations = this.convertAnnotations(
           delta.annotations ?? [],
           state.text,
@@ -193,7 +213,7 @@ export class ChatCompletionToInteractionsConverter {
       for (const [index, step] of (event.interaction.steps ?? []).entries()) {
         const state = this.steps.get(index);
         if (!state) chunks.push(...this.startStep(index, step));
-        else if (step.type === "model_output") {
+        else if (step.type === "model_output" && state.kind === "model_output") {
           const text = (step.content ?? [])
             .filter(part => part.type === "text")
             .map(part => part.text ?? "")
@@ -208,7 +228,11 @@ export class ChatCompletionToInteractionsConverter {
           }
           for (const part of step.content ?? [])
             if (part.type !== "text") this.unsupportedContent(part.type);
-        } else if (step.type === "function_call" && !state.stopped) {
+        } else if (
+          step.type === "function_call" &&
+          state.kind === "function_call" &&
+          !state.stopped
+        ) {
           state.step = step;
         }
       }
@@ -235,19 +259,18 @@ export class ChatCompletionToInteractionsConverter {
     return this.usage;
   }
 
-  private startStep(index: number, step: InteractionStep): InteractionChatCompletionChunk[] {
-    const state: StepState = {
-      step,
-      arguments: "",
-      sentArguments: false,
-      text: "",
-      textOffset: this.textLength,
-      stopped: false,
-    };
-    this.steps.set(index, state);
+  private startStep(index: number, step: InteractionStartStep): InteractionChatCompletionChunk[] {
     if (step.type === "function_call") {
       this.checkFunction(step);
-      state.toolIndex = this.toolCount++;
+      const state: Extract<StepState, { kind: "function_call" }> = {
+        kind: "function_call",
+        step,
+        toolIndex: this.toolCount++,
+        arguments: "",
+        sentArguments: false,
+        stopped: false,
+      };
+      this.steps.set(index, state);
       return [
         this.chunk({
           tool_calls: [
@@ -262,6 +285,14 @@ export class ChatCompletionToInteractionsConverter {
       ];
     }
     if (step.type === "model_output") {
+      const state: Extract<StepState, { kind: "model_output" }> = {
+        kind: "model_output",
+        step,
+        text: "",
+        textOffset: this.textLength,
+        stopped: false,
+      };
+      this.steps.set(index, state);
       const chunks: InteractionChatCompletionChunk[] = [];
       for (const part of step.content ?? []) {
         if (part.type !== "text") {
@@ -276,12 +307,13 @@ export class ChatCompletionToInteractionsConverter {
       }
       return chunks;
     }
+    this.steps.set(index, { kind: "other", step, stopped: false });
     return [];
   }
 
   private stopStep(state: StepState): InteractionChatCompletionChunk[] {
     state.stopped = true;
-    if (state.toolIndex == null) return [];
+    if (state.kind !== "function_call") return [];
     if (state.sentArguments) return [];
     return [
       this.chunk({
@@ -297,7 +329,7 @@ export class ChatCompletionToInteractionsConverter {
 
   private validateToolArguments(): void {
     for (const state of this.steps.values()) {
-      if (!state.sentArguments) continue;
+      if (state.kind !== "function_call" || !state.sentArguments) continue;
       try {
         const parsed: unknown = JSON.parse(state.arguments);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
@@ -326,7 +358,7 @@ export class ChatCompletionToInteractionsConverter {
     return Math.random().toString(36).substring(2, 15);
   }
 
-  private checkStatus(response: Interaction, allowEmptyId = false): void {
+  private checkStatus(response: InteractionSnapshot, allowEmptyId = false): void {
     if (typeof response.id !== "string" || (!allowEmptyId && !response.id))
       throw new InteractionsResponseError("Missing interaction ID");
     if (!["completed", "requires_action", "incomplete"].includes(response.status)) {
@@ -338,14 +370,14 @@ export class ChatCompletionToInteractionsConverter {
   }
 
   private finishReason(
-    response: Interaction,
+    response: InteractionSnapshot,
     hasTools: boolean
   ): OpenAI.ChatCompletion.Choice["finish_reason"] {
     if (response.status === "incomplete") return "length";
     return hasTools || response.status === "requires_action" ? "tool_calls" : "stop";
   }
 
-  private checkFunction(step: InteractionStep): void {
+  private checkFunction(step: Extract<InteractionStartStep, { type: "function_call" }>): void {
     if (!step.id || !step.name)
       throw new InteractionsResponseError("Function call omitted id or name");
   }

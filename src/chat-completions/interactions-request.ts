@@ -11,7 +11,7 @@ import {
 export function validateChatCompletionInteractionsParameters(
   params: OpenAI.ChatCompletionCreateParams
 ): void {
-  // These fields have no corresponding contract in the V1 generation config.
+  // These parameters are not supported by this converter.
   // Reject explicit requests instead of silently changing sampling/format semantics.
   for (const key of [
     "temperature",
@@ -24,7 +24,7 @@ export function validateChatCompletionInteractionsParameters(
     "prediction",
     "audio",
   ] as const) {
-    if (params[key] != null) fail(`${key} has no equivalent in Interactions V1`);
+    if (params[key] != null) fail(`${key} is not supported by the Interactions converter`);
   }
   if (params.n != null && params.n !== 1) fail("Interactions V1 supports only n=1");
   if (params.parallel_tool_calls === false)
@@ -59,7 +59,7 @@ export function convertChatCompletionRequest(
         system.push(textContent(message.content));
         break;
       case "user": {
-        const content =
+        const content: InteractionContent[] =
           typeof message.content === "string"
             ? [{ type: "text", text: message.content }]
             : message.content.map(convertContent);
@@ -145,7 +145,7 @@ export function convertChatCompletionRequest(
   if (!params.tools && params.functions) {
     tools.push(
       ...params.functions.map(fn => ({
-        type: "function",
+        type: "function" as const,
         name: fn.name,
         description: fn.description,
         parameters: fn.parameters,
@@ -258,7 +258,7 @@ function convertContent(part: OpenAI.ChatCompletionContentPart): InteractionCont
   return fail("Unsupported CC content part");
 }
 
-function mediaContent(type: string, value: string): InteractionContent {
+function mediaContent(type: "image" | "document", value: string): InteractionContent {
   if (typeof value !== "string") return fail("Media URL must be a string");
   if (!value.startsWith("data:")) return { type, uri: value };
   const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(value);
