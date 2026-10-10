@@ -5,9 +5,10 @@ import {
   type Interaction,
   type InteractionEvent,
   type InteractionUsage,
+  type InteractionStep,
 } from "../../index";
 
-const usage: InteractionUsage = {
+const usage: InteractionUsage & { future_metric: { count: number } } = {
   total_input_tokens: 7,
   total_output_tokens: 20,
   total_thought_tokens: 22,
@@ -367,7 +368,7 @@ describe("Interactions → Responses", () => {
   test.each([
     { type: "model_output", content: [{ type: "text", text: "different" }] },
     { type: "thought", summary: [{ type: "text", text: "different" }] },
-  ])("rejects conflicting final text/type %j", step => {
+  ] satisfies InteractionStep[])("rejects conflicting final text/type %j", step => {
     const source = events();
     source[source.length - 1] = {
       event_type: "interaction.completed",
@@ -376,14 +377,14 @@ describe("Interactions → Responses", () => {
     expect(() => convertAll(source)).toThrow(/disagree/);
   });
   test.each(["signature", "media"])("rejects conflicting final %s", kind => {
-    const step =
+    const step: InteractionStep =
       kind === "signature"
         ? { type: "thought", signature: "first" }
         : { type: "model_output", content: [{ type: "video", data: "first" }] };
-    const final =
+    const final: InteractionStep =
       kind === "signature"
-        ? { ...step, signature: "second" }
-        : { ...step, content: [{ type: "video", data: "second" }] };
+        ? { type: "thought", signature: "second" }
+        : { type: "model_output", content: [{ type: "video", data: "second" }] };
     expect(() =>
       convertAll(
         [

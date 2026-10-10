@@ -34,8 +34,8 @@ export function validateResponsesInteractionsParameters(params: Params): void {
     "prompt",
     "conversation",
   ] as const) {
-    if ((params as unknown as Record<string, unknown>)[key] != null)
-      fail(`${key} has no equivalent in Interactions V1`);
+    if (object(params, "params")[key] != null)
+      fail(`${key} is not supported by the Interactions converter`);
   }
   if (params.background === true)
     fail("background=true is not supported; use synchronous requests");
@@ -141,19 +141,19 @@ export function convertResponsesInteractionRequest(
           fail("Reasoning encrypted_content requires a supported gateway signature carrier");
         const summary = parts(item.summary).map(part => {
           if (part.type !== "summary_text") return fail("Unsupported reasoning summary part");
-          return { type: "text", text: string(part.text, "summary.text") };
+          return { type: "text" as const, text: string(part.text, "summary.text") };
         });
         if (summary.length) input.push({ type: "thought", summary });
       } else if (item.type == null || item.type === "message") {
         const role = item.role;
-        const content =
+        const content: InteractionContent[] =
           typeof item.content === "string"
             ? [{ type: "text", text: item.content }]
             : parts(item.content).map(convertContent);
         if (role === "system" || role === "developer") {
           if (content.some(part => part.type !== "text"))
             fail("System/developer messages must contain text");
-          system.push(content.map(part => part.text).join(""));
+          system.push(content.map(part => (part.type === "text" ? part.text : "")).join(""));
         } else if (role === "user" || role === "assistant") {
           input.push({ type: role === "user" ? "user_input" : "model_output", content });
         } else fail("Unsupported Responses message role");
@@ -210,9 +210,13 @@ export function convertResponsesInteractionRequest(
         allowed_tools: {
           mode: mode === "required" ? "any" : "auto",
           tools: chosen.map(tool => {
-            if (tool.type !== "function" || !toolNames.has(tool.name))
+            if (
+              tool.type !== "function" ||
+              typeof tool.name !== "string" ||
+              !toolNames.has(tool.name)
+            )
               fail("tool_choice must refer to a declared function");
-            return tool.name as string;
+            return tool.name;
           }),
         },
       };
@@ -246,7 +250,12 @@ export function convertResponsesInteractionRequest(
     const metadata = object(params.metadata, "metadata");
     if (Object.values(metadata).some(value => typeof value !== "string"))
       fail("metadata values must be strings");
-    result.labels = { ...metadata };
+    result.labels = Object.fromEntries(
+      Object.entries(metadata).map(([key, value]) => {
+        if (typeof value !== "string") fail("metadata values must be strings");
+        return [key, value];
+      })
+    );
   }
   return result;
 }
@@ -268,9 +277,10 @@ function convertContent(raw: unknown): InteractionContent {
     if (part.file_url != null) return media("document", part.file_url);
     const data = nonempty(part.file_data, "file_data");
     if (data.startsWith("data:")) return media("document", data);
-    const mime = part.filename?.endsWith(".pdf")
+    const filename = part.filename == null ? undefined : string(part.filename, "filename");
+    const mime = filename?.endsWith(".pdf")
       ? "application/pdf"
-      : part.filename?.endsWith(".csv")
+      : filename?.endsWith(".csv")
         ? "text/csv"
         : undefined;
     if (!mime) fail("file_data requires a MIME data URL or .pdf/.csv filename");
@@ -278,7 +288,7 @@ function convertContent(raw: unknown): InteractionContent {
   }
   if (part.type === "input_audio") {
     const audio = object(part.input_audio, "input_audio");
-    if (!["mp3", "wav"].includes(audio.format)) fail("Unsupported input_audio.format");
+    if (audio.format !== "mp3" && audio.format !== "wav") fail("Unsupported input_audio.format");
     return {
       type: "audio",
       data: nonempty(audio.data, "input_audio.data"),
@@ -288,21 +298,21 @@ function convertContent(raw: unknown): InteractionContent {
   return fail(`Unsupported Responses content part: ${part.type}`);
 }
 
-function media(type: string, raw: unknown): InteractionContent {
+function media(type: "image" | "document", raw: unknown): InteractionContent {
   const value = nonempty(raw, "media URL");
   if (!value.startsWith("data:")) return { type, uri: value };
   const match = /^data:([^;,]+);base64,([\s\S]+)$/.exec(value);
   if (!match) fail("Expected a base64 media data URL");
   return { type, mime_type: match[1], data: match[2] };
 }
-function parts(value: unknown): Record<string, any>[] {
+function parts(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return fail("Expected an array of content/items");
   return value.map(part => object(part, "part"));
 }
-function object(value: unknown, name: string): Record<string, any> {
+function object(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return fail(`${name} must be an object`);
-  return value as Record<string, any>;
+  return value as Record<string, unknown>;
 }
 function string(value: unknown, name: string): string {
   if (typeof value !== "string") return fail(`${name} must be a string`);
