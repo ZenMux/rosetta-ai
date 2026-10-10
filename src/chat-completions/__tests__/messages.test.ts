@@ -4,6 +4,8 @@ import { ChatCompletionToMessagesConverter } from "../messages";
 
 function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Message {
   return {
+    diagnostics: null,
+    stop_details: null,
     id: "msg_123",
     type: "message",
     role: "assistant",
@@ -12,6 +14,7 @@ function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Mess
     stop_reason: "end_turn",
     stop_sequence: null,
     usage: {
+      output_tokens_details: null,
       input_tokens: 10,
       output_tokens: 5,
       cache_creation_input_tokens: null,
@@ -27,6 +30,7 @@ function makeMessage(overrides: Partial<Anthropic.Message> = {}): Anthropic.Mess
 }
 
 const baseUsage: Anthropic.Usage = {
+  output_tokens_details: null,
   input_tokens: 10,
   output_tokens: 0,
   cache_creation_input_tokens: null,
@@ -38,6 +42,7 @@ const baseUsage: Anthropic.Usage = {
 };
 
 const baseDeltaUsage: Anthropic.MessageDeltaUsage = {
+  output_tokens_details: null,
   output_tokens: 5,
   input_tokens: null,
   cache_creation_input_tokens: null,
@@ -49,6 +54,8 @@ function messageStart(): Anthropic.RawMessageStartEvent {
   return {
     type: "message_start",
     message: {
+      diagnostics: null,
+      stop_details: null,
       id: "msg_123",
       type: "message",
       role: "assistant",
@@ -976,6 +983,7 @@ describe("ChatCompletionToMessagesConverter", () => {
       const result = converter.convertResponse(
         makeMessage({
           usage: {
+            output_tokens_details: null,
             input_tokens: 100,
             output_tokens: 50,
             cache_creation_input_tokens: 20,
@@ -1045,7 +1053,12 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         const result = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
 
@@ -1058,7 +1071,12 @@ describe("ChatCompletionToMessagesConverter", () => {
         c.convertStreamEvent(messageStart());
         c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
 
@@ -1135,7 +1153,12 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         const result = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "tool_use", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "tool_use",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
 
@@ -1148,7 +1171,12 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         const result = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "max_tokens", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "max_tokens",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
 
@@ -1286,7 +1314,12 @@ describe("ChatCompletionToMessagesConverter", () => {
 
         const deltaResult = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
 
@@ -1310,6 +1343,8 @@ describe("ChatCompletionToMessagesConverter", () => {
         c.convertStreamEvent({
           type: "message_start",
           message: {
+            diagnostics: null,
+            stop_details: null,
             id: "msg_x",
             type: "message",
             role: "assistant",
@@ -1318,6 +1353,7 @@ describe("ChatCompletionToMessagesConverter", () => {
             stop_reason: null,
             stop_sequence: null,
             usage: {
+              output_tokens_details: null,
               input_tokens: 100,
               output_tokens: 0,
               cache_read_input_tokens: 30,
@@ -1335,8 +1371,14 @@ describe("ChatCompletionToMessagesConverter", () => {
         });
         c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: {
+            output_tokens_details: null,
             output_tokens: 50,
             input_tokens: null,
             cache_creation_input_tokens: null,
@@ -1365,7 +1407,12 @@ describe("ChatCompletionToMessagesConverter", () => {
         c.convertStreamEvent(messageStart());
         const result = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "pause_turn", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "pause_turn",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
         expect(result!.choices[0].finish_reason).toBe("stop");
@@ -1376,7 +1423,12 @@ describe("ChatCompletionToMessagesConverter", () => {
         c.convertStreamEvent(messageStart());
         const result = c.convertStreamEvent({
           type: "message_delta",
-          delta: { stop_reason: "refusal", stop_sequence: null, container: null },
+          delta: {
+            stop_details: null,
+            stop_reason: "refusal",
+            stop_sequence: null,
+            container: null,
+          },
           usage: baseDeltaUsage,
         });
         expect(result!.choices[0].finish_reason).toBe("content_filter");
@@ -1411,7 +1463,12 @@ describe("ChatCompletionToMessagesConverter", () => {
           { type: "content_block_stop", index: 0 },
           {
             type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+            delta: {
+              stop_details: null,
+              stop_reason: "end_turn",
+              stop_sequence: null,
+              container: null,
+            },
             usage: baseDeltaUsage,
           },
           { type: "message_stop" },
@@ -1445,7 +1502,12 @@ describe("ChatCompletionToMessagesConverter", () => {
           { type: "content_block_stop", index: 0 },
           {
             type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+            delta: {
+              stop_details: null,
+              stop_reason: "end_turn",
+              stop_sequence: null,
+              container: null,
+            },
             usage: baseDeltaUsage,
           },
           { type: "message_stop" },

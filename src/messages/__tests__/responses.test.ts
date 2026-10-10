@@ -287,6 +287,10 @@ describe("MessagesToResponsesConverter", () => {
     it("converts a basic text response", () => {
       const result = converter.convertResponse(makeResponse());
 
+      expect(result.diagnostics).toBeNull();
+      expect(result.stop_details).toBeNull();
+      expect(result.usage.output_tokens_details).toBeNull();
+
       expect(result.id).toBe("resp_123");
       expect(result.model).toBe("claude-sonnet-4-20250514");
       expect(result.type).toBe("message");
@@ -688,6 +692,9 @@ describe("MessagesToResponsesConverter", () => {
 
       const types = events.map(e => e.type);
       expect(types).toContain("message_delta");
+      const sdkDelta = events.find(e => e.type === "message_delta");
+      expect(sdkDelta?.delta.stop_details).toBeNull();
+      expect(sdkDelta?.usage.output_tokens_details).toBeNull();
       expect(types).toContain("message_stop");
 
       const msgDelta = events.find(
