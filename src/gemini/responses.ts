@@ -9,8 +9,10 @@ import type {
   Candidate,
 } from "@google/genai";
 
-type RespResponse = OpenAI.Responses.Response;
-type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
+import type {
+  Response as RespResponse,
+  ResponseStreamEvent as RespStreamEvent,
+} from "../openai-types";
 
 interface StreamState {
   id: string;

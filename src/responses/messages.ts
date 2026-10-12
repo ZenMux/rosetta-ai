@@ -4,8 +4,10 @@ import { APIError } from "@anthropic-ai/sdk";
 import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
 import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
 
-type RespResponse = OpenAI.Responses.Response;
-type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
+import type {
+  Response as RespResponse,
+  ResponseStreamEvent as RespStreamEvent,
+} from "../openai-types";
 
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -66,7 +68,7 @@ interface StreamState {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
-  cacheCreationTokens: number;
+  cacheCreationTokens: number | null;
   // Distinct from webSearchCallCount: this tracks usage.server_tool_use.web_search_requests, not emitted items.
   webSearchCount: number;
   stopReason: string | null;
@@ -256,6 +258,7 @@ export class ResponsesToMessagesConverter {
     const respResult = {
       id: message.id,
       object: "response",
+      access_programs: null,
       created_at: Math.floor(Date.now() / 1000),
       model: message.model as string,
       output,
@@ -285,6 +288,7 @@ export class ResponsesToMessagesConverter {
         total_tokens: totalInputTokens + usage.output_tokens,
         input_tokens_details: {
           cached_tokens: cacheRead,
+          cache_write_tokens: usage.cache_creation_input_tokens ?? null,
         },
         output_tokens_details: {
           reasoning_tokens: 0,
@@ -349,7 +353,7 @@ export class ResponsesToMessagesConverter {
         state.model = msg.model;
         state.inputTokens = msg.usage.input_tokens;
         state.cacheReadTokens = msg.usage.cache_read_input_tokens ?? 0;
-        state.cacheCreationTokens = msg.usage.cache_creation_input_tokens ?? 0;
+        state.cacheCreationTokens = msg.usage.cache_creation_input_tokens ?? null;
 
         const skeleton = this.makeSkeletonResponse();
         events.push({
@@ -675,13 +679,14 @@ export class ResponsesToMessagesConverter {
         // Responses input_tokens is inclusive of cached tokens (cached ⊆ input), but Anthropic's
         // input_tokens counts only uncached tokens, with cache read/creation as separate buckets.
         const totalInputTokens =
-          state.inputTokens + state.cacheReadTokens + state.cacheCreationTokens;
+          state.inputTokens + state.cacheReadTokens + (state.cacheCreationTokens ?? 0);
         resp.usage = {
           input_tokens: totalInputTokens,
           output_tokens: state.outputTokens,
           total_tokens: totalInputTokens + state.outputTokens,
           input_tokens_details: {
             cached_tokens: state.cacheReadTokens,
+            cache_write_tokens: state.cacheCreationTokens,
           },
           output_tokens_details: {
             reasoning_tokens: 0,
@@ -1186,7 +1191,7 @@ export class ResponsesToMessagesConverter {
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
-      cacheCreationTokens: 0,
+      cacheCreationTokens: null,
       webSearchCount: 0,
       stopReason: null,
     };
@@ -1196,6 +1201,7 @@ export class ResponsesToMessagesConverter {
     return {
       id: this.streamState.id,
       object: "response",
+      access_programs: null,
       created_at: Math.floor(Date.now() / 1000),
       model: this.streamState.model,
       output: [],

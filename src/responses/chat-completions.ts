@@ -1,8 +1,11 @@
 import type OpenAI from "openai";
 import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
 
-type RespResponse = OpenAI.Responses.Response;
-type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
+import type {
+  ChatCompletionCreateParams,
+  Response as RespResponse,
+  ResponseStreamEvent as RespStreamEvent,
+} from "../openai-types";
 
 type ContentKind = "output_text" | "refusal";
 
@@ -90,9 +93,7 @@ export class ResponsesToChatCompletionConverter {
 
   // --- Request conversion (Responses → CC, forward) ---
 
-  convertRequest(
-    params: OpenAI.Responses.ResponseCreateParams
-  ): OpenAI.Chat.Completions.ChatCompletionCreateParams {
+  convertRequest(params: OpenAI.Responses.ResponseCreateParams): ChatCompletionCreateParams {
     this.requestParams = params;
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 
@@ -102,7 +103,7 @@ export class ResponsesToChatCompletionConverter {
 
     this.convertInput(messages, params.input);
 
-    const result: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+    const result: ChatCompletionCreateParams = {
       model: params.model as string,
       messages,
     };
@@ -268,6 +269,7 @@ export class ResponsesToChatCompletionConverter {
     const respResult = {
       id: response.id,
       object: "response",
+      access_programs: null,
       created_at: response.created,
       model: response.model,
       output,
@@ -316,6 +318,7 @@ export class ResponsesToChatCompletionConverter {
             total_tokens: response.usage.total_tokens,
             input_tokens_details: {
               cached_tokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
+              cache_write_tokens: response.usage.prompt_tokens_details?.cache_write_tokens ?? null,
             },
             output_tokens_details: {
               reasoning_tokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
@@ -1272,6 +1275,7 @@ export class ResponsesToChatCompletionConverter {
     return {
       id: this.streamState.id,
       object: "response",
+      access_programs: null,
       created_at: this.streamState.created,
       model: this.streamState.model,
       output: [],
@@ -1348,6 +1352,7 @@ export class ResponsesToChatCompletionConverter {
         total_tokens: usage.total_tokens,
         input_tokens_details: {
           cached_tokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+          cache_write_tokens: usage.prompt_tokens_details?.cache_write_tokens ?? null,
         },
         output_tokens_details: {
           reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,

@@ -1,3 +1,4 @@
+import type { ChatCompletionChunk } from "../../openai-types";
 import type OpenAI from "openai";
 import { ChatCompletionToResponsesConverter } from "../responses";
 
@@ -318,21 +319,24 @@ describe("ChatCompletionToResponsesConverter", () => {
       expect(result.stream_options).toEqual({ include_obfuscation: false });
     });
 
-    it("preserves metadata, prompt-cache controls, and service tier", () => {
-      const result = converter.convertRequest({
-        model: "gpt-4o",
-        messages: [{ role: "user", content: "Hi" }],
-        metadata: { test: "responses" },
-        prompt_cache_key: "cache-key",
-        prompt_cache_retention: "24h",
-        service_tier: "priority",
-      });
+    it.each(["priority", "ultrafast"] as const)(
+      "preserves metadata, prompt-cache controls, and service tier %s",
+      serviceTier => {
+        const result = converter.convertRequest({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hi" }],
+          metadata: { test: "responses" },
+          prompt_cache_key: "cache-key",
+          prompt_cache_retention: "24h",
+          service_tier: serviceTier,
+        });
 
-      expect(result.metadata).toEqual({ test: "responses" });
-      expect(result.prompt_cache_key).toBe("cache-key");
-      expect(result.prompt_cache_retention).toBe("24h");
-      expect(result.service_tier).toBe("priority");
-    });
+        expect(result.metadata).toEqual({ test: "responses" });
+        expect(result.prompt_cache_key).toBe("cache-key");
+        expect(result.prompt_cache_retention).toBe("24h");
+        expect(result.service_tier).toBe(serviceTier);
+      }
+    );
 
     it("does not invent Responses mappings for Chat Completions-only controls", () => {
       const result = converter.convertRequest({
@@ -1089,8 +1093,8 @@ describe("ChatCompletionToResponsesConverter", () => {
 
   describe("convertStreamEvent", () => {
     function first(
-      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null
-    ): OpenAI.ChatCompletionChunk {
+      result: ChatCompletionChunk | ChatCompletionChunk[] | null
+    ): ChatCompletionChunk {
       if (Array.isArray(result)) return result[0];
       return result!;
     }
@@ -1102,6 +1106,39 @@ describe("ChatCompletionToResponsesConverter", () => {
         sequence_number: 0,
       });
     }
+
+    it("preserves ultrafast in converted JSON and stream service tiers", () => {
+      const response: OpenAI.Responses.Response = {
+        id: "resp_1",
+        object: "response",
+        model: "gpt-4o",
+        created_at: 100,
+        status: "completed",
+        output: [],
+        output_text: "",
+        service_tier: "ultrafast",
+        access_programs: null,
+        error: null,
+        incomplete_details: null,
+        instructions: null,
+        metadata: {},
+        parallel_tool_calls: true,
+        tool_choice: "auto",
+        tools: [],
+        temperature: null,
+        top_p: null,
+      };
+      expect(converter.convertResponse(response).service_tier).toBe("ultrafast");
+      const c = new ChatCompletionToResponsesConverter();
+      expect(
+        first(c.convertStreamEvent({ type: "response.created", response, sequence_number: 0 }))
+          .service_tier
+      ).toBe("ultrafast");
+      expect(
+        first(c.convertStreamEvent({ type: "response.completed", response, sequence_number: 1 }))
+          .service_tier
+      ).toBe("ultrafast");
+    });
 
     it("emits role chunk on response.created", () => {
       const c = new ChatCompletionToResponsesConverter();
@@ -1416,8 +1453,8 @@ describe("ChatCompletionToResponsesConverter", () => {
       });
 
       expect(Array.isArray(result)).toBe(true);
-      expect((result as OpenAI.ChatCompletionChunk[])[0].usage).toBeNull();
-      expect((result as OpenAI.ChatCompletionChunk[])[1]).toMatchObject({
+      expect((result as ChatCompletionChunk[])[0].usage).toBeNull();
+      expect((result as ChatCompletionChunk[])[1]).toMatchObject({
         choices: [],
         usage: {
           prompt_tokens: 10,

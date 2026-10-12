@@ -14,7 +14,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc",
@@ -45,7 +45,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.1",
     "@google/genai": "2.28.0",
-    "openai": "6.44.0"
+    "openai": "7.32.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

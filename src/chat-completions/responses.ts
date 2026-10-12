@@ -1,16 +1,21 @@
 import type OpenAI from "openai";
-
-type RespResponse = OpenAI.Responses.Response;
-type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionCreateParams,
+  ResponseUsage,
+  Response as RespResponse,
+  ResponseStreamEvent as RespStreamEvent,
+} from "../openai-types";
 type RespInputItem = OpenAI.Responses.ResponseInputItem;
 type RespTool = OpenAI.Responses.Tool;
-type CCParams = OpenAI.Chat.Completions.ChatCompletionCreateParams;
+type CCParams = ChatCompletionCreateParams;
 
 interface StreamState {
   id: string;
   model: string;
   created: number;
-  serviceTier: OpenAI.ChatCompletionChunk["service_tier"] | null;
+  serviceTier: ChatCompletionChunk["service_tier"] | null;
   toolCallCounter: number;
   hasToolCall: boolean;
   toolCallIndexes: Map<string, number>;
@@ -115,7 +120,7 @@ export class ChatCompletionToResponsesConverter {
 
   // --- Response conversion (Responses → CC, backward) ---
 
-  convertResponse(response: RespResponse): OpenAI.ChatCompletion {
+  convertResponse(response: RespResponse): ChatCompletion {
     const choices: OpenAI.ChatCompletion.Choice[] = [];
     const toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
     const messages: OpenAI.Responses.ResponseOutputMessage[] = [];
@@ -304,9 +309,7 @@ export class ChatCompletionToResponsesConverter {
 
   // --- Stream conversion (Responses → CC, backward) ---
 
-  async *convertStream(
-    stream: AsyncIterable<RespStreamEvent>
-  ): AsyncIterable<OpenAI.ChatCompletionChunk> {
+  async *convertStream(stream: AsyncIterable<RespStreamEvent>): AsyncIterable<ChatCompletionChunk> {
     for await (const event of stream) {
       const result = this.convertStreamEvent(event);
       if (result) {
@@ -319,9 +322,7 @@ export class ChatCompletionToResponsesConverter {
     }
   }
 
-  convertStreamEvent(
-    event: RespStreamEvent
-  ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null {
+  convertStreamEvent(event: RespStreamEvent): ChatCompletionChunk | ChatCompletionChunk[] | null {
     switch (event.type) {
       case "response.created":
         return this.handleResponseCreated(event);
@@ -750,10 +751,7 @@ export class ChatCompletionToResponsesConverter {
     }
   }
 
-  private convertUsage(
-    usage: OpenAI.Responses.ResponseUsage,
-    webSearchCount = 0
-  ): OpenAI.CompletionUsage {
+  private convertUsage(usage: ResponseUsage, webSearchCount = 0): OpenAI.CompletionUsage {
     return {
       prompt_tokens: usage.input_tokens,
       completion_tokens: usage.output_tokens,
@@ -818,8 +816,8 @@ export class ChatCompletionToResponsesConverter {
     finish_reason: OpenAI.ChatCompletionChunk.Choice["finish_reason"] = null,
     usage?: OpenAI.CompletionUsage,
     logprobs?: OpenAI.ChatCompletionChunk.Choice.Logprobs | null
-  ): OpenAI.ChatCompletionChunk {
-    const chunk: OpenAI.ChatCompletionChunk = {
+  ): ChatCompletionChunk {
+    const chunk: ChatCompletionChunk = {
       id: this.streamState.id,
       object: "chat.completion.chunk",
       created: this.streamState.created,
@@ -843,8 +841,8 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleResponseCreated(
-    event: OpenAI.Responses.ResponseCreatedEvent
-  ): OpenAI.ChatCompletionChunk {
+    event: Extract<RespStreamEvent, { type: "response.created" }>
+  ): ChatCompletionChunk {
     const resp = event.response;
     this.streamState.id = resp.id;
     this.streamState.model = resp.model as string;
@@ -857,7 +855,7 @@ export class ChatCompletionToResponsesConverter {
 
   private handleOutputItemAdded(
     event: OpenAI.Responses.ResponseOutputItemAddedEvent
-  ): OpenAI.ChatCompletionChunk | null {
+  ): ChatCompletionChunk | null {
     const item = event.item;
     if (item.type === "function_call" || item.type === "custom_tool_call") {
       this.streamState.hasToolCall = true;
@@ -910,7 +908,7 @@ export class ChatCompletionToResponsesConverter {
 
   private handleOutputItemDone(
     event: OpenAI.Responses.ResponseOutputItemDoneEvent
-  ): OpenAI.ChatCompletionChunk | null {
+  ): ChatCompletionChunk | null {
     const item = event.item;
     if (item?.type === "web_search_call") {
       if (item.status === "completed" && item.action.type === "search") {
@@ -943,9 +941,7 @@ export class ChatCompletionToResponsesConverter {
     return null;
   }
 
-  private handleTextDelta(
-    event: OpenAI.Responses.ResponseTextDeltaEvent
-  ): OpenAI.ChatCompletionChunk {
+  private handleTextDelta(event: OpenAI.Responses.ResponseTextDeltaEvent): ChatCompletionChunk {
     const logprobs = this.streamState.includeLogprobs
       ? {
           content: event.logprobs.map(logprob => this.convertTokenLogprob(logprob)),
@@ -957,7 +953,7 @@ export class ChatCompletionToResponsesConverter {
 
   private handleFunctionCallDelta(
     event: OpenAI.Responses.ResponseFunctionCallArgumentsDeltaEvent
-  ): OpenAI.ChatCompletionChunk {
+  ): ChatCompletionChunk {
     const index =
       this.streamState.toolCallIndexes.get(event.item_id) ?? this.streamState.toolCallCounter;
     if (this.legacyFunctionMode) {
@@ -983,7 +979,7 @@ export class ChatCompletionToResponsesConverter {
 
   private handleCustomToolCallDelta(
     event: OpenAI.Responses.ResponseCustomToolCallInputDeltaEvent
-  ): OpenAI.ChatCompletionChunk {
+  ): ChatCompletionChunk {
     const index =
       this.streamState.toolCallIndexes.get(event.item_id) ?? this.streamState.toolCallCounter;
     return this.makeChunk({
@@ -1001,14 +997,14 @@ export class ChatCompletionToResponsesConverter {
 
   private handleRefusalDelta(
     event: OpenAI.Responses.ResponseRefusalDeltaEvent
-  ): OpenAI.ChatCompletionChunk {
+  ): ChatCompletionChunk {
     return this.makeChunk({ refusal: event.delta });
   }
 
   private handleReasoningSummaryDelta(event: {
     delta: string;
     item_id: string;
-  }): OpenAI.ChatCompletionChunk {
+  }): ChatCompletionChunk {
     return this.makeChunk({
       role: "assistant",
       content: "",
@@ -1027,8 +1023,8 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleCompleted(
-    event: OpenAI.Responses.ResponseCompletedEvent
-  ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] {
+    event: Extract<RespStreamEvent, { type: "response.completed" }>
+  ): ChatCompletionChunk | ChatCompletionChunk[] {
     const state = this.streamState;
     const resp = event.response;
     const finishReason = state.hasToolCall
@@ -1043,10 +1039,10 @@ export class ChatCompletionToResponsesConverter {
     }
 
     const finishChunk = this.makeChunk(delta, finishReason);
-    const chunks: OpenAI.ChatCompletionChunk[] = [finishChunk];
+    const chunks: ChatCompletionChunk[] = [finishChunk];
 
     if (state.includeUsage && resp.usage) {
-      const usageChunk: OpenAI.ChatCompletionChunk = {
+      const usageChunk: ChatCompletionChunk = {
         id: state.id,
         object: "chat.completion.chunk",
         created: state.created,
@@ -1062,15 +1058,15 @@ export class ChatCompletionToResponsesConverter {
   }
 
   private handleIncomplete(
-    event: OpenAI.Responses.ResponseIncompleteEvent
-  ): OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] {
+    event: Extract<RespStreamEvent, { type: "response.incomplete" }>
+  ): ChatCompletionChunk | ChatCompletionChunk[] {
     const state = this.streamState;
     const resp = event.response;
     const finishChunk = this.makeChunk({}, this.mapStatus(resp.status, resp.incomplete_details));
-    const chunks: OpenAI.ChatCompletionChunk[] = [finishChunk];
+    const chunks: ChatCompletionChunk[] = [finishChunk];
 
     if (state.includeUsage && resp.usage) {
-      const usageChunk: OpenAI.ChatCompletionChunk = {
+      const usageChunk: ChatCompletionChunk = {
         id: state.id,
         object: "chat.completion.chunk",
         created: state.created,
@@ -1085,7 +1081,7 @@ export class ChatCompletionToResponsesConverter {
     return chunks.length === 1 ? chunks[0] : chunks;
   }
 
-  private handleFailed(): OpenAI.ChatCompletionChunk {
+  private handleFailed(): ChatCompletionChunk {
     return this.makeChunk({ content: "" }, "stop");
   }
 

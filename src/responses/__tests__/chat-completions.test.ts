@@ -747,11 +747,56 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(tool.strict).toBe(true);
     });
 
+    it.each([undefined, 0, 17])(
+      "preserves cache writes %s in JSON and stream without changing token totals",
+      cacheWrites => {
+        const usage = {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+          prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: cacheWrites },
+          completion_tokens_details: { reasoning_tokens: 5 },
+        };
+        const response = converter.convertResponse({ ...makeCCResponse(), usage });
+        const c = new ResponsesToChatCompletionConverter();
+        const events = c.convertStreamChunk({
+          id: "chatcmpl_cache",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test",
+          choices: [],
+          usage,
+        });
+        const completed = events.find(event => event.type === "response.completed")!;
+        for (const result of [response, completed.response]) {
+          expect(result.access_programs).toBeNull();
+          expect(result.usage).toEqual({
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+            input_tokens_details: { cached_tokens: 30, cache_write_tokens: cacheWrites ?? null },
+            output_tokens_details: { reasoning_tokens: 5 },
+          });
+        }
+        for (const event of events) {
+          if ("response" in event) expect(event.response.access_programs).toBeNull();
+        }
+      }
+    );
+
+    it("forwards ultrafast without rewriting its service tier", () => {
+      expect(
+        converter.convertRequest({ model: "test", input: "Hi", service_tier: "ultrafast" })
+          .service_tier
+      ).toBe("ultrafast");
+    });
+
     it("falls back to defaults when params omitted", () => {
       const c = new ResponsesToChatCompletionConverter();
       const result = c.convertResponse(makeCCResponse());
 
       expect(result.instructions).toBeNull();
+      expect(result.access_programs).toBeNull();
       expect(result.temperature).toBe(1);
       expect(result.top_p).toBe(1);
       expect(result.parallel_tool_calls).toBe(true);
