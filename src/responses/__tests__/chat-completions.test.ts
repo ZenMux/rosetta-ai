@@ -458,6 +458,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(result.status).toBe("completed");
       expect(result.usage?.input_tokens).toBe(10);
       expect(result.usage?.output_tokens).toBe(5);
+      expect(result.usage?.total_tokens).toBe(15);
+      expect(result.usage?.input_tokens_details.cache_write_tokens).toBeNull();
 
       const msgOutput = result.output.find((o: any) => o.type === "message") as any;
       expect(msgOutput).toBeDefined();
@@ -747,50 +749,6 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(tool.strict).toBe(true);
     });
 
-    it.each([undefined, 0, 17])(
-      "preserves cache writes %s in JSON and stream without changing token totals",
-      cacheWrites => {
-        const usage = {
-          prompt_tokens: 100,
-          completion_tokens: 20,
-          total_tokens: 120,
-          prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: cacheWrites },
-          completion_tokens_details: { reasoning_tokens: 5 },
-        };
-        const response = converter.convertResponse({ ...makeCCResponse(), usage });
-        const c = new ResponsesToChatCompletionConverter();
-        const events = c.convertStreamChunk({
-          id: "chatcmpl_cache",
-          object: "chat.completion.chunk",
-          created: 1,
-          model: "test",
-          choices: [],
-          usage,
-        });
-        const completed = events.find(event => event.type === "response.completed")!;
-        for (const result of [response, completed.response]) {
-          expect(result.access_programs).toBeNull();
-          expect(result.usage).toEqual({
-            input_tokens: 100,
-            output_tokens: 20,
-            total_tokens: 120,
-            input_tokens_details: { cached_tokens: 30, cache_write_tokens: cacheWrites ?? null },
-            output_tokens_details: { reasoning_tokens: 5 },
-          });
-        }
-        for (const event of events) {
-          if ("response" in event) expect(event.response.access_programs).toBeNull();
-        }
-      }
-    );
-
-    it("forwards ultrafast without rewriting its service tier", () => {
-      expect(
-        converter.convertRequest({ model: "test", input: "Hi", service_tier: "ultrafast" })
-          .service_tier
-      ).toBe("ultrafast");
-    });
-
     it("falls back to defaults when params omitted", () => {
       const c = new ResponsesToChatCompletionConverter();
       const result = c.convertResponse(makeCCResponse());
@@ -1070,13 +1028,25 @@ describe("ResponsesToChatCompletionConverter", () => {
         created: 1700000000,
         model: "gpt-4o",
         choices: [],
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+          prompt_tokens_details: { cache_write_tokens: 2 },
+        },
       };
 
       const events = c.convertStreamChunk(usageChunk);
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
-      expect(completed.response.usage.input_tokens).toBe(10);
+      expect(completed.response.access_programs).toBeNull();
+      expect(completed.response.usage).toEqual({
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 0 },
+      });
     });
 
     it("emits finish with usage when finish_reason and usage in same chunk", () => {

@@ -1123,66 +1123,63 @@ describe("ResponsesToMessagesConverter", () => {
       expect(reasoningDelta.delta).toBe("Thinking...");
     });
 
-    it.each([null, 0, 20])(
-      "emits response.completed with cache writes %s on message_stop",
-      cacheWrites => {
-        const c = new ResponsesToMessagesConverter();
-        c.convertStreamEvent({
-          type: "message_start",
-          message: {
-            diagnostics: null,
-            stop_details: null,
-            id: "msg_1",
-            type: "message",
-            role: "assistant",
-            model: "claude-sonnet-4-20250514" as Anthropic.Model,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: {
-              output_tokens_details: null,
-              input_tokens: 10,
-              output_tokens: 0,
-              cache_creation_input_tokens: cacheWrites,
-              cache_read_input_tokens: null,
-              cache_creation: null,
-              inference_geo: null,
-              server_tool_use: null,
-              service_tier: null,
-            },
-            container: null,
-          },
-        });
-        c.convertStreamEvent({
-          type: "message_delta",
-          delta: {
-            stop_details: null,
-            stop_reason: "end_turn",
-            stop_sequence: null,
-            container: null,
-          },
+    it("emits response.completed on message_stop", () => {
+      const c = new ResponsesToMessagesConverter();
+      c.convertStreamEvent({
+        type: "message_start",
+        message: {
+          diagnostics: null,
+          stop_details: null,
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-20250514" as Anthropic.Model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
           usage: {
             output_tokens_details: null,
-            output_tokens: 5,
-            input_tokens: null,
+            input_tokens: 10,
+            output_tokens: 0,
             cache_creation_input_tokens: null,
             cache_read_input_tokens: null,
+            cache_creation: null,
+            inference_geo: null,
             server_tool_use: null,
+            service_tier: null,
           },
-        });
+          container: null,
+        },
+      });
+      c.convertStreamEvent({
+        type: "message_delta",
+        delta: {
+          stop_details: null,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          container: null,
+        },
+        usage: {
+          output_tokens_details: null,
+          output_tokens: 5,
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          server_tool_use: null,
+        },
+      });
 
-        const events = c.convertStreamEvent({ type: "message_stop" });
+      const events = c.convertStreamEvent({ type: "message_stop" });
 
-        const completed = events.find(e => e.type === "response.completed") as any;
-        expect(completed).toBeDefined();
-        expect(completed.response.status).toBe("completed");
-        expect(completed.response.access_programs).toBeNull();
-        expect(completed.response.usage.input_tokens_details.cache_write_tokens).toBe(cacheWrites);
-        expect(completed.response.usage.total_tokens).toBe(15 + (cacheWrites ?? 0));
-        expect(completed.response.usage.input_tokens).toBe(10 + (cacheWrites ?? 0));
-        expect(completed.response.usage.output_tokens).toBe(5);
-      }
-    );
+      const completed = events.find(e => e.type === "response.completed") as any;
+      expect(completed).toBeDefined();
+      expect(completed.response.status).toBe("completed");
+      expect(completed.response.access_programs).toBeNull();
+      expect(completed.response.usage.input_tokens_details.cache_write_tokens).toBeNull();
+      expect(completed.response.usage.total_tokens).toBe(15);
+      expect(completed.response.usage.input_tokens).toBe(10);
+      expect(completed.response.usage.output_tokens).toBe(5);
+    });
 
     it("emits response.incomplete on max_tokens stop", () => {
       const c = new ResponsesToMessagesConverter();

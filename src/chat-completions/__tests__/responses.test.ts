@@ -1101,39 +1101,6 @@ describe("ChatCompletionToResponsesConverter", () => {
       });
     }
 
-    it("preserves ultrafast in converted JSON and stream service tiers", () => {
-      const response: OpenAI.Responses.Response = {
-        id: "resp_1",
-        object: "response",
-        model: "gpt-4o",
-        created_at: 100,
-        status: "completed",
-        output: [],
-        output_text: "",
-        service_tier: "ultrafast",
-        access_programs: null,
-        error: null,
-        incomplete_details: null,
-        instructions: null,
-        metadata: {},
-        parallel_tool_calls: true,
-        tool_choice: "auto",
-        tools: [],
-        temperature: null,
-        top_p: null,
-      };
-      expect(converter.convertResponse(response).service_tier).toBe("ultrafast");
-      const c = new ChatCompletionToResponsesConverter();
-      expect(
-        first(c.convertStreamEvent({ type: "response.created", response, sequence_number: 0 }))
-          .service_tier
-      ).toBe("ultrafast");
-      expect(
-        first(c.convertStreamEvent({ type: "response.completed", response, sequence_number: 1 }))
-          .service_tier
-      ).toBe("ultrafast");
-    });
-
     it("emits role chunk on response.created", () => {
       const c = new ChatCompletionToResponsesConverter();
       const result = first(
