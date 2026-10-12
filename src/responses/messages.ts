@@ -1,13 +1,14 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
-import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
+import {
+  expandNamespaceTools,
+  denamespaceResponse,
+  denamespaceStreamEvents,
+  type ConvertedResponse as RespResponse,
+  type ConvertedResponseStreamEvent as RespStreamEvent,
+} from "./utils";
 import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
-
-import type {
-  Response as RespResponse,
-  ResponseStreamEvent as RespStreamEvent,
-} from "../openai-types";
 
 const DEFAULT_MAX_TOKENS = 4096;
 

@@ -1,11 +1,19 @@
 import type OpenAI from "openai";
-import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
+import {
+  expandNamespaceTools,
+  denamespaceResponse,
+  denamespaceStreamEvents,
+  type ConvertedResponse as RespResponse,
+  type ConvertedResponseStreamEvent as RespStreamEvent,
+} from "./utils";
 
-import type {
-  ChatCompletionCreateParams,
-  Response as RespResponse,
-  ResponseStreamEvent as RespStreamEvent,
-} from "../openai-types";
+type WithResponseServiceTier<T> = T extends unknown
+  ? Omit<T, "service_tier"> & {
+      service_tier?: OpenAI.Responses.ResponseCreateParams["service_tier"];
+    }
+  : never;
+type ConvertedCCParams =
+  WithResponseServiceTier<OpenAI.Chat.Completions.ChatCompletionCreateParams>;
 
 type ContentKind = "output_text" | "refusal";
 
@@ -93,7 +101,7 @@ export class ResponsesToChatCompletionConverter {
 
   // --- Request conversion (Responses → CC, forward) ---
 
-  convertRequest(params: OpenAI.Responses.ResponseCreateParams): ChatCompletionCreateParams {
+  convertRequest(params: OpenAI.Responses.ResponseCreateParams): ConvertedCCParams {
     this.requestParams = params;
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 
@@ -103,7 +111,7 @@ export class ResponsesToChatCompletionConverter {
 
     this.convertInput(messages, params.input);
 
-    const result: ChatCompletionCreateParams = {
+    const result: ConvertedCCParams = {
       model: params.model as string,
       messages,
     };

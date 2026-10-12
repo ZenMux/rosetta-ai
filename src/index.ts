@@ -12,12 +12,3 @@ export { MessagesToResponsesConverter } from "./messages/responses";
 export { ResponsesToGeminiConverter } from "./responses/gemini";
 export { ResponsesToMessagesConverter } from "./responses/messages";
 export { ResponsesToChatCompletionConverter } from "./responses/chat-completions";
-
-export type {
-  Response,
-  ResponseUsage,
-  ResponseStreamEvent,
-  ChatCompletion,
-  ChatCompletionChunk,
-  ChatCompletionCreateParams,
-} from "./openai-types";

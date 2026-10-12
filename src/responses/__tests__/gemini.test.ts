@@ -1,4 +1,3 @@
-import type { ResponseStreamEvent } from "../../openai-types";
 import type OpenAI from "openai";
 import type { GenerateContentResponse, Candidate } from "@google/genai";
 import { ResponsesToGeminiConverter } from "../gemini";
@@ -1052,7 +1051,7 @@ describe("ResponsesToGeminiConverter", () => {
         } as GenerateContentResponse;
       }
 
-      const events: ResponseStreamEvent[] = [];
+      const events: ReturnType<ResponsesToGeminiConverter["convertStreamChunk"]> = [];
       for await (const event of c.convertStream(makeStream())) {
         events.push(event);
       }

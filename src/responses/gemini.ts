@@ -11,12 +11,18 @@ import type {
   Candidate,
   ThinkingConfig,
 } from "@google/genai";
-import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
+import {
+  expandNamespaceTools,
+  denamespaceResponse,
+  denamespaceStreamEvents,
+  type ConvertedResponse as RespResponse,
+  type ConvertedResponseStreamEvent,
+} from "./utils";
 
-import type {
-  Response as RespResponse,
-  ResponseStreamEvent as RespStreamEvent,
-} from "../openai-types";
+// This converter already emits the function name on arguments.done events.
+type RespStreamEvent =
+  | Exclude<ConvertedResponseStreamEvent, OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent>
+  | (OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent & { name: string });
 
 // Requests can replay SDK output messages. Audio/video retain the existing route extensions.
 type MessageContentPart =

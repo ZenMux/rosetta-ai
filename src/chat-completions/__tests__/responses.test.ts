@@ -1,4 +1,3 @@
-import type { ChatCompletionChunk } from "../../openai-types";
 import type OpenAI from "openai";
 import { ChatCompletionToResponsesConverter } from "../responses";
 
@@ -319,24 +318,21 @@ describe("ChatCompletionToResponsesConverter", () => {
       expect(result.stream_options).toEqual({ include_obfuscation: false });
     });
 
-    it.each(["priority", "ultrafast"] as const)(
-      "preserves metadata, prompt-cache controls, and service tier %s",
-      serviceTier => {
-        const result = converter.convertRequest({
-          model: "gpt-4o",
-          messages: [{ role: "user", content: "Hi" }],
-          metadata: { test: "responses" },
-          prompt_cache_key: "cache-key",
-          prompt_cache_retention: "24h",
-          service_tier: serviceTier,
-        });
+    it("preserves metadata, prompt-cache controls, and service tier", () => {
+      const result = converter.convertRequest({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "Hi" }],
+        metadata: { test: "responses" },
+        prompt_cache_key: "cache-key",
+        prompt_cache_retention: "24h",
+        service_tier: "priority",
+      });
 
-        expect(result.metadata).toEqual({ test: "responses" });
-        expect(result.prompt_cache_key).toBe("cache-key");
-        expect(result.prompt_cache_retention).toBe("24h");
-        expect(result.service_tier).toBe(serviceTier);
-      }
-    );
+      expect(result.metadata).toEqual({ test: "responses" });
+      expect(result.prompt_cache_key).toBe("cache-key");
+      expect(result.prompt_cache_retention).toBe("24h");
+      expect(result.service_tier).toBe("priority");
+    });
 
     it("does not invent Responses mappings for Chat Completions-only controls", () => {
       const result = converter.convertRequest({
@@ -1092,9 +1088,7 @@ describe("ChatCompletionToResponsesConverter", () => {
   // ===== convertStreamEvent (Responses → CC, backward) =====
 
   describe("convertStreamEvent", () => {
-    function first(
-      result: ChatCompletionChunk | ChatCompletionChunk[] | null
-    ): ChatCompletionChunk {
+    function first(result: ReturnType<ChatCompletionToResponsesConverter["convertStreamEvent"]>) {
       if (Array.isArray(result)) return result[0];
       return result!;
     }
@@ -1453,8 +1447,8 @@ describe("ChatCompletionToResponsesConverter", () => {
       });
 
       expect(Array.isArray(result)).toBe(true);
-      expect((result as ChatCompletionChunk[])[0].usage).toBeNull();
-      expect((result as ChatCompletionChunk[])[1]).toMatchObject({
+      expect((result as ReturnType<typeof first>[])[0].usage).toBeNull();
+      expect((result as ReturnType<typeof first>[])[1]).toMatchObject({
         choices: [],
         usage: {
           prompt_tokens: 10,

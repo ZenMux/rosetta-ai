@@ -1,10 +1,8 @@
 import type OpenAI from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 
-import type {
-  Response as RespResponse,
-  ResponseStreamEvent as RespStreamEvent,
-} from "../openai-types";
+type RespResponse = OpenAI.Responses.Response;
+type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 
 interface StreamState {
   id: string;

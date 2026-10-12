@@ -1,4 +1,3 @@
-import type { ResponseStreamEvent } from "../../openai-types";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
 import type OpenAI from "openai";
@@ -1367,7 +1366,7 @@ describe("ResponsesToMessagesConverter", () => {
         yield { type: "message_stop" };
       }
 
-      const events: ResponseStreamEvent[] = [];
+      const events: ReturnType<ResponsesToMessagesConverter["convertStreamEvent"]> = [];
       for await (const event of c.convertStream(makeStream())) {
         events.push(event);
       }
