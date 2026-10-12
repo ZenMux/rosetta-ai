@@ -735,6 +735,8 @@ describe("ResponsesToMessagesConverter", () => {
       // + 30 cache read, so the Responses total is 130 with cached_tokens as a 30-token subset.
       expect(result.usage?.input_tokens).toBe(130);
       expect(result.usage?.output_tokens).toBe(50);
+      expect(result.access_programs).toBeNull();
+      expect(result.usage?.input_tokens_details.cache_write_tokens).toBeNull();
       expect(result.usage?.total_tokens).toBe(180);
       expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
     });
@@ -758,6 +760,7 @@ describe("ResponsesToMessagesConverter", () => {
 
       // 100 uncached + 30 cache read + 20 cache creation = 150.
       expect(result.usage?.input_tokens).toBe(150);
+      expect(result.usage?.input_tokens_details.cache_write_tokens).toBe(20);
       expect(result.usage?.total_tokens).toBe(200);
       expect(result.usage?.input_tokens_details?.cached_tokens).toBe(30);
     });
@@ -1171,6 +1174,9 @@ describe("ResponsesToMessagesConverter", () => {
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
       expect(completed.response.status).toBe("completed");
+      expect(completed.response.access_programs).toBeNull();
+      expect(completed.response.usage.input_tokens_details.cache_write_tokens).toBeNull();
+      expect(completed.response.usage.total_tokens).toBe(15);
       expect(completed.response.usage.input_tokens).toBe(10);
       expect(completed.response.usage.output_tokens).toBe(5);
     });
@@ -1357,7 +1363,7 @@ describe("ResponsesToMessagesConverter", () => {
         yield { type: "message_stop" };
       }
 
-      const events: OpenAI.Responses.ResponseStreamEvent[] = [];
+      const events: ReturnType<ResponsesToMessagesConverter["convertStreamEvent"]> = [];
       for await (const event of c.convertStream(makeStream())) {
         events.push(event);
       }

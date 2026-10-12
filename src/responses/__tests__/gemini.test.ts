@@ -512,6 +512,8 @@ describe("ResponsesToGeminiConverter", () => {
         })
       );
 
+      expect(result.access_programs).toBeNull();
+      expect(result.usage?.input_tokens_details.cache_write_tokens).toBeNull();
       expect(result.usage?.input_tokens).toBe(110);
       expect(result.usage?.output_tokens).toBe(70);
       expect(result.usage?.output_tokens_details?.reasoning_tokens).toBe(20);
@@ -776,6 +778,12 @@ describe("ResponsesToGeminiConverter", () => {
       expect(
         events.find(event => event.type === "response.function_call_arguments.delta")
       ).toMatchObject({ item_id: itemAdded.item.id, delta: '{"city":"SF"}' });
+      expect(
+        events.find(event => event.type === "response.function_call_arguments.done")
+      ).toMatchObject({
+        name: "get_weather",
+        arguments: '{"city":"SF"}',
+      });
       const itemDone = events.find(event => event.type === "response.output_item.done")!;
       expect(itemDone.item).toMatchObject({
         id: itemAdded.item.id,
@@ -1043,7 +1051,7 @@ describe("ResponsesToGeminiConverter", () => {
         } as GenerateContentResponse;
       }
 
-      const events: OpenAI.Responses.ResponseStreamEvent[] = [];
+      const events: ReturnType<ResponsesToGeminiConverter["convertStreamChunk"]> = [];
       for await (const event of c.convertStream(makeStream())) {
         events.push(event);
       }
@@ -1054,6 +1062,17 @@ describe("ResponsesToGeminiConverter", () => {
       expect(types).toContain("response.output_text.delta");
       expect(types).toContain("response.completed");
       const terminal = events.find(event => event.type === "response.completed")!;
+      expect(terminal.response.access_programs).toBeNull();
+      expect(terminal.response.usage).toEqual({
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: null },
+        output_tokens_details: { reasoning_tokens: 0 },
+      });
+      for (const event of events) {
+        if ("response" in event) expect(event.response.access_programs).toBeNull();
+      }
       const message = terminal.response.output.find(item => item.type === "message")!;
       expect(message.content[0]).toMatchObject({ type: "output_text", logprobs: [] });
       for (const event of events) {
