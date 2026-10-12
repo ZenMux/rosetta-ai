@@ -1,5 +1,22 @@
 import type OpenAI from "openai";
 
+// Converted responses keep cache writes unknown when the source does not report them.
+export type ConvertedResponse = Omit<OpenAI.Responses.Response, "usage"> & {
+  usage?: Omit<OpenAI.Responses.ResponseUsage, "input_tokens_details"> & {
+    input_tokens_details: Omit<
+      OpenAI.Responses.ResponseUsage["input_tokens_details"],
+      "cache_write_tokens"
+    > & { cache_write_tokens: number | null };
+  };
+};
+
+type WithConvertedResponse<T> = T extends { response: OpenAI.Responses.Response }
+  ? Omit<T, "response"> & { response: ConvertedResponse }
+  : T;
+
+export type ConvertedResponseStreamEvent =
+  WithConvertedResponse<OpenAI.Responses.ResponseStreamEvent>;
+
 /** Separator joining a namespace and tool name in a flattened function name. */
 export const NAMESPACE_SEPARATOR = "___";
 
