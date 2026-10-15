@@ -668,8 +668,8 @@ export class ResponsesToInteractionsConverter {
     return `${prefix}_${Math.random().toString(36).slice(2)}`;
   }
   private checkStatus(response: InteractionSnapshot): void {
-    if (response.id !== undefined && typeof response.id !== "string")
-      throw new InteractionsResponseError("Invalid interaction ID");
+    if (typeof response.id !== "string")
+      throw new InteractionsResponseError("Missing interaction ID");
     if (!["completed", "requires_action", "incomplete"].includes(response.status))
       throw new InteractionsResponseError(
         response.errors?.[0]?.message ?? `Unexpected interaction status: ${response.status}`,

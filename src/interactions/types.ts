@@ -8,10 +8,7 @@ export type InteractionUsage = Interactions.Usage;
 export type InteractionModalityTokens = NonNullable<
   InteractionUsage["input_tokens_by_modality"]
 >[number];
-// Vertex stateless responses can omit the ID required by the SDK's full resource.
-// Preserve that absence; converters generate only their target-protocol client ID.
-type OptionalInteractionId<T extends { id: string }> = Omit<T, "id"> & Partial<Pick<T, "id">>;
-export type Interaction = OptionalInteractionId<Interactions.Interaction>;
+export type Interaction = Interactions.Interaction;
 export type InteractionStatus = Interaction["status"];
 export type InteractionGenerationConfig = Interactions.GenerationConfig;
 export type InteractionResponseFormat = Exclude<
@@ -31,14 +28,8 @@ export type InteractionStartStep =
   | Exclude<InteractionStep, { type: "function_call" }>
   | (Omit<Interactions.FunctionCallStep, "arguments"> &
       Partial<Pick<Interactions.FunctionCallStep, "arguments">>);
-export type InteractionSnapshot = OptionalInteractionId<
-  Interactions.InteractionCompletedEvent["interaction"]
-> &
+export type InteractionSnapshot = Interactions.InteractionCompletedEvent["interaction"] &
   Pick<Interaction, "errors">;
-
-type OptionalLifecycleId<T> = T extends { interaction: infer Resource extends { id: string } }
-  ? Omit<T, "interaction"> & { interaction: OptionalInteractionId<Resource> }
-  : T;
 
 // The existing converters also accept independent/late cumulative metadata.
 // StepDelta documents metadata on any event; usage retains its existing precedence.
@@ -49,9 +40,7 @@ type UsageEnvelope = {
   interaction_id?: string;
 };
 export type InteractionEvent = (
-  | OptionalLifecycleId<
-      Exclude<Interactions.InteractionSSEEvent, { event_type: "step.start" | "error" }>
-    >
+  | Exclude<Interactions.InteractionSSEEvent, { event_type: "step.start" | "error" }>
   | (Omit<Interactions.StepStart, "step"> & { step: InteractionStartStep })
   // Preserve numeric provider errors already handled by the gateway/tests.
   | (Omit<Interactions.ErrorEvent, "error"> & {

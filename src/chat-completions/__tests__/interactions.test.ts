@@ -42,24 +42,6 @@ const request = (extra: object = {}) =>
   }) as OpenAI.ChatCompletionCreateParams;
 
 describe("CC to Interactions V1", () => {
-  test.each([undefined, ""])(
-    "generates only a client ID for stateless JSON (native ID: %j)",
-    id => {
-      const raw: Interaction = { ...response, id };
-      if (id === undefined) delete raw.id;
-      const before = structuredClone(raw);
-      const result = new ChatCompletionToInteractionsConverter().convertResponse(raw);
-      expect(result.id).toMatch(/^chatcmpl-[a-z0-9]+$/);
-      expect(result.usage?.interactions).toEqual(usage);
-      expect(result.usage).toMatchObject({
-        prompt_tokens: 7,
-        completion_tokens: 42,
-        total_tokens: 49,
-      });
-      expect(result.choices[0].message.content).toBe("你好🙂");
-      expect(raw).toEqual(before);
-    }
-  );
   test("converts full history directly to steps, preserving parallel call IDs/results and source store default", () => {
     const converter = new ChatCompletionToInteractionsConverter();
     const result = converter.convertRequest(
@@ -317,9 +299,6 @@ describe("CC to Interactions V1", () => {
     ["interaction_1", "interaction_1"],
     ["", ""],
     ["interaction_1", ""],
-    [undefined, undefined],
-    [undefined, "interaction_1"],
-    ["interaction_1", undefined],
   ])(
     "keeps one CC ID through text, tools and final usage (initial ID: %j, final ID: %j)",
     (initialId, finalId) => {
@@ -378,7 +357,7 @@ describe("CC to Interactions V1", () => {
     expect(chunks[0].id).toBe(response.id);
   });
 
-  test("a generated CC ID does not hide truncation, invalid native ID types or upstream errors", () => {
+  test("a generated CC ID does not hide truncation, missing final native ID or upstream errors", () => {
     const converter = new ChatCompletionToInteractionsConverter();
     converter.convertStreamEvent({
       ...created,
@@ -388,9 +367,9 @@ describe("CC to Interactions V1", () => {
     expect(() =>
       converter.convertStreamEvent({
         ...completed,
-        interaction: { ...response, id: null as unknown as string },
+        interaction: { ...response, id: undefined as unknown as string },
       })
-    ).toThrow("Invalid interaction ID");
+    ).toThrow("Missing interaction ID");
     expect(() => converter.finishStream()).toThrow("before interaction.completed");
     expect(() =>
       converter.convertStreamEvent({
