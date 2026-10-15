@@ -208,6 +208,39 @@ describe("Responses usage", () => {
 });
 
 describe("Interactions → Responses", () => {
+  test.each([undefined, ""])("accepts stateless native ID %s without changing usage", id => {
+    const raw = structuredClone(response);
+    if (id === undefined) delete raw.id;
+    else raw.id = id;
+    const before = structuredClone(raw);
+    const json = converter().convertResponse(raw);
+    expect(json.id).toMatch(/^resp_/);
+    expect(json.usage).toEqual(convertInteractionResponseUsage(usage));
+    expect(raw).toEqual(before);
+
+    const source = structuredClone(events());
+    for (const event of source) {
+      if (!("interaction" in event)) continue;
+      if (id === undefined) delete event.interaction.id;
+      else event.interaction.id = id;
+    }
+    const sourceBefore = structuredClone(source);
+    const value = converter();
+    const stream = source.flatMap(event => value.convertStreamEvent(event));
+    stream.push(...value.finishStream());
+    const responses = stream.flatMap(event => ("response" in event ? [event.response] : []));
+    expect(responses[0].id).toMatch(/^resp_/);
+    expect(new Set(responses.map(item => item.id)).size).toBe(1);
+    expect(responses.at(-1)!.usage).toEqual(json.usage);
+    expect(source).toEqual(sourceBefore);
+  });
+  test.each([null, 123])("rejects invalid native ID %s in JSON and SSE", id => {
+    const raw = { ...response, id } as unknown as Interaction;
+    expect(() => converter().convertResponse(raw)).toThrow("Invalid interaction ID");
+    expect(() => convertAll([{ event_type: "interaction.completed", interaction: raw }])).toThrow(
+      "Invalid interaction ID"
+    );
+  });
   test("JSON and streaming produce identical text and same-source usage", () => {
     const json = converter().convertResponse(response);
     const { stream, final } = convertAll(events());
