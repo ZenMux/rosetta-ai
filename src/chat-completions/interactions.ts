@@ -99,7 +99,7 @@ export class ChatCompletionToInteractionsConverter {
       }
     }
     return {
-      id: response.id,
+      id: response.id || `chatcmpl-${this.generateId()}`,
       object: "chat.completion",
       created: this.timestamp(response.created),
       model: response.model ?? this.model,
@@ -146,7 +146,7 @@ export class ChatCompletionToInteractionsConverter {
     if (interaction) {
       this.model = interaction.model ?? this.model;
       this.created = this.timestamp(interaction.created);
-      if (["failed", "cancelled"].includes(interaction.status)) this.checkStatus(interaction, true);
+      if (["failed", "cancelled"].includes(interaction.status)) this.checkStatus(interaction);
     }
     if (status === "failed" || status === "cancelled")
       throw new InteractionsResponseError(`Interaction ${status}`);
@@ -207,7 +207,7 @@ export class ChatCompletionToInteractionsConverter {
       chunks.push(...this.stopStep(state));
     } else if (event.event_type === "interaction.completed") {
       if (!event.interaction) throw new InteractionsResponseError("Missing completed interaction");
-      this.checkStatus(event.interaction, true);
+      this.checkStatus(event.interaction);
       // Some servers supply output only in the final snapshot. Never replay steps
       // already delivered as deltas when the final event also includes a snapshot.
       for (const [index, step] of (event.interaction.steps ?? []).entries()) {
@@ -358,9 +358,9 @@ export class ChatCompletionToInteractionsConverter {
     return Math.random().toString(36).substring(2, 15);
   }
 
-  private checkStatus(response: InteractionSnapshot, allowEmptyId = false): void {
-    if (typeof response.id !== "string" || (!allowEmptyId && !response.id))
-      throw new InteractionsResponseError("Missing interaction ID");
+  private checkStatus(response: InteractionSnapshot): void {
+    if (response.id !== undefined && typeof response.id !== "string")
+      throw new InteractionsResponseError("Invalid interaction ID");
     if (!["completed", "requires_action", "incomplete"].includes(response.status)) {
       throw new InteractionsResponseError(
         response.errors?.[0]?.message ?? `Unexpected interaction status: ${response.status}`,
