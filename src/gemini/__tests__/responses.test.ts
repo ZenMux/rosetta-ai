@@ -413,7 +413,7 @@ describe("GeminiToResponsesConverter", () => {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
-            input_tokens_details: { cached_tokens: 30 },
+            input_tokens_details: { cached_tokens: 30, cache_write_tokens: 0 },
             output_tokens_details: { reasoning_tokens: 20 },
           },
         })
