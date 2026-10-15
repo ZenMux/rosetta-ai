@@ -11,10 +11,18 @@ import type {
   Candidate,
   ThinkingConfig,
 } from "@google/genai";
-import { expandNamespaceTools, denamespaceResponse, denamespaceStreamEvents } from "./utils";
+import {
+  expandNamespaceTools,
+  denamespaceResponse,
+  denamespaceStreamEvents,
+  type ConvertedResponse as RespResponse,
+  type ConvertedResponseStreamEvent,
+} from "./utils";
 
-type RespResponse = OpenAI.Responses.Response;
-type RespStreamEvent = OpenAI.Responses.ResponseStreamEvent;
+// This converter already emits the function name on arguments.done events.
+type RespStreamEvent =
+  | Exclude<ConvertedResponseStreamEvent, OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent>
+  | (OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent & { name: string });
 
 // Requests can replay SDK output messages. Audio/video retain the existing route extensions.
 type MessageContentPart =
@@ -247,6 +255,7 @@ export class ResponsesToGeminiConverter {
     const respResult = {
       id: response.responseId ?? `resp_${this.generateId()}`,
       object: "response",
+      access_programs: null,
       created_at: Math.floor(Date.now() / 1000),
       model: response.modelVersion ?? "",
       output,
@@ -831,7 +840,10 @@ export class ResponsesToGeminiConverter {
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       total_tokens: usage?.totalTokenCount ?? 0,
-      input_tokens_details: { cached_tokens: usage?.cachedContentTokenCount ?? 0 },
+      input_tokens_details: {
+        cached_tokens: usage?.cachedContentTokenCount ?? 0,
+        cache_write_tokens: null,
+      },
       output_tokens_details: { reasoning_tokens: reasoningTokens },
     };
   }
@@ -1104,6 +1116,7 @@ export class ResponsesToGeminiConverter {
     return {
       id: this.streamState.id,
       object: "response",
+      access_programs: null,
       created_at: this.streamState.createdAt,
       model: this.streamState.model,
       output: [],
