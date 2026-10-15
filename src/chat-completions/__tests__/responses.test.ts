@@ -1088,9 +1088,7 @@ describe("ChatCompletionToResponsesConverter", () => {
   // ===== convertStreamEvent (Responses → CC, backward) =====
 
   describe("convertStreamEvent", () => {
-    function first(
-      result: OpenAI.ChatCompletionChunk | OpenAI.ChatCompletionChunk[] | null
-    ): OpenAI.ChatCompletionChunk {
+    function first(result: ReturnType<ChatCompletionToResponsesConverter["convertStreamEvent"]>) {
       if (Array.isArray(result)) return result[0];
       return result!;
     }
@@ -1416,8 +1414,8 @@ describe("ChatCompletionToResponsesConverter", () => {
       });
 
       expect(Array.isArray(result)).toBe(true);
-      expect((result as OpenAI.ChatCompletionChunk[])[0].usage).toBeNull();
-      expect((result as OpenAI.ChatCompletionChunk[])[1]).toMatchObject({
+      expect((result as ReturnType<typeof first>[])[0].usage).toBeNull();
+      expect((result as ReturnType<typeof first>[])[1]).toMatchObject({
         choices: [],
         usage: {
           prompt_tokens: 10,
