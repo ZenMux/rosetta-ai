@@ -29,6 +29,7 @@ One converter instance handles the full round-trip for a single gateway route.
 | `ChatCompletionToMessagesConverter` | OpenAI Chat Completions | Anthropic Messages |
 | `ChatCompletionToResponsesConverter` | OpenAI Chat Completions | OpenAI Responses |
 | `ChatCompletionToGeminiConverter` | OpenAI Chat Completions | Google Gemini |
+| `ChatCompletionToInteractionsConverter` | OpenAI Chat Completions | Google Interactions V1 |
 | `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
 | `MessagesToResponsesConverter` | Anthropic Messages | OpenAI Responses |
 | `MessagesToGeminiConverter` | Anthropic Messages | Google Gemini |
@@ -40,6 +41,41 @@ One converter instance handles the full round-trip for a single gateway route.
 | `GeminiToResponsesConverter` | Google Gemini | OpenAI Responses |
 
 ## Usage
+
+### OpenAI Chat Completions → Google Interactions V1
+
+```typescript
+import { ChatCompletionToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ChatCompletionToInteractionsConverter();
+const request = converter.convertRequest(openaiRequest);
+// Send request to POST /v1/interactions using your own transport.
+const completion = converter.convertResponse(interaction);
+// Pass parsed V1 events, not raw SSE bytes:
+for await (const chunk of converter.convertStream(interactionEvents)) {
+  // Consume CC chunks.
+}
+```
+
+This converter uses the [V1 steps/step.delta contract](https://ai.google.dev/api/interactions-api-v1),
+not the outputs/content.delta types shipped in `@google/genai@1.52`. Use one instance per request.
+Request conversion supports full-history steps, function calls/results, standard CC image/audio/file
+inputs, JSON output, tool choice and supported generation settings. Explicit settings without a V1
+equivalent (including temperature/top_p, n>1 and parallel_tool_calls=false) raise `InteractionsRequestError`.
+CC's default `store=false` is sent explicitly.
+
+Media generation has no general standard CC output container. By default conversion raises an error
+on media output. A gateway that separately retains native steps/events may opt into
+`new ChatCompletionToInteractionsConverter({ allowUnmappedContent: true })`. In that mode Rosetta
+converts representable CC fields; the gateway must return the native media through its documented
+extension. Reasoning/signature carriers and native history replay are also gateway responsibilities.
+
+Usage preserves the raw snapshot in `usage.interactions`, including unknown fields. Prompt tokens
+come from `total_input_tokens`; completion tokens are visible output plus thought tokens. Tool-use
+tokens are retained separately, following the official V1 example (100 input, 25 output, 50 tool-use,
+125 total). Cumulative SSE usage replaces counters instead of being summed. Missing counters stay
+missing, so usage is typed as partial; callers must check completeness before billing.
+When driving `convertStreamEvent()` manually, call `finishStream()` at EOF to detect truncation.
 
 ### OpenAI Chat Completions → Anthropic Messages
 
@@ -466,3 +502,57 @@ npm run build        # Build
 ## License
 
 Apache-2.0
+
+### OpenAI Responses ↔ Google Interactions V1
+
+The development branch exports `ResponsesToInteractionsConverter` and
+`convertInteractionResponseUsage`. Conversion is direct and uses the V1
+`steps` / `step.delta` contract.
+
+```typescript
+import { ResponsesToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ResponsesToInteractionsConverter();
+const request = converter.convertRequest({
+  model: "your-interactions-model",
+  input: "Hello",
+  store: false,
+});
+// Send request to the Interactions endpoint, then use one response path:
+const response = converter.convertResponse(nativeInteraction);
+// Or: for await (const event of converter.convertStream(nativeEvents)) { ... }
+```
+
+Create a converter per request. It maps Responses items, call IDs, instructions,
+function tools, structured output and supported reasoning controls. Responses
+`store` defaults to true. Unsupported stateful/background execution, strict
+constraints, sampling controls and provider-owned file IDs fail explicitly.
+Function arguments remain JSON objects, and streamed item identities remain
+stable. Terminals wait until EOF so late cumulative usage and malformed streams
+can be checked before reporting completion.
+
+`convertInteractionResponseUsage` preserves the complete source snapshot under
+`interactions`; output tokens include thought tokens exactly once. Missing
+usage returns null and partial snapshots remain partial.
+
+Standard-only conversion rejects media/signatures without a Responses
+representation. Integrators that preserve native extensions can opt into
+`allowUnmappedContent: true`, use `getOutputStepEntries()` to attach complete
+native steps to output items, and use `getInputStepRanges()` to restore native
+history. These hooks do not implement platform storage, routing or credential
+handling. When applying explicit native overrides, call
+`setEffectiveRequest(finalRequest)` before processing the response. Standard
+configuration echoes reflect the effective request; native-only fields without
+an equivalent standard value are omitted and must be retained by the integrator.
+
+This implementation is not yet published as a Responses-capable npm release.
+
+## Messages → Google Interactions (development)
+
+`MessagesToInteractionsConverter` directly translates Messages requests and Interactions V1 JSON/SSE responses. It supports text, image/document inputs, function calls/results (including `is_error`), system text, stop sequences, JSON Schema, and adaptive thinking with low/medium/high effort. Model support is separate from protocol support. Unsupported sampling, thinking budgets/disable, strict guarantees, cache controls, built-in Anthropic tools and stored-history parameters are rejected explicitly.
+
+Messages `input_tokens` excludes reported cache reads: `total_input_tokens - (total_cached_tokens ?? 0)`. `cache_read_input_tokens` is emitted only when reported, `output_tokens` includes output plus thought once, and `usage.interactions` preserves the complete original usage. Missing counters are not filled with zero; cache creation is not inferred. Stream usage is cumulative and completed only after the native terminal event and EOF, including late metadata.
+
+The converter exposes `getOutputStepEntries()` and `getInputStepRanges()` for gateway-owned media and signature envelopes. Set `allowUnmappedContent: true` only when the caller preserves those native steps; the default rejects content that needs an extension. Empty stateless native IDs are accepted and a client message ID is generated. Unspecified native `incomplete` results retain a null stop reason instead of inventing a token-limit cause.
+
+The package version remains inherited from the CC base. Release order is CC, then Responses, then Messages; each stage publishes Rosetta before the consuming serverless dependency is updated. Version changes belong in a separate commit.
