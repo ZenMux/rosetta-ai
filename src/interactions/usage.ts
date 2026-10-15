@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import type { ConvertedResponse } from "../responses/utils";
 import type { InteractionModalityTokens, InteractionUsage } from "./types";
 
 // A partial provider snapshot must stay partial. Filling absent counters with 0
@@ -7,7 +8,7 @@ export interface InteractionCompletionUsage extends Partial<OpenAI.CompletionUsa
   interactions: InteractionUsage;
 }
 
-export interface InteractionResponseUsage extends Partial<OpenAI.Responses.ResponseUsage> {
+export interface InteractionResponseUsage extends Partial<NonNullable<ConvertedResponse["usage"]>> {
   interactions: InteractionUsage;
 }
 
@@ -21,7 +22,10 @@ export function convertInteractionResponseUsage(
     result.output_tokens = usage.total_output_tokens + usage.total_thought_tokens;
   if (usage.total_tokens != null) result.total_tokens = usage.total_tokens;
   if (usage.total_cached_tokens != null)
-    result.input_tokens_details = { cached_tokens: usage.total_cached_tokens };
+    result.input_tokens_details = {
+      cached_tokens: usage.total_cached_tokens,
+      cache_write_tokens: null,
+    };
   if (usage.total_thought_tokens != null)
     result.output_tokens_details = { reasoning_tokens: usage.total_thought_tokens };
   return result;

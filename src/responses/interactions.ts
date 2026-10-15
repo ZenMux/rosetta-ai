@@ -34,7 +34,13 @@ export type InteractionResponse = Omit<
 type ReplaceResponse<T> = T extends { response: OpenAI.Responses.Response }
   ? Omit<T, "response"> & { response: InteractionResponse }
   : T;
-export type InteractionResponseStreamEvent = ReplaceResponse<OpenAI.Responses.ResponseStreamEvent>;
+// Preserve the function name extension already emitted by this converter.
+export type InteractionResponseStreamEvent =
+  | Exclude<
+      ReplaceResponse<OpenAI.Responses.ResponseStreamEvent>,
+      OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent
+    >
+  | (OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent & { name: string });
 type WithoutSequence<T> = T extends unknown ? Omit<T, "sequence_number"> : never;
 
 interface StateFields {
@@ -579,6 +585,7 @@ export class ResponsesToInteractionsConverter {
       truncation: p?.truncation ?? "disabled",
       store: this.request?.store ?? true,
       background: false,
+      access_programs: null,
       usage: status === "in_progress" ? null : convertInteractionResponseUsage(this.usage),
     } as InteractionResponse;
   }

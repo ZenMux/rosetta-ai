@@ -185,7 +185,7 @@ describe("Responses usage", () => {
       input_tokens: 7,
       output_tokens: 42,
       total_tokens: 49,
-      input_tokens_details: { cached_tokens: 3 },
+      input_tokens_details: { cached_tokens: 3, cache_write_tokens: null },
       output_tokens_details: { reasoning_tokens: 22 },
       interactions: usage,
     });
@@ -200,6 +200,10 @@ describe("Responses usage", () => {
     expect(
       convertInteractionResponseUsage({ total_output_tokens: 4 })?.output_tokens
     ).toBeUndefined();
+    expect(convertInteractionResponseUsage({ total_cached_tokens: 0 })).toEqual({
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: null },
+      interactions: { total_cached_tokens: 0 },
+    });
   });
 });
 
@@ -209,6 +213,9 @@ describe("Interactions → Responses", () => {
     const { stream, final } = convertAll(events());
     expect(final.output_text).toBe(json.output_text);
     expect(final.usage).toEqual(json.usage);
+    expect(json.access_programs).toBeNull();
+    for (const event of stream)
+      if ("response" in event) expect(event.response.access_programs).toBeNull();
     expect(stream[0].type).toBe("response.created");
     expect(stream.map(event => event.sequence_number)).toEqual(stream.map((_, i) => i));
     expect(stream.filter(e => e.type === "response.output_item.done")).toHaveLength(1);
@@ -300,6 +307,9 @@ describe("Interactions → Responses", () => {
     });
     expect(final.output[0].id).not.toBe("call_1");
     expect(stream.filter(e => e.type === "response.function_call_arguments.done")).toHaveLength(1);
+    const done = stream.find(e => e.type === "response.function_call_arguments.done");
+    expect(done?.name).toBe("weather");
+    expect(done?.arguments).toBe('{"city":"杭州"}');
   });
   test("incomplete does not invent max_output_tokens as the cause", () => {
     const final = converter().convertResponse({ ...response, status: "incomplete" });
