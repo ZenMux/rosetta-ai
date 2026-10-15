@@ -410,8 +410,8 @@ export class MessagesToInteractionsConverter {
     if (raw?.model) this.model = raw.model;
   }
   private checkStatus(raw: InteractionSnapshot): void {
-    // Stateless Omni responses may carry an empty ID; identity() supplies a client ID.
-    if (typeof raw.id !== "string") fail("Missing interaction ID");
+    // Stateless Omni responses may omit the ID; identity() supplies only a client ID.
+    if (raw.id !== undefined && typeof raw.id !== "string") fail("Invalid interaction ID");
     if (!["completed", "requires_action", "incomplete"].includes(raw.status))
       throw new InteractionsResponseError(
         raw.errors?.[0]?.message ?? `Unexpected interaction status: ${raw.status}`,

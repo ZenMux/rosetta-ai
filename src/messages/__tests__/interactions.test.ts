@@ -314,15 +314,34 @@ describe("Messages Interactions requests", () => {
 });
 
 describe("Messages Interactions JSON/SSE", () => {
-  test("accepts empty stateless upstream IDs in JSON and SSE", () => {
+  test.each([undefined, ""])("accepts stateless native ID %s without changing usage", id => {
     const raw = response();
-    raw.id = "";
-    expect(converter().convertResponse(raw).id).toMatch(/^msg_/);
+    if (id === undefined) delete raw.id;
+    else raw.id = id;
+    const before = structuredClone(raw);
+    const json = converter().convertResponse(raw);
+    expect(json.id).toMatch(/^msg_/);
+    expect(json.usage).toEqual(convertInteractionMessageUsage(usage));
+    expect(raw).toEqual(before);
+    const source = events(raw);
+    if (id === undefined)
+      for (const event of source) if ("interaction" in event) delete event.interaction.id;
+    const sourceBefore = structuredClone(source);
     const c = converter();
-    const output = events(raw).flatMap(e => c.convertStreamEvent(e));
+    const output = source.flatMap(e => c.convertStreamEvent(e));
     output.push(...c.finishStream());
     expect(output[0].type === "message_start" && output[0].message.id).toMatch(/^msg_/);
+    const delta = output.find(event => event.type === "message_delta");
+    expect(delta?.usage).toEqual(json.usage);
     expect(output.at(-1)?.type).toBe("message_stop");
+    expect(source).toEqual(sourceBefore);
+  });
+  test.each([null, 123])("rejects invalid native ID %s in JSON and SSE", id => {
+    const raw = { ...response(), id } as unknown as Interaction;
+    expect(() => converter().convertResponse(raw)).toThrow("Invalid interaction ID");
+    expect(() =>
+      converter().convertStreamEvent({ event_type: "interaction.completed", interaction: raw })
+    ).toThrow("Invalid interaction ID");
   });
   test("does not invent a max_tokens reason for unspecified incomplete results", () => {
     const raw = response();
