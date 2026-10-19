@@ -40,7 +40,7 @@ function response(): Interaction {
   };
 }
 function converter() {
-  const c = new MessagesToInteractionsConverter({ allowUnmappedContent: true });
+  const c = new MessagesToInteractionsConverter();
   c.convertRequest(params);
   return c;
 }
@@ -102,10 +102,9 @@ describe("Messages Interactions usage", () => {
       input_tokens: 70,
       cache_read_input_tokens: 30,
       output_tokens: 27,
-      interactions: usage,
       output_tokens_details: null,
     });
-    expect(actual.interactions).not.toBe(usage);
+    expect(actual).not.toHaveProperty("interactions");
     expect(actual.input_tokens! + actual.cache_read_input_tokens! + actual.output_tokens!).toBe(
       127
     );
@@ -113,26 +112,17 @@ describe("Messages Interactions usage", () => {
   });
   test.each([
     [undefined, undefined],
-    [{}, { interactions: {} }],
+    [{}, {}],
     [
       { total_input_tokens: 0, total_output_tokens: 0, total_thought_tokens: 0, total_tokens: 0 },
       {
         input_tokens: 0,
         output_tokens: 0,
-        interactions: {
-          total_input_tokens: 0,
-          total_output_tokens: 0,
-          total_thought_tokens: 0,
-          total_tokens: 0,
-        },
       },
     ],
-    [{ total_output_tokens: 20 }, { interactions: { total_output_tokens: 20 } }],
-    [{ total_thought_tokens: 7 }, { interactions: { total_thought_tokens: 7 } }],
-    [
-      { total_cached_tokens: 5 },
-      { cache_read_input_tokens: 5, interactions: { total_cached_tokens: 5 } },
-    ],
+    [{ total_output_tokens: 20 }, {}],
+    [{ total_thought_tokens: 7 }, {}],
+    [{ total_cached_tokens: 5 }, { cache_read_input_tokens: 5 }],
   ])("does not invent missing counters %#", (raw, expected) =>
     expect(convertInteractionMessageUsage(raw as InteractionUsage)).toEqual(
       expected == null ? expected : { ...expected, output_tokens_details: null }
@@ -151,7 +141,6 @@ describe("Messages Interactions usage", () => {
       input_tokens: -2,
       cache_read_input_tokens: 4,
       output_tokens: 2,
-      interactions: raw,
     });
   });
   test.each([
@@ -168,7 +157,6 @@ describe("Messages Interactions usage", () => {
       output_tokens_details: null,
       input_tokens: input,
       output_tokens: expected,
-      interactions: raw,
     });
   });
 });
@@ -259,11 +247,6 @@ describe("Messages Interactions requests", () => {
       { type: "function_result", call_id: "call_1", name: "weather", result: "sunny" },
       { type: "user_input", content: [{ type: "text", text: "continue" }] },
     ]);
-    expect(c.getInputStepRanges()).toEqual([
-      { start: 0, end: 1 },
-      { start: 1, end: 3 },
-      { start: 3, end: 5 },
-    ]);
   });
   test.each([
     { temperature: 0.2 },
@@ -284,11 +267,6 @@ describe("Messages Interactions requests", () => {
     {
       messages: [
         { role: "user", content: [{ type: "tool_result", tool_use_id: "missing", content: "x" }] },
-      ],
-    },
-    {
-      messages: [
-        { role: "assistant", content: [{ type: "thinking", thinking: "x", signature: "foreign" }] },
       ],
     },
     {
@@ -337,7 +315,13 @@ describe("Messages Interactions JSON/SSE", () => {
       { type: "thinking", thinking: "想一想", signature: "native-signature" },
       { type: "text", text: "hello", citations: null },
     ]);
-    expect(msg.usage?.interactions).toEqual(raw.usage);
+    expect(c.getUsage()).toEqual(raw.usage);
+    expect(msg.usage).not.toHaveProperty("interactions");
+    const history = converter().convertRequest({
+      ...params,
+      messages: [{ role: "assistant", content: msg.content }],
+    });
+    expect(history.input[0]).toMatchObject({ type: "thought", signature: "native-signature" });
     expect(msg.diagnostics).toBeNull();
     expect(msg.stop_details).toBeNull();
     expect(msg.usage?.output_tokens_details).toBeNull();
@@ -363,12 +347,6 @@ describe("Messages Interactions JSON/SSE", () => {
       input_tokens: 100,
       cache_read_input_tokens: 0,
       output_tokens: 28,
-      interactions: {
-        ...usage,
-        total_cached_tokens: 0,
-        total_output_tokens: 21,
-        total_tokens: 128,
-      },
     });
     expect(c.finishStream()).toEqual([]);
   });
@@ -407,14 +385,15 @@ describe("Messages Interactions JSON/SSE", () => {
     const end = out.find(e => e.type === "message_delta");
     expect(end?.type === "message_delta" && end.delta.stop_reason).toBe("tool_use");
   });
-  test("preserves media for the gateway and rejects it without extension support", () => {
+  test("rejects media and keeps raw usage internally", () => {
     const raw = response();
-    const media = { type: "video" as const, data: "YWJj", mime_type: "video/mp4", future: "x" };
-    raw.steps!.push({ type: "model_output", content: [media] });
+    raw.steps!.push({
+      type: "model_output",
+      content: [{ type: "video", data: "YWJj", mime_type: "video/mp4" }],
+    });
     const c = converter();
-    c.convertResponse(raw);
-    expect(c.getOutputStepEntries().map(e => e.step)).toEqual(raw.steps);
-    expect(() => new MessagesToInteractionsConverter().convertResponse(raw)).toThrow(/extension/);
+    expect(() => c.convertResponse(raw)).toThrow(/not supported/);
+    expect(c.getUsage()).toEqual(raw.usage);
   });
   test("missing usage stays absent without fake zero counters", () => {
     const raw = response();

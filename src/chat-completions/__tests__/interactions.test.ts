@@ -84,7 +84,6 @@ describe("CC to Interactions V1", () => {
         { type: "function_result", call_id: "a", name: "weather", result: "sun" },
       ],
     });
-    expect(converter.getMessageStepRanges()[3]).toEqual({ start: 1, end: 3 });
   });
 
   test("maps generation fields, tool selection and JSON schema without mutating input", () => {
@@ -201,7 +200,8 @@ describe("CC to Interactions V1", () => {
   );
 
   test("converts nonstream text and official thought-inclusive usage exactly", () => {
-    const result = new ChatCompletionToInteractionsConverter().convertResponse(response);
+    const converter = new ChatCompletionToInteractionsConverter();
+    const result = converter.convertResponse(response);
     expect(result.choices[0].message.content).toBe("你好🙂");
     expect(result.usage).toMatchObject({
       prompt_tokens: 7,
@@ -209,7 +209,8 @@ describe("CC to Interactions V1", () => {
       total_tokens: 49,
       completion_tokens_details: { reasoning_tokens: 22 },
     });
-    expect(result.usage?.interactions).toEqual(usage);
+    expect(converter.getUsage()).toEqual(usage);
+    expect(result.usage).not.toHaveProperty("interactions");
   });
 
   test("does not double count tool tokens in the official function-call example", () => {
@@ -224,7 +225,6 @@ describe("CC to Interactions V1", () => {
       prompt_tokens: 100,
       completion_tokens: 25,
       total_tokens: 125,
-      interactions: { total_tool_use_tokens: 50 },
     });
   });
 
@@ -247,11 +247,13 @@ describe("CC to Interactions V1", () => {
       future_metric: { amount: 99 },
     };
     const converted = convertInteractionUsage(raw)!;
-    expect(converted.interactions).toEqual(raw);
+    const converter = new ChatCompletionToInteractionsConverter();
+    converter.convertResponse({ ...response, usage: raw });
+    expect(converter.getUsage()).toEqual(raw);
     expect(converted.prompt_tokens_details).toEqual({ cached_tokens: 3, audio_tokens: 5 });
     expect(converted.completion_tokens_details).toEqual({ reasoning_tokens: 22, audio_tokens: 20 });
     raw.input_tokens_by_modality![0].tokens = 999;
-    expect(converted.interactions.input_tokens_by_modality![0].tokens).toBe(2);
+    expect(converter.getUsage()!.input_tokens_by_modality![0].tokens).toBe(2);
   });
 
   test("does not invent absent counts or infer missing thought tokens", () => {
@@ -533,7 +535,7 @@ describe("CC to Interactions V1", () => {
   });
 
   test.each(["image", "audio", "video", "document"] as const)(
-    "requires an explicit native carrier for %s output",
+    "rejects %s output while retaining usage",
     type => {
       const media = {
         ...response,
@@ -544,14 +546,9 @@ describe("CC to Interactions V1", () => {
           },
         ],
       };
-      expect(() => new ChatCompletionToInteractionsConverter().convertResponse(media)).toThrow(
-        "media extension"
-      );
-      const converted = new ChatCompletionToInteractionsConverter({
-        allowUnmappedContent: true,
-      }).convertResponse(media);
-      expect(converted.choices[0].message.content).toBeNull();
-      expect(converted.choices[0].finish_reason).toBe("stop");
+      const converter = new ChatCompletionToInteractionsConverter();
+      expect(() => converter.convertResponse(media)).toThrow(/not supported/);
+      expect(converter.getUsage()).toEqual(media.usage);
       expect(media.steps[0].content[0].data).toBe("YWJj");
     }
   );

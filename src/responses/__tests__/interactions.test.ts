@@ -34,8 +34,8 @@ const response: Interaction = {
 };
 const params = (extra: Record<string, unknown> = {}) =>
   ({ model: "omni", input: "hello", ...extra }) as OpenAI.Responses.ResponseCreateParams;
-function converter(extra: Record<string, unknown> = {}, media = false) {
-  const value = new ResponsesToInteractionsConverter({ allowUnmappedContent: media });
+function converter(extra: Record<string, unknown> = {}) {
+  const value = new ResponsesToInteractionsConverter();
   value.convertRequest(params(extra));
   return value;
 }
@@ -123,14 +123,13 @@ describe("Responses → Interactions request", () => {
       schema: { type: "object" },
     });
   });
-  test("maps mixed image/audio/file input in order without mutation", () => {
+  test("maps mixed image/file input in order without mutation", () => {
     const request = params({
       input: [
         {
           role: "user",
           content: [
             { type: "input_image", image_url: "data:image/png;base64,YQ==" },
-            { type: "input_audio", input_audio: { data: "Yg==", format: "wav" } },
             { type: "input_file", file_url: "https://example.com/file.pdf" },
             { type: "input_text", text: "inspect" },
           ],
@@ -142,7 +141,6 @@ describe("Responses → Interactions request", () => {
       type: "user_input",
       content: [
         { type: "image", mime_type: "image/png", data: "YQ==" },
-        { type: "audio", mime_type: "audio/wav", data: "Yg==" },
         { type: "document", uri: "https://example.com/file.pdf" },
         { type: "text", text: "inspect" },
       ],
@@ -187,22 +185,19 @@ describe("Responses usage", () => {
       total_tokens: 49,
       input_tokens_details: { cached_tokens: 3, cache_write_tokens: null },
       output_tokens_details: { reasoning_tokens: 22 },
-      interactions: usage,
     });
-    expect(result.interactions).not.toBe(usage);
+    expect(result).not.toHaveProperty("interactions");
   });
   test("distinguishes absent usage, partial counts and actual zero", () => {
     expect(convertInteractionResponseUsage(undefined)).toBeNull();
     expect(convertInteractionResponseUsage({ total_input_tokens: 0 })).toEqual({
       input_tokens: 0,
-      interactions: { total_input_tokens: 0 },
     });
     expect(
       convertInteractionResponseUsage({ total_output_tokens: 4 })?.output_tokens
     ).toBeUndefined();
     expect(convertInteractionResponseUsage({ total_cached_tokens: 0 })).toEqual({
       input_tokens_details: { cached_tokens: 0, cache_write_tokens: null },
-      interactions: { total_cached_tokens: 0 },
     });
   });
 });
@@ -236,46 +231,24 @@ describe("Interactions → Responses", () => {
       input_tokens_details: { cached_tokens: 4 },
     });
   });
-  test("retains media, thought and signatures through the native step interface", () => {
-    const { final, value } = convertAll(
-      [
-        { event_type: "step.start", index: 0, step: { type: "thought" } },
-        {
-          event_type: "step.delta",
-          index: 0,
-          delta: { type: "thought_summary", content: { type: "text", text: "summary" } },
-        },
-        {
-          event_type: "step.delta",
-          index: 0,
-          delta: { type: "thought_signature", signature: "test-signature" },
-        },
-        { event_type: "step.stop", index: 0 },
-        { event_type: "step.start", index: 1, step: { type: "model_output" } },
-        {
-          event_type: "step.delta",
-          index: 1,
-          delta: { type: "video", data: "YWJj", mime_type: "video/mp4" },
-        },
-        { event_type: "step.stop", index: 1 },
-        {
-          event_type: "interaction.completed",
-          interaction: { id: "", status: "completed", usage },
-        },
+  test("emits standard reasoning summary without a private signature envelope", () => {
+    const value = converter();
+    const result = value.convertResponse({
+      ...response,
+      steps: [
+        { type: "thought", summary: [{ type: "text", text: "summary" }], signature: "native" },
+        ...response.steps!,
       ],
-      converter({}, true)
-    );
-    expect(final.output.map((item: any) => item.type)).toEqual(["reasoning", "message"]);
-    expect(final.output[1].content).toEqual([]);
-    expect(value.getOutputStepEntries().map(entry => entry.step)).toEqual([
-      {
-        type: "thought",
-        summary: [{ type: "text", text: "summary" }],
-        signature: "test-signature",
-      },
-      { type: "model_output", content: [{ type: "video", data: "YWJj", mime_type: "video/mp4" }] },
-    ]);
-    expect(final.id).toMatch(/^resp_/);
+    });
+    expect(result.output[0]).toMatchObject({
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "summary" }],
+    });
+    expect(result.output[0]).not.toHaveProperty("encrypted_content");
+    expect(result.output[0]).not.toHaveProperty("interactions");
+    expect(value.getUsage()).toEqual(usage);
+    expect(() => converter({ include: ["reasoning.encrypted_content"] })).toThrow(/include/);
+    expect(() => converter().convertRequest(params({ input: result.output }))).not.toThrow();
   });
   test("tool arguments remain one JSON string with stable call identity", () => {
     const { stream, final } = convertAll([
@@ -308,7 +281,7 @@ describe("Interactions → Responses", () => {
     expect(final.output[0].id).not.toBe("call_1");
     expect(stream.filter(e => e.type === "response.function_call_arguments.done")).toHaveLength(1);
     const done = stream.find(e => e.type === "response.function_call_arguments.done");
-    expect(done?.name).toBe("weather");
+    expect(done).not.toHaveProperty("name");
     expect(done?.arguments).toBe('{"city":"杭州"}');
   });
   test("incomplete does not invent max_output_tokens as the cause", () => {
@@ -328,19 +301,15 @@ describe("Interactions → Responses", () => {
   )("rejects truncation, errors or malformed lifecycle", ({ source }) => {
     expect(() => convertAll(source as InteractionEvent[])).toThrow();
   });
-  test("standard-only conversion refuses to drop media or signatures", () => {
+  test("rejects media rather than returning an empty successful output", () => {
+    const value = converter();
     expect(() =>
-      converter().convertResponse({
+      value.convertResponse({
         ...response,
         steps: [{ type: "model_output", content: [{ type: "image", data: "YQ==" }] }],
       })
-    ).toThrow(/extension/);
-    expect(() =>
-      converter().convertResponse({
-        ...response,
-        steps: [{ type: "thought", signature: "signature" }],
-      })
-    ).toThrow(/extension/);
+    ).toThrow(/not supported/);
+    expect(value.getUsage()).toEqual(usage);
   });
   test.each([{ reasoning: { budget_tokens: 1024 } }, { reasoning: { enabled: true } }])(
     "rejects unsupported reasoning controls %j",
@@ -362,7 +331,7 @@ describe("Interactions → Responses", () => {
       labels: { purpose: "test" },
       generation_config: { max_output_tokens: 32 },
       tools: [{ type: "function", name: "new", parameters: {} }],
-      response_format: { type: "video", mime_type: "video/mp4" },
+      response_format: { type: "text", mime_type: "text/plain" },
     });
     const result = value.convertResponse(response);
     expect(result).toMatchObject({
@@ -373,7 +342,7 @@ describe("Interactions → Responses", () => {
       tools: [{ name: "new" }],
       metadata: { purpose: "test" },
     });
-    expect(result.text).toBeUndefined();
+    expect(result.text).toMatchObject({ format: { type: "text" } });
   });
   test.each([
     { type: "model_output", content: [{ type: "text", text: "different" }] },
@@ -386,7 +355,7 @@ describe("Interactions → Responses", () => {
     };
     expect(() => convertAll(source)).toThrow(/disagree/);
   });
-  test.each(["signature", "media"])("rejects conflicting final %s", kind => {
+  test.each(["signature"])("rejects conflicting final %s", kind => {
     const step: InteractionStep =
       kind === "signature"
         ? { type: "thought", signature: "first" }
@@ -402,7 +371,7 @@ describe("Interactions → Responses", () => {
           { event_type: "step.stop", index: 0 },
           { event_type: "interaction.completed", interaction: { ...response, steps: [final] } },
         ],
-        converter({}, true)
+        converter()
       )
     ).toThrow(/disagree/);
   });
@@ -457,19 +426,21 @@ describe("Interactions → Responses", () => {
   });
 });
 
-test("native builtin step signatures retain the existing conflict check", () => {
-  const converter = new ResponsesToInteractionsConverter({ allowUnmappedContent: true });
-  const step: InteractionStep = {
-    type: "code_execution_call",
-    id: "code",
-    arguments: { code: "1", language: "python" },
-    signature: "first",
-  };
-  converter.convertStreamEvent({ event_type: "step.start", index: 0, step });
+test("rejects builtin tools whose output has no implemented standard mapping", () => {
+  const value = converter();
+  expect(() => value.convertRequest(params({ tools: [{ type: "web_search" }] }))).toThrow(
+    /Unsupported/
+  );
   expect(() =>
-    converter.convertStreamEvent({
-      event_type: "interaction.completed",
-      interaction: { id: "i", status: "completed", steps: [{ ...step, signature: "different" }] },
+    value.convertStreamEvent({
+      event_type: "step.start",
+      index: 0,
+      step: {
+        type: "code_execution_call",
+        id: "code",
+        arguments: { code: "1", language: "python" },
+        signature: "first",
+      },
     })
-  ).toThrow("Final signature disagrees");
+  ).toThrow(/not supported/);
 });

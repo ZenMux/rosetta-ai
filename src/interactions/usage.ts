@@ -5,17 +5,11 @@ import type { InteractionModalityTokens, InteractionUsage } from "./types";
 
 // A partial provider snapshot must stay partial. Filling absent counters with 0
 // would turn an interrupted/incomplete usage report into apparently valid billing.
-export interface InteractionCompletionUsage extends Partial<OpenAI.CompletionUsage> {
-  interactions: InteractionUsage;
-}
+export type InteractionCompletionUsage = Partial<OpenAI.CompletionUsage>;
 
-export interface InteractionResponseUsage extends Partial<NonNullable<ConvertedResponse["usage"]>> {
-  interactions: InteractionUsage;
-}
+export type InteractionResponseUsage = Partial<NonNullable<ConvertedResponse["usage"]>>;
 
-export interface InteractionMessageUsage extends Partial<Anthropic.Usage> {
-  interactions: InteractionUsage;
-}
+export type InteractionMessageUsage = Partial<Anthropic.Usage>;
 
 /** Messages separates uncached input from cache reads; native fee aliases keep the total. */
 export function convertInteractionMessageUsage(
@@ -23,7 +17,6 @@ export function convertInteractionMessageUsage(
 ): InteractionMessageUsage | undefined {
   if (!usage) return undefined;
   const result: InteractionMessageUsage = {
-    interactions: structuredClone(usage),
     output_tokens_details: null,
   };
   if (usage.total_input_tokens != null)
@@ -38,7 +31,7 @@ export function convertInteractionResponseUsage(
   usage: InteractionUsage | undefined
 ): InteractionResponseUsage | null {
   if (!usage) return null;
-  const result: InteractionResponseUsage = { interactions: structuredClone(usage) };
+  const result: InteractionResponseUsage = {};
   if (usage.total_input_tokens != null) result.input_tokens = usage.total_input_tokens;
   if (usage.total_output_tokens != null && usage.total_thought_tokens != null)
     result.output_tokens = usage.total_output_tokens + usage.total_thought_tokens;
@@ -66,7 +59,7 @@ export function convertInteractionUsage(
   usage: InteractionUsage | undefined
 ): InteractionCompletionUsage | undefined {
   if (!usage) return undefined;
-  const result: InteractionCompletionUsage = { interactions: structuredClone(usage) };
+  const result: InteractionCompletionUsage = {};
   if (usage.total_input_tokens != null) result.prompt_tokens = usage.total_input_tokens;
   if (usage.total_output_tokens != null && usage.total_thought_tokens != null) {
     result.completion_tokens = usage.total_output_tokens + usage.total_thought_tokens;

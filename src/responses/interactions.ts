@@ -34,13 +34,7 @@ export type InteractionResponse = Omit<
 type ReplaceResponse<T> = T extends { response: OpenAI.Responses.Response }
   ? Omit<T, "response"> & { response: InteractionResponse }
   : T;
-// Preserve the function name extension already emitted by this converter.
-export type InteractionResponseStreamEvent =
-  | Exclude<
-      ReplaceResponse<OpenAI.Responses.ResponseStreamEvent>,
-      OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent
-    >
-  | (OpenAI.Responses.ResponseFunctionCallArgumentsDoneEvent & { name: string });
+export type InteractionResponseStreamEvent = ReplaceResponse<OpenAI.Responses.ResponseStreamEvent>;
 type WithoutSequence<T> = T extends unknown ? Omit<T, "sequence_number"> : never;
 
 interface StateFields {
@@ -72,9 +66,8 @@ type StepState = StateFields &
       }
   );
 
-/** Direct Responses ↔ Interactions V1 conversion; platform extensions remain in adapters. */
+/** Direct Responses ↔ Interactions V1 conversion; only standard target content is returned. */
 export class ResponsesToInteractionsConverter {
-  constructor(private readonly options: { allowUnmappedContent?: boolean } = {}) {}
   private params?: OpenAI.Responses.ResponseCreateParams;
   private request?: InteractionCreateParams;
   private id = "";
@@ -87,39 +80,18 @@ export class ResponsesToInteractionsConverter {
   private usage?: InteractionUsage;
   private steps = new Map<number, StepState>();
   private seen = new Set<string>();
-  private ranges: { start: number; end: number }[] = [];
 
   convertRequest(params: OpenAI.Responses.ResponseCreateParams): InteractionCreateParams {
     this.params = structuredClone(params);
     this.model = params.model ?? "";
-    this.ranges = [];
-    const request = convertResponsesInteractionRequest(params, (index, start, end) => {
-      this.ranges[index] = { start, end };
-    });
+    const request = convertResponsesInteractionRequest(params);
     this.setEffectiveRequest(request);
     return request;
   }
 
-  /** Gateways call this after explicit native overrides, before reading any response. */
+  /** Gateways call this after applying the effective request defaults, before reading any response. */
   setEffectiveRequest(request: InteractionCreateParams): void {
     this.request = structuredClone(request);
-  }
-
-  getInputStepRanges(): ReadonlyArray<{ start: number; end: number }> {
-    return this.ranges;
-  }
-
-  /** Native step ownership is shared with adapters, not inferred from array positions there. */
-  getOutputStepEntries(): Array<{
-    itemId: string;
-    outputIndex: number;
-    step: InteractionStartStep;
-  }> {
-    return [...this.steps.values()].map(state => ({
-      itemId: state.item.id!,
-      outputIndex: state.outputIndex,
-      step: structuredClone(state.step),
-    }));
   }
 
   getUsage(): InteractionUsage | undefined {
@@ -127,9 +99,9 @@ export class ResponsesToInteractionsConverter {
   }
 
   convertResponse(response: Interaction): InteractionResponse {
+    this.usage = response.usage && structuredClone(response.usage);
     this.checkStatus(response);
     this.identity(response);
-    this.usage = response.usage;
     for (const [index, step] of (response.steps ?? []).entries()) this.startStep(index, step);
     this.terminal = response;
     const events = this.finishStream();
@@ -210,7 +182,6 @@ export class ResponsesToInteractionsConverter {
       } else if (delta.type === "thought_signature") {
         if (state.kind !== "thought" || typeof delta.signature !== "string")
           throw new InteractionsResponseError("Invalid thought signature delta");
-        this.unmapped("thought signature");
         state.step.signature = delta.signature;
       } else if (delta.type === "arguments_delta") {
         if (state.kind !== "function_call")
@@ -314,7 +285,6 @@ export class ResponsesToInteractionsConverter {
             item_id: item.id!,
             output_index: outputIndex,
             arguments: args,
-            name: item.name,
           })
         );
       } else if (item.type === "message" && state.textStarted) {
@@ -432,7 +402,6 @@ export class ResponsesToInteractionsConverter {
         },
       };
     } else if (step.type === "thought") {
-      if (step.signature) this.unmapped("thought signature");
       if (step.summary?.some(part => part.type !== "text"))
         this.unmapped("thought summary content");
       state = {
@@ -525,7 +494,6 @@ export class ResponsesToInteractionsConverter {
 
   private reconcile(state: StepState, step: InteractionStep): InteractionResponseStreamEvent[] {
     validateFinalStep(state.step, step);
-    if ("signature" in step && step.signature) this.unmapped("thought signature");
     if (state.kind === "function_call" && step.type === "function_call") {
       state.step = { ...state.step, ...structuredClone(step) };
       state.hasFinalArguments = step.arguments != null;
@@ -677,8 +645,9 @@ export class ResponsesToInteractionsConverter {
       );
   }
   private unmapped(type: string): void {
-    if (!this.options.allowUnmappedContent)
-      throw new InteractionsResponseError(`Interactions ${type} requires a Responses extension`);
+    throw new InteractionsResponseError(
+      `Interactions ${type} is not supported by Responses conversion`
+    );
   }
   private text(step: InteractionStartStep): string {
     return interactionStepContent(step)

@@ -64,9 +64,8 @@ type State = StateFields &
       }
   );
 
-/** Direct Messages ↔ Interactions V1; platform media/history envelopes live in the gateway. */
+/** Direct Messages ↔ Interactions V1; only target-protocol content is returned. */
 export class MessagesToInteractionsConverter {
-  constructor(private readonly options: { allowUnmappedContent?: boolean } = {}) {}
   private model = "";
   private id = "";
   private started = false;
@@ -75,23 +74,10 @@ export class MessagesToInteractionsConverter {
   private usage?: InteractionUsage;
   private states = new Map<number, State>();
   private seen = new Set<string>();
-  private ranges: { start: number; end: number }[] = [];
 
   convertRequest(params: Anthropic.MessageCreateParams): InteractionCreateParams {
     this.model = params.model;
-    this.ranges = [];
-    return convertMessagesInteractionRequest(params, (index, start, end) => {
-      this.ranges[index] = { start, end };
-    });
-  }
-  getInputStepRanges(): ReadonlyArray<{ start: number; end: number }> {
-    return this.ranges;
-  }
-  getOutputStepEntries(): Array<{ outputIndex: number; step: InteractionStartStep }> {
-    return [...this.states.values()].map(s => ({
-      outputIndex: s.index,
-      step: structuredClone(s.step),
-    }));
+    return convertMessagesInteractionRequest(params);
   }
   getUsage(): InteractionUsage | undefined {
     return this.usage;
@@ -101,9 +87,9 @@ export class MessagesToInteractionsConverter {
   }
 
   convertResponse(raw: Interaction): InteractionMessage {
+    this.usage = structuredClone(raw.usage);
     this.checkStatus(raw);
     this.identity(raw);
-    this.usage = structuredClone(raw.usage);
     for (const [index, step] of (raw.steps ?? []).entries()) this.start(index, step);
     this.terminal = structuredClone(raw);
     this.finishStream();
@@ -425,14 +411,13 @@ export class MessagesToInteractionsConverter {
       .join("");
   }
   private validateContent(step: InteractionStartStep): void {
-    for (const part of "content" in step ? (step.content ?? []) : []) {
+    for (const part of interactionStepContent(step)) {
       if (part.type !== "text") this.unmapped(part.type);
       if (part.type === "text" && part.annotations?.length) this.unmapped("text annotations");
     }
   }
   private unmapped(kind: string): void {
-    if (!this.options.allowUnmappedContent)
-      fail(`Interactions ${kind} requires a Messages extension`);
+    fail(`Interactions ${kind} is not supported by Messages conversion`);
   }
 }
 function parseArguments(value: string): Record<string, unknown> {

@@ -57,8 +57,8 @@ export function validateResponsesInteractionsParameters(params: Params): void {
     fail("Unsupported reasoning.effort for Interactions V1");
   if (params.reasoning?.summary != null && params.reasoning.summary !== "auto")
     fail("Only reasoning.summary=auto has an equivalent in Interactions V1");
-  if (params.include?.some(value => value !== "reasoning.encrypted_content"))
-    fail("Unsupported include for Interactions V1");
+  if (params.include?.length)
+    fail("include has no supported equivalent in Interactions conversion");
   const known = new Set([
     "model",
     "input",
@@ -103,10 +103,7 @@ export function validateResponsesInteractionsParameters(params: Params): void {
 }
 
 /** Input ranges let a gateway restore native history/media without reimplementing conversion. */
-export function convertResponsesInteractionRequest(
-  params: Params,
-  onItem: (index: number, start: number, end: number) => void
-): InteractionCreateParams {
+export function convertResponsesInteractionRequest(params: Params): InteractionCreateParams {
   validateResponsesInteractionsParameters(params);
   if (typeof params.model !== "string" || !params.model) fail("model is required");
   const input: InteractionStep[] = [];
@@ -117,11 +114,10 @@ export function convertResponsesInteractionRequest(
   if (typeof params.input === "string")
     input.push({ type: "user_input", content: [{ type: "text", text: params.input }] });
   else if (Array.isArray(params.input)) {
-    for (const [index, raw] of params.input.entries()) {
+    for (const raw of params.input) {
       const item = object(raw, "input item");
-      const start = input.length;
       if (item.interactions != null)
-        fail("Native input history requires the gateway Interactions extension");
+        fail("Native input history is not supported by Responses conversion");
       if (item.type === "function_call") {
         const id = nonempty(item.call_id, "function_call.call_id");
         const name = nonempty(item.name, "function_call.name");
@@ -138,7 +134,7 @@ export function convertResponsesInteractionRequest(
         input.push({ type: "function_result", call_id: id, name: names.get(id), result });
       } else if (item.type === "reasoning") {
         if (item.encrypted_content != null)
-          fail("Reasoning encrypted_content requires a supported gateway signature carrier");
+          fail("Reasoning encrypted_content has no equivalent in Interactions conversion");
         const summary = parts(item.summary).map(part => {
           if (part.type !== "summary_text") return fail("Unsupported reasoning summary part");
           return { type: "text" as const, text: string(part.text, "summary.text") };
@@ -158,7 +154,6 @@ export function convertResponsesInteractionRequest(
           input.push({ type: role === "user" ? "user_input" : "model_output", content });
         } else fail("Unsupported Responses message role");
       } else fail(`Unsupported Responses input item: ${item.type}`);
-      onItem(index, start, input.length);
     }
   } else fail("input must be a string or an array of items");
 
@@ -184,10 +179,6 @@ export function convertResponsesInteractionRequest(
         ...(tool.description != null && { description: string(tool.description, "description") }),
         ...(tool.parameters != null && { parameters: object(tool.parameters, "parameters") }),
       });
-    } else if (tool.type === "web_search" || tool.type === "web_search_preview") {
-      if (Object.entries(tool).some(([key, value]) => key !== "type" && value != null))
-        fail("Web search options have no equivalent in Interactions V1");
-      tools.push({ type: "google_search" });
     } else fail(`Unsupported Interactions tool: ${tool.type}`);
   }
   if (params.tool_choice != null) {
@@ -285,15 +276,6 @@ function convertContent(raw: unknown): InteractionContent {
         : undefined;
     if (!mime) fail("file_data requires a MIME data URL or .pdf/.csv filename");
     return { type: "document", data, mime_type: mime };
-  }
-  if (part.type === "input_audio") {
-    const audio = object(part.input_audio, "input_audio");
-    if (audio.format !== "mp3" && audio.format !== "wav") fail("Unsupported input_audio.format");
-    return {
-      type: "audio",
-      data: nonempty(audio.data, "input_audio.data"),
-      mime_type: audio.format === "mp3" ? "audio/mp3" : "audio/wav",
-    };
   }
   return fail(`Unsupported Responses content part: ${part.type}`);
 }

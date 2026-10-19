@@ -100,8 +100,7 @@ export function validateMessagesInteractionsParameters(
 }
 
 export function convertMessagesInteractionRequest(
-  params: Anthropic.MessageCreateParams,
-  onMessage: (index: number, start: number, end: number) => void
+  params: Anthropic.MessageCreateParams
 ): InteractionCreateParams {
   validateMessagesInteractionsParameters(params);
   const p = params;
@@ -110,13 +109,12 @@ export function convertMessagesInteractionRequest(
   const input: InteractionStep[] = [];
   const calls = new Map<string, string>();
   const results = new Set<string>();
-  for (const [index, raw] of p.messages.entries()) {
+  for (const raw of p.messages) {
     const message = object(raw, "message");
     if (message.role !== "user" && message.role !== "assistant")
       fail("Messages role must be user or assistant");
     if (message.interactions != null)
-      fail("Native history requires the gateway Interactions extension");
-    const start = input.length;
+      fail("Native history is not supported by Messages conversion");
     const blocks =
       typeof message.content === "string"
         ? [{ type: "text", text: message.content }]
@@ -130,7 +128,7 @@ export function convertMessagesInteractionRequest(
     for (const rawBlock of blocks) {
       const block = object(rawBlock, "content block");
       if (block.interactions != null)
-        fail("Native history requires the gateway Interactions extension");
+        fail("Native history is not supported by Messages conversion");
       if (block.cache_control != null) fail("cache_control has no equivalent in Interactions V1");
       if (block.type === "tool_use") {
         flush();
@@ -169,18 +167,18 @@ export function convertMessagesInteractionRequest(
       } else if (block.type === "thinking") {
         flush();
         if (message.role !== "assistant") fail("thinking requires assistant role");
-        if (block.signature)
-          fail("Thinking signatures require a supported gateway Interactions carrier");
         input.push({
           type: "thought",
           summary: [{ type: "text", text: string(block.thinking, "thinking") }],
+          ...(block.signature != null && {
+            signature: string(block.signature, "thinking.signature"),
+          }),
         });
       } else {
         content.push(convertContent(block));
       }
     }
     flush();
-    onMessage(index, start, input.length);
   }
   const config: InteractionGenerationConfig = {};
   if (p.max_tokens != null) config.max_output_tokens = p.max_tokens;
@@ -241,7 +239,7 @@ function convertContent(raw: unknown): InteractionContent {
   if (block.cache_control != null) fail("cache_control has no equivalent in Interactions V1");
   if (block.type === "text") {
     if (block.citations != null && (!Array.isArray(block.citations) || block.citations.length))
-      fail("Citation history requires the gateway Interactions extension");
+      fail("Citation history has no equivalent in Interactions conversion");
     return { type: "text", text: string(block.text, "text") };
   }
   if (block.type === "image" || block.type === "document") {

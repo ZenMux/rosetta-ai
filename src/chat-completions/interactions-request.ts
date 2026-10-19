@@ -26,11 +26,24 @@ export function validateChatCompletionInteractionsParameters(
   ] as const) {
     if (params[key] != null) fail(`${key} is not supported by the Interactions converter`);
   }
+  if (
+    params.response_format != null &&
+    !["text", "json_object", "json_schema"].includes(params.response_format.type)
+  )
+    fail("Unsupported response_format");
+  if (
+    params.response_format?.type === "json_schema" &&
+    params.response_format.json_schema.strict === true
+  )
+    fail("Interactions cannot guarantee json_schema strict=true");
+  for (const tool of params.tools ?? [])
+    if (tool.type === "function" && tool.function.strict === true)
+      fail("Interactions cannot guarantee function strict=true");
   if (params.n != null && params.n !== 1) fail("Interactions V1 supports only n=1");
   if (params.parallel_tool_calls === false)
     fail("Interactions V1 cannot enforce parallel_tool_calls=false");
   if (params.modalities?.some(modality => modality !== "text")) {
-    fail("Non-text output requires an explicit Interactions media output contract");
+    fail("Interactions conversion supports text output only");
   }
 
   if (
@@ -42,16 +55,14 @@ export function validateChatCompletionInteractionsParameters(
 }
 
 export function convertChatCompletionRequest(
-  params: OpenAI.ChatCompletionCreateParams,
-  onMessage?: (index: number, start: number, end: number) => void
+  params: OpenAI.ChatCompletionCreateParams
 ): InteractionCreateParams {
   validateChatCompletionInteractionsParameters(params);
   const input: InteractionStep[] = [];
   const system: string[] = [];
   const names = new Map<string, string>();
   if (!Array.isArray(params.messages)) fail("messages must be an array");
-  for (const [messageIndex, message] of params.messages.entries()) {
-    const start = input.length;
+  for (const message of params.messages) {
     if (!message || typeof message !== "object") fail("messages must contain objects");
     switch (message.role) {
       case "system":
@@ -118,7 +129,6 @@ export function convertChatCompletionRequest(
       default:
         fail("Unsupported message role");
     }
-    onMessage?.(messageIndex, start, input.length);
   }
 
   const config: InteractionGenerationConfig = {};

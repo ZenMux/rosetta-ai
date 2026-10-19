@@ -16,6 +16,7 @@ import {
   eventStatus,
   eventUsage,
 } from "../interactions/events";
+import { validateFinalStep } from "../interactions/steps";
 import { convertChatCompletionRequest } from "./interactions-request";
 
 export type InteractionChatCompletion = Omit<OpenAI.ChatCompletion, "usage"> & {
@@ -46,7 +47,6 @@ type StepState = { stopped: boolean } & (
 );
 
 export class ChatCompletionToInteractionsConverter {
-  constructor(private readonly options: { allowUnmappedContent?: boolean } = {}) {}
   private id = "";
   private model = "";
   private created = Math.floor(Date.now() / 1000);
@@ -57,22 +57,13 @@ export class ChatCompletionToInteractionsConverter {
   private toolCount = 0;
   private textLength = 0;
   private usage?: InteractionUsage;
-  private messageStepRanges: { start: number; end: number }[] = [];
-
   convertRequest(params: OpenAI.ChatCompletionCreateParams): InteractionCreateParams {
     this.model = params.model;
-    this.messageStepRanges = [];
-    return convertChatCompletionRequest(params, (index, start, end) => {
-      this.messageStepRanges[index] = { start, end };
-    });
-  }
-
-  /** Lets adapters attach message extensions without duplicating message conversion. */
-  getMessageStepRanges(): ReadonlyArray<{ start: number; end: number }> {
-    return this.messageStepRanges;
+    return convertChatCompletionRequest(params);
   }
 
   convertResponse(response: Interaction): InteractionChatCompletion {
+    this.usage = response.usage && structuredClone(response.usage);
     this.checkStatus(response);
     const text: string[] = [];
     const tools: OpenAI.ChatCompletionMessageFunctionToolCall[] = [];
@@ -96,7 +87,7 @@ export class ChatCompletionToInteractionsConverter {
           type: "function",
           function: { name: step.name!, arguments: JSON.stringify(step.arguments ?? {}) },
         });
-      }
+      } else this.validateHiddenStep(step);
     }
     return {
       id: response.id,
@@ -197,9 +188,11 @@ export class ChatCompletionToInteractionsConverter {
           state.textOffset
         );
         if (annotations.length) chunks.push(this.chunk({ content: "", ...{ annotations } }));
-      } else if (["image", "audio", "video", "document"].includes(delta.type)) {
-        this.unsupportedContent(delta.type);
-      }
+      } else if (delta.type === "thought_summary" && state.step.type === "thought") {
+        if (delta.content?.type !== "text") this.unsupportedContent("thought summary");
+      } else if (delta.type === "thought_signature" && state.step.type === "thought") {
+        state.step.signature = delta.signature;
+      } else this.unsupportedContent(delta.type);
     } else if (event.event_type === "step.stop") {
       const state = event.index == null ? undefined : this.steps.get(event.index);
       if (!state || state.stopped)
@@ -212,6 +205,7 @@ export class ChatCompletionToInteractionsConverter {
       // already delivered as deltas when the final event also includes a snapshot.
       for (const [index, step] of (event.interaction.steps ?? []).entries()) {
         const state = this.steps.get(index);
+        if (state) validateFinalStep(state.step, step);
         if (!state) chunks.push(...this.startStep(index, step));
         else if (step.type === "model_output" && state.kind === "model_output") {
           const text = (step.content ?? [])
@@ -245,6 +239,10 @@ export class ChatCompletionToInteractionsConverter {
       if (this.usage)
         chunks.push({ ...this.chunk({}), choices: [], usage: convertInteractionUsage(this.usage) });
       this.completed = true;
+    } else if (
+      !["interaction.created", "interaction.status_update", "metadata"].includes(event.event_type)
+    ) {
+      this.unsupportedContent(event.event_type);
     }
     return chunks;
   }
@@ -307,6 +305,7 @@ export class ChatCompletionToInteractionsConverter {
       }
       return chunks;
     }
+    this.validateHiddenStep(step);
     this.steps.set(index, { kind: "other", step, stopped: false });
     return [];
   }
@@ -382,13 +381,20 @@ export class ChatCompletionToInteractionsConverter {
       throw new InteractionsResponseError("Function call omitted id or name");
   }
 
-  private unsupportedContent(type: string): void {
-    // The adapter must preserve native steps/events when opting into multimodal
-    // output. A standalone standard-only conversion fails rather than losing media.
-    if (!this.options.allowUnmappedContent)
-      throw new InteractionsResponseError(
-        `Interactions ${type} output requires a CC media extension`
-      );
+  private validateHiddenStep(step: InteractionStartStep): void {
+    // CC exposes search citations in assistant text, but has no reasoning content field.
+    if (step.type === "thought") {
+      if (step.summary?.some(part => part.type !== "text"))
+        this.unsupportedContent("thought summary");
+    } else if (!["google_search_call", "google_search_result"].includes(step.type)) {
+      this.unsupportedContent(step.type);
+    }
+  }
+
+  private unsupportedContent(type: string): never {
+    throw new InteractionsResponseError(
+      `Interactions ${type} output is not supported by Chat Completions conversion`
+    );
   }
 
   private convertAnnotations(

@@ -64,17 +64,17 @@ inputs, JSON output, tool choice and supported generation settings. Explicit set
 equivalent (including temperature/top_p, n>1 and parallel_tool_calls=false) raise `InteractionsRequestError`.
 CC's default `store=false` is sent explicitly.
 
-Media generation has no general standard CC output container. By default conversion raises an error
-on media output. A gateway that separately retains native steps/events may opt into
-`new ChatCompletionToInteractionsConverter({ allowUnmappedContent: true })`. In that mode Rosetta
-converts representable CC fields; the gateway must return the native media through its documented
-extension. Reasoning/signature carriers and native history replay are also gateway responsibilities.
+Media output is rejected in both JSON and SSE. CC reasoning content and native step/event
+extensions are not emitted. Standard `reasoning_effort` remains supported, and thought tokens
+are included in completion usage. Only standard CC message fields can be used for history.
 
-Usage preserves the raw snapshot in `usage.interactions`, including unknown fields. Prompt tokens
-come from `total_input_tokens`; completion tokens are visible output plus thought tokens. Tool-use
-tokens are retained separately, following the official V1 example (100 input, 25 output, 50 tool-use,
-125 total). Cumulative SSE usage replaces counters instead of being summed. Missing counters stay
-missing, so usage is typed as partial; callers must check completeness before billing.
+Client usage contains standard protocol counters. `getUsage()` exposes a cloned source snapshot
+captured by the converter, including unknown fields, for internal logging and billing. Prompt
+tokens come from `total_input_tokens`; completion tokens are visible output plus thought tokens.
+Tool-use tokens are not added again, following the official V1 example (100 input, 25 output,
+50 tool-use, 125 total). Cumulative SSE usage replaces counters instead of being summed.
+Missing counters stay missing, so usage is typed as partial; callers must check completeness
+before billing. The caller remains responsible for retaining the complete original response.
 When driving `convertStreamEvent()` manually, call `finishStream()` at EOF to detect truncation.
 
 ### OpenAI Chat Completions → Anthropic Messages
@@ -531,19 +531,16 @@ Function arguments remain JSON objects, and streamed item identities remain
 stable. Terminals wait until EOF so late cumulative usage and malformed streams
 can be checked before reporting completion.
 
-`convertInteractionResponseUsage` preserves the complete source snapshot under
-`interactions`; output tokens include thought tokens exactly once. Missing
-usage returns null and partial snapshots remain partial.
+`convertInteractionResponseUsage` returns standard usage counters; output tokens include thought
+tokens exactly once. `getUsage()` retains the full raw usage snapshot internally. Missing usage
+returns null and partial snapshots remain partial.
 
-Standard-only conversion rejects media/signatures without a Responses
-representation. Integrators that preserve native extensions can opt into
-`allowUnmappedContent: true`, use `getOutputStepEntries()` to attach complete
-native steps to output items, and use `getInputStepRanges()` to restore native
-history. These hooks do not implement platform storage, routing or credential
-handling. When applying explicit native overrides, call
-`setEffectiveRequest(finalRequest)` before processing the response. Standard
-configuration echoes reflect the effective request; native-only fields without
-an equivalent standard value are omitted and must be retained by the integrator.
+Only standard text/image/file request content is accepted. Media output, raw native history,
+built-in search tools without an implemented equivalent output mapping, and
+`reasoning.encrypted_content` are rejected. Reasoning summaries use standard Responses items;
+no native-step envelope is encoded as encrypted content. These summary items can be replayed
+as standard history, without a native signature. After applying request defaults, callers may
+use `setEffectiveRequest(request)` to keep response configuration echoes consistent.
 
 This implementation is not yet published as a Responses-capable npm release.
 
@@ -551,8 +548,10 @@ This implementation is not yet published as a Responses-capable npm release.
 
 `MessagesToInteractionsConverter` directly translates Messages requests and Interactions V1 JSON/SSE responses. It supports text, image/document inputs, function calls/results (including `is_error`), system text, stop sequences, JSON Schema, and adaptive thinking with low/medium/high effort. Model support is separate from protocol support. Unsupported sampling, thinking budgets/disable, strict guarantees, cache controls, built-in Anthropic tools and stored-history parameters are rejected explicitly.
 
-Messages `input_tokens` excludes reported cache reads: `total_input_tokens - (total_cached_tokens ?? 0)`. `cache_read_input_tokens` is emitted only when reported, `output_tokens` includes output plus thought once, and `usage.interactions` preserves the complete original usage. Missing counters are not filled with zero; cache creation is not inferred. Stream usage is cumulative and completed only after the native terminal event and EOF, including late metadata.
+Messages `input_tokens` excludes reported cache reads: `total_input_tokens - (total_cached_tokens ?? 0)`. `cache_read_input_tokens` is emitted only when reported, `output_tokens` includes output plus thought once, and `getUsage()` retains the complete original usage internally. Client usage contains only standard counters. Missing counters are not filled with zero; cache creation is not inferred. Stream usage is cumulative and completed only after the native terminal event and EOF, including late metadata.
 
-The converter exposes `getOutputStepEntries()` and `getInputStepRanges()` for gateway-owned media and signature envelopes. Set `allowUnmappedContent: true` only when the caller preserves those native steps; the default rejects content that needs an extension. Empty stateless native IDs are accepted and a client message ID is generated. Unspecified native `incomplete` results retain a null stop reason instead of inventing a token-limit cause.
-
-The package version remains inherited from the CC base. Release order is CC, then Responses, then Messages; each stage publishes Rosetta before the consuming serverless dependency is updated. Version changes belong in a separate commit.
+Thinking uses standard `thinking` and `signature` fields. The native opaque signature is returned
+and can be sent back unchanged in standard Messages history; no custom step envelope is needed.
+Media outputs and audio/video input blocks are rejected. Empty stateless native IDs are accepted
+and a client message ID is generated. Unspecified native `incomplete` results retain a null stop
+reason instead of inventing a token-limit cause.
