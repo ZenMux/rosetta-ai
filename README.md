@@ -29,6 +29,7 @@ One converter instance handles the full round-trip for a single gateway route.
 | `ChatCompletionToMessagesConverter` | OpenAI Chat Completions | Anthropic Messages |
 | `ChatCompletionToResponsesConverter` | OpenAI Chat Completions | OpenAI Responses |
 | `ChatCompletionToGeminiConverter` | OpenAI Chat Completions | Google Gemini |
+| `ChatCompletionToInteractionsConverter` | OpenAI Chat Completions | Google Interactions V1 |
 | `MessagesToChatCompletionConverter` | Anthropic Messages | OpenAI Chat Completions |
 | `MessagesToResponsesConverter` | Anthropic Messages | OpenAI Responses |
 | `MessagesToGeminiConverter` | Anthropic Messages | Google Gemini |
@@ -40,6 +41,41 @@ One converter instance handles the full round-trip for a single gateway route.
 | `GeminiToResponsesConverter` | Google Gemini | OpenAI Responses |
 
 ## Usage
+
+### OpenAI Chat Completions → Google Interactions V1
+
+```typescript
+import { ChatCompletionToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ChatCompletionToInteractionsConverter();
+const request = converter.convertRequest(openaiRequest);
+// Send request to POST /v1/interactions using your own transport.
+const completion = converter.convertResponse(interaction);
+// Pass parsed V1 events, not raw SSE bytes:
+for await (const chunk of converter.convertStream(interactionEvents)) {
+  // Consume CC chunks.
+}
+```
+
+This converter uses the [V1 steps/step.delta contract](https://ai.google.dev/api/interactions-api-v1),
+not the outputs/content.delta types shipped in `@google/genai@1.52`. Use one instance per request.
+Request conversion supports full-history steps, function calls/results, standard CC image/audio/file
+inputs, JSON output, tool choice and supported generation settings. Explicit settings without a V1
+equivalent (including temperature/top_p, n>1 and parallel_tool_calls=false) raise `InteractionsRequestError`.
+CC's default `store=false` is sent explicitly.
+
+Media output is rejected in both JSON and SSE. CC reasoning content and native step/event
+extensions are not emitted. Standard `reasoning_effort` remains supported, and thought tokens
+are included in completion usage. Only standard CC message fields can be used for history.
+
+Client usage contains standard protocol counters. `getUsage()` exposes a cloned source snapshot
+captured by the converter, including unknown fields, for internal logging and billing. Prompt
+tokens come from `total_input_tokens`; completion tokens are visible output plus thought tokens.
+Tool-use tokens are not added again, following the official V1 example (100 input, 25 output,
+50 tool-use, 125 total). Cumulative SSE usage replaces counters instead of being summed.
+Missing counters stay missing, so usage is typed as partial; callers must check completeness
+before billing. The caller remains responsible for retaining the complete original response.
+When driving `convertStreamEvent()` manually, call `finishStream()` at EOF to detect truncation.
 
 ### OpenAI Chat Completions → Anthropic Messages
 
@@ -466,3 +502,56 @@ npm run build        # Build
 ## License
 
 Apache-2.0
+
+### OpenAI Responses ↔ Google Interactions V1
+
+The development branch exports `ResponsesToInteractionsConverter` and
+`convertInteractionResponseUsage`. Conversion is direct and uses the V1
+`steps` / `step.delta` contract.
+
+```typescript
+import { ResponsesToInteractionsConverter } from "@zenmux/rosetta-ai";
+
+const converter = new ResponsesToInteractionsConverter();
+const request = converter.convertRequest({
+  model: "your-interactions-model",
+  input: "Hello",
+  store: false,
+});
+// Send request to the Interactions endpoint, then use one response path:
+const response = converter.convertResponse(nativeInteraction);
+// Or: for await (const event of converter.convertStream(nativeEvents)) { ... }
+```
+
+Create a converter per request. It maps Responses items, call IDs, instructions,
+function tools, structured output and supported reasoning controls. Responses
+`store` defaults to true. Unsupported stateful/background execution, strict
+constraints, sampling controls and provider-owned file IDs fail explicitly.
+Function arguments remain JSON objects, and streamed item identities remain
+stable. Terminals wait until EOF so late cumulative usage and malformed streams
+can be checked before reporting completion.
+
+`convertInteractionResponseUsage` returns standard usage counters; output tokens include thought
+tokens exactly once. `getUsage()` retains the full raw usage snapshot internally. Missing usage
+returns null and partial snapshots remain partial.
+
+Only standard text/image/file request content is accepted. Media output, raw native history,
+built-in search tools without an implemented equivalent output mapping, and
+`reasoning.encrypted_content` are rejected. Reasoning summaries use standard Responses items;
+no native-step envelope is encoded as encrypted content. These summary items can be replayed
+as standard history, without a native signature. After applying request defaults, callers may
+use `setEffectiveRequest(request)` to keep response configuration echoes consistent.
+
+This implementation is not yet published as a Responses-capable npm release.
+
+## Messages → Google Interactions (development)
+
+`MessagesToInteractionsConverter` directly translates Messages requests and Interactions V1 JSON/SSE responses. It supports text, image/document inputs, function calls/results (including `is_error`), system text, stop sequences, JSON Schema, and adaptive thinking with low/medium/high effort. Model support is separate from protocol support. Unsupported sampling, thinking budgets/disable, strict guarantees, cache controls, built-in Anthropic tools and stored-history parameters are rejected explicitly.
+
+Messages `input_tokens` excludes reported cache reads: `total_input_tokens - (total_cached_tokens ?? 0)`. `cache_read_input_tokens` is emitted only when reported, `output_tokens` includes output plus thought once, and `getUsage()` retains the complete original usage internally. Client usage contains only standard counters. Missing counters are not filled with zero; cache creation is not inferred. Stream usage is cumulative and completed only after the native terminal event and EOF, including late metadata.
+
+Thinking uses standard `thinking` and `signature` fields. The native opaque signature is returned
+and can be sent back unchanged in standard Messages history; no custom step envelope is needed.
+Media outputs and audio/video input blocks are rejected. Empty stateless native IDs are accepted
+and a client message ID is generated. Unspecified native `incomplete` results retain a null stop
+reason instead of inventing a token-limit cause.
