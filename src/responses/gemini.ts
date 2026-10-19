@@ -842,7 +842,7 @@ export class ResponsesToGeminiConverter {
       total_tokens: usage?.totalTokenCount ?? 0,
       input_tokens_details: {
         cached_tokens: usage?.cachedContentTokenCount ?? 0,
-        cache_write_tokens: null,
+        cache_write_tokens: 0,
       },
       output_tokens_details: { reasoning_tokens: reasoningTokens },
     };
