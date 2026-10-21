@@ -83,6 +83,9 @@ interface StreamState {
   current: ItemContext | null;
   messageStarted: boolean;
   toolCallCount: number;
+  finishStatus?: RespResponse["status"];
+  usage?: OpenAI.CompletionUsage;
+  terminalEmitted: boolean;
 }
 
 export class ResponsesToChatCompletionConverter {
@@ -326,7 +329,7 @@ export class ResponsesToChatCompletionConverter {
             total_tokens: response.usage.total_tokens,
             input_tokens_details: {
               cached_tokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
-              cache_write_tokens: response.usage.prompt_tokens_details?.cache_write_tokens ?? null,
+              cache_write_tokens: response.usage.prompt_tokens_details?.cache_write_tokens ?? 0,
             },
             output_tokens_details: {
               reasoning_tokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
@@ -471,7 +474,7 @@ export class ResponsesToChatCompletionConverter {
   // --- Stream conversion (CC → Responses, backward) ---
 
   async *convertStream(
-    stream: AsyncIterable<OpenAI.ChatCompletionChunk>
+    stream: AsyncIterable<OpenAI.ChatCompletionChunk> & { controller?: AbortController }
   ): AsyncIterable<RespStreamEvent> {
     for await (const chunk of stream) {
       const events = this.convertStreamChunk(chunk);
@@ -479,10 +482,25 @@ export class ResponsesToChatCompletionConverter {
         yield event;
       }
     }
+    // The OpenAI SDK may end iteration normally after swallowing an abort.
+    if (!stream.controller?.signal.aborted) yield* this.finalizeStream();
+  }
+
+  /**
+   * Flush a pending terminal event on normal upstream EOF when no final usage
+   * chunk arrived. Call after convertStreamChunk iteration, never on errors or
+   * cancellation. Streams without a finish marker are left unfinished.
+   */
+  finalizeStream(): RespStreamEvent[] {
+    const state = this.streamState;
+    if (!state.finishStatus || state.terminalEmitted) return [];
+    return denamespaceStreamEvents(this.emitCompleted(state.usage, state.finishStatus));
   }
 
   convertStreamChunk(chunk: OpenAI.ChatCompletionChunk): RespStreamEvent[] {
     const state = this.streamState;
+    if (state.terminalEmitted) return [];
+    if (chunk.usage) state.usage = chunk.usage;
     const events: RespStreamEvent[] = [];
     const choice = chunk.choices?.[0];
 
@@ -508,10 +526,14 @@ export class ResponsesToChatCompletionConverter {
     if (!choice) {
       // Usage-only chunk (empty choices) at the end
       if (chunk.usage) {
-        events.push(...this.emitCompleted(chunk.usage));
+        events.push(...this.closeCurrent());
+        events.push(...this.emitCompleted(chunk.usage, state.finishStatus));
       }
       return denamespaceStreamEvents(events);
     }
+
+    // Output has already finished; only accept usage until normal EOF.
+    if (state.finishStatus) return [];
 
     const delta = choice.delta;
 
@@ -735,15 +757,11 @@ export class ResponsesToChatCompletionConverter {
       }
     }
 
-    // Finish reason — close the open item, then emit the terminal event.
+    // Close output immediately, but wait for the final usage chunk or EOF
+    // before terminating the Responses stream.
     if (choice.finish_reason) {
       events.push(...this.closeCurrent());
-      const status = this.finishReasonToStatus(choice.finish_reason);
-      if (chunk.usage) {
-        events.push(...this.emitCompleted(chunk.usage, status));
-      } else {
-        events.push(...this.emitCompleted(undefined, status));
-      }
+      state.finishStatus = this.finishReasonToStatus(choice.finish_reason);
     }
 
     return denamespaceStreamEvents(events);
@@ -1276,6 +1294,7 @@ export class ResponsesToChatCompletionConverter {
       current: null,
       messageStarted: false,
       toolCallCount: 0,
+      terminalEmitted: false,
     };
   }
 
@@ -1311,6 +1330,8 @@ export class ResponsesToChatCompletionConverter {
     status?: RespResponse["status"]
   ): RespStreamEvent[] {
     const state = this.streamState;
+    if (state.terminalEmitted) return [];
+    state.terminalEmitted = true;
     const finalStatus = status ?? "completed";
     const resp = this.makeSkeletonResponse();
     resp.status = finalStatus;
@@ -1360,7 +1381,7 @@ export class ResponsesToChatCompletionConverter {
         total_tokens: usage.total_tokens,
         input_tokens_details: {
           cached_tokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
-          cache_write_tokens: usage.prompt_tokens_details?.cache_write_tokens ?? null,
+          cache_write_tokens: usage.prompt_tokens_details?.cache_write_tokens ?? 0,
         },
         output_tokens_details: {
           reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,

@@ -459,7 +459,7 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(result.usage?.input_tokens).toBe(10);
       expect(result.usage?.output_tokens).toBe(5);
       expect(result.usage?.total_tokens).toBe(15);
-      expect(result.usage?.input_tokens_details.cache_write_tokens).toBeNull();
+      expect(result.usage?.input_tokens_details.cache_write_tokens).toBe(0);
 
       const msgOutput = result.output.find((o: any) => o.type === "message") as any;
       expect(msgOutput).toBeDefined();
@@ -905,7 +905,7 @@ describe("ResponsesToChatCompletionConverter", () => {
       expect(argsDelta.delta).toBe('{"x');
     });
 
-    it("emits response.completed on finish", () => {
+    it("emits response.completed with finish-chunk usage on normal EOF", () => {
       const c = new ResponsesToChatCompletionConverter();
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
       c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
@@ -916,6 +916,7 @@ describe("ResponsesToChatCompletionConverter", () => {
           usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         } as any)
       );
+      events.push(...c.finalizeStream());
 
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
@@ -926,7 +927,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       const c = new ResponsesToChatCompletionConverter();
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
-      const events = c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
+      c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
+      const events = c.finalizeStream();
 
       const incomplete = events.find(e => e.type === "response.incomplete") as any;
       expect(incomplete).toBeDefined();
@@ -1047,6 +1049,9 @@ describe("ResponsesToChatCompletionConverter", () => {
         input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2 },
         output_tokens_details: { reasoning_tokens: 0 },
       });
+      expect(completed.response.output_text).toBe("Hi");
+      expect(c.finalizeStream()).toEqual([]);
+      expect(c.convertStreamChunk(usageChunk)).toEqual([]);
     });
 
     it("emits finish with usage when finish_reason and usage in same chunk", () => {
@@ -1060,19 +1065,183 @@ describe("ResponsesToChatCompletionConverter", () => {
           usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         } as any)
       );
+      events.push(...c.finalizeStream());
 
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
     });
 
-    it("emits finish without usage", () => {
+    it("waits for normal EOF when finish arrives without usage", () => {
       const c = new ResponsesToChatCompletionConverter();
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
 
       const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      expect(events.some(e => e.type === "response.completed")).toBe(false);
 
-      const completed = events.find(e => e.type === "response.completed") as any;
+      const completed = c.finalizeStream().find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
+      expect(completed.response.usage).toBeUndefined();
+      expect(c.finalizeStream()).toEqual([]);
+    });
+
+    it.each([
+      ["stop", "response.completed", "completed"],
+      ["tool_calls", "response.completed", "completed"],
+      ["length", "response.incomplete", "incomplete"],
+      ["content_filter", "response.failed", "failed"],
+    ] as const)("preserves %s status when usage arrives after finish", (reason, type, status) => {
+      const c = new ResponsesToChatCompletionConverter();
+      const textEvents = c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
+      expect(textEvents.some(e => e.type === "response.output_text.delta")).toBe(true);
+      const finish = c.convertStreamChunk(makeChunk({ finish_reason: reason }));
+      expect(finish.some(e => e.type === "response.output_item.done")).toBe(true);
+      expect(finish.some(e => "response" in e)).toBe(false);
+
+      const usageChunk = makeChunk({
+        choices: [],
+        usage: {
+          prompt_tokens: 42505,
+          completion_tokens: 411,
+          total_tokens: 42916,
+          prompt_tokens_details: { cached_tokens: 1536 },
+          completion_tokens_details: { reasoning_tokens: 29 },
+        },
+      });
+      const events = c.convertStreamChunk(usageChunk);
+      expect(events).toHaveLength(1);
+      const terminal = events[0] as any;
+      expect(terminal.type).toBe(type);
+      expect(terminal.response.status).toBe(status);
+      expect(terminal.response.output_text).toBe("Hi");
+      expect(terminal.response.usage).toEqual({
+        input_tokens: 42505,
+        output_tokens: 411,
+        total_tokens: 42916,
+        input_tokens_details: { cached_tokens: 1536, cache_write_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 29 },
+      });
+      if (reason === "length") {
+        expect(terminal.response.incomplete_details).toEqual({ reason: "max_output_tokens" });
+      }
+      expect(c.convertStreamChunk(usageChunk)).toEqual([]);
+      expect(c.finalizeStream()).toEqual([]);
+    });
+
+    it.each([undefined, null, 0, 7])("normalizes cache-write usage %s in JSON and SSE", count => {
+      const c = new ResponsesToChatCompletionConverter();
+      const usage = {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+        prompt_tokens_details: { cache_write_tokens: count },
+      } as any;
+      const response = c.convertResponse({
+        id: "cc-1",
+        object: "chat.completion",
+        created: 1,
+        model: "model",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hi", refusal: null },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage,
+      });
+      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop", usage }));
+      events.push(...c.finalizeStream());
+      const terminal = events.find(e => e.type === "response.completed") as any;
+      expect(response.usage?.input_tokens_details.cache_write_tokens).toBe(count ?? 0);
+      expect(terminal.response.usage).toEqual(response.usage);
+      expect(c.finalizeStream()).toEqual([]);
+    });
+
+    it("uses the final usage trailer even when the finish chunk already contains usage", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      const finish = c.convertStreamChunk(
+        makeChunk({
+          delta: { content: "Hi" },
+          finish_reason: "stop",
+          usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+        })
+      );
+      expect(finish.some(e => e.type === "response.completed")).toBe(false);
+      const events = c.convertStreamChunk(
+        makeChunk({
+          choices: [],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        })
+      );
+      expect(events).toHaveLength(1);
+      expect((events[0] as any).response.usage.total_tokens).toBe(15);
+      expect(c.finalizeStream()).toEqual([]);
+    });
+
+    it("retains usage from earlier chunks when normal EOF has no usage trailer", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      c.convertStreamChunk(
+        makeChunk({
+          delta: { content: "Hi" },
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        })
+      );
+      c.convertStreamChunk(makeChunk({ finish_reason: "length" }));
+      const terminal = c.finalizeStream()[0] as any;
+      expect(terminal.type).toBe("response.incomplete");
+      expect(terminal.response.usage.total_tokens).toBe(15);
+    });
+
+    it("finalizes convertStream on normal EOF without requiring a usage trailer", async () => {
+      async function* upstream() {
+        yield makeChunk({ delta: { content: "Hi" } });
+        yield makeChunk({ finish_reason: "stop" });
+      }
+      const c = new ResponsesToChatCompletionConverter();
+      const events = [];
+      for await (const event of c.convertStream(upstream())) events.push(event);
+      expect(events.filter(e => e.type === "response.completed")).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe("response.completed");
+    });
+
+    it("does not report success if upstream throws after the finish chunk", async () => {
+      const error = new Error("upstream disconnected");
+      async function* upstream() {
+        yield makeChunk({ delta: { content: "Hi" } });
+        yield makeChunk({ finish_reason: "stop" });
+        throw error;
+      }
+      const c = new ResponsesToChatCompletionConverter();
+      const events: any[] = [];
+      await expect(
+        (async () => {
+          for await (const event of c.convertStream(upstream())) events.push(event);
+        })()
+      ).rejects.toBe(error);
+      expect(events.some(e => e.type === "response.completed")).toBe(false);
+    });
+
+    it("does not finalize an SDK stream that swallows an abort", async () => {
+      const controller = new AbortController();
+      async function* upstream() {
+        yield makeChunk({ delta: { content: "Hi" } });
+        yield makeChunk({ finish_reason: "stop" });
+        controller.abort();
+      }
+      const c = new ResponsesToChatCompletionConverter();
+      const events = [];
+      for await (const event of c.convertStream(Object.assign(upstream(), { controller }))) {
+        events.push(event);
+      }
+      expect(events.some(e => e.type === "response.completed")).toBe(false);
+    });
+
+    it("does not fabricate completion for an empty or unfinished stream", () => {
+      const c = new ResponsesToChatCompletionConverter();
+      expect(c.finalizeStream()).toEqual([]);
+      c.convertStreamChunk(makeChunk({ delta: { content: "partial" } }));
+      expect(c.finalizeStream()).toEqual([]);
     });
 
     // ===== done / refusal / annotation / custom / failed events =====
@@ -1242,7 +1411,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
       c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
 
-      const events = c.convertStreamChunk(makeChunk({ finish_reason: "content_filter" }));
+      c.convertStreamChunk(makeChunk({ finish_reason: "content_filter" }));
+      const events = c.finalizeStream();
 
       const failed = events.find(e => e.type === "response.failed") as any;
       expect(failed).toBeDefined();
@@ -1255,7 +1425,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       c.convertStreamChunk(makeChunk({ delta: { content: "Hello" } }));
       c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
 
-      const lastEvents = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      expect(c.convertStreamChunk(makeChunk({ finish_reason: "stop" }))).toEqual([]);
+      const lastEvents = c.finalizeStream();
       const completed = lastEvents.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
       expect(completed.response.output.length).toBeGreaterThanOrEqual(1);
@@ -1268,7 +1439,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       c.convertStreamChunk(makeChunk({ delta: { content: "Hello " } }));
       c.convertStreamChunk(makeChunk({ delta: { content: "world" } }));
 
-      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const events = c.finalizeStream();
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
       expect(completed.response.output_text).toBe("Hello world");
@@ -1289,7 +1461,8 @@ describe("ResponsesToChatCompletionConverter", () => {
       c.convertStreamChunk(makeChunk({ delta: { role: "assistant" } }));
       c.convertStreamChunk(makeChunk({ delta: { content: "Hi" } }));
 
-      const events = c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      c.convertStreamChunk(makeChunk({ finish_reason: "stop" }));
+      const events = c.finalizeStream();
       const completed = events.find(e => e.type === "response.completed") as any;
       expect(completed).toBeDefined();
       expect(completed.response.instructions).toBe("Be brief.");
