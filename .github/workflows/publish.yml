@@ -6,14 +6,11 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  id-token: write  # Required for OIDC
-  contents: read
-
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write  # Required for OIDC
       contents: write
     steps:
       - uses: actions/checkout@v6
