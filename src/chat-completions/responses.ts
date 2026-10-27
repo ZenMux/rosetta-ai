@@ -758,12 +758,14 @@ export class ChatCompletionToResponsesConverter {
     usage: OpenAI.Responses.ResponseUsage,
     webSearchCount = 0
   ): OpenAI.CompletionUsage {
+    const cacheWriteTokens = usage.input_tokens_details?.cache_write_tokens;
     return {
       prompt_tokens: usage.input_tokens,
       completion_tokens: usage.output_tokens,
       total_tokens: usage.total_tokens,
       prompt_tokens_details: {
         cached_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
+        ...(cacheWriteTokens != null ? { cache_write_tokens: cacheWriteTokens } : {}),
         ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
       },
       completion_tokens_details: {

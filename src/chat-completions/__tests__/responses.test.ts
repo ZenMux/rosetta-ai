@@ -8,6 +8,89 @@ describe("ChatCompletionToResponsesConverter", () => {
     converter = new ChatCompletionToResponsesConverter();
   });
 
+  describe.each(["non-streaming", "completed", "incomplete"] as const)(
+    "cache-write usage (%s)",
+    mode => {
+      it.each([undefined, null, 0, 300])(
+        "preserves cache-write tokens %p without changing token totals",
+        cacheWriteTokens => {
+          // Some providers omit or return null for the SDK's required cache-write field.
+          const response: OpenAI.Responses.Response = {
+            id: "resp_cache_write",
+            object: "response",
+            created_at: 1700000000,
+            model: "gpt-4o",
+            access_programs: null,
+            output: [],
+            output_text: "",
+            error: null,
+            instructions: null,
+            metadata: {},
+            parallel_tool_calls: true,
+            temperature: null,
+            top_p: null,
+            tool_choice: "auto",
+            tools: [],
+            status: mode === "incomplete" ? "incomplete" : "completed",
+            incomplete_details: mode === "incomplete" ? { reason: "max_output_tokens" } : null,
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 50,
+              total_tokens: 1050,
+              input_tokens_details: {
+                cached_tokens: 200,
+                ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
+              },
+              output_tokens_details: { reasoning_tokens: 10 },
+            } as OpenAI.Responses.ResponseUsage,
+          };
+          const originalResponse = JSON.stringify(response);
+          let usage: OpenAI.CompletionUsage | null | undefined;
+
+          if (mode === "non-streaming") {
+            usage = converter.convertResponse(response).usage;
+          } else {
+            converter.convertRequest({
+              model: response.model,
+              messages: [{ role: "user", content: "Hello" }],
+              stream: true,
+              stream_options: { include_usage: true },
+            });
+            converter.convertStreamEvent({
+              type: "response.created",
+              sequence_number: 0,
+              response: { ...response, status: "in_progress", usage: undefined },
+            });
+            const chunks = converter.convertStreamEvent({
+              type: mode === "completed" ? "response.completed" : "response.incomplete",
+              sequence_number: 1,
+              response,
+            });
+            if (!Array.isArray(chunks)) throw new Error("expected finish and usage chunks");
+            expect(chunks).toHaveLength(2);
+            expect(chunks[0].choices[0].finish_reason).toBe(
+              mode === "completed" ? "stop" : "length"
+            );
+            expect(chunks[1].choices).toEqual([]);
+            usage = chunks[1].usage;
+          }
+
+          expect(usage).toEqual({
+            prompt_tokens: 1000,
+            completion_tokens: 50,
+            total_tokens: 1050,
+            prompt_tokens_details: {
+              cached_tokens: 200,
+              ...(cacheWriteTokens != null ? { cache_write_tokens: cacheWriteTokens } : {}),
+            },
+            completion_tokens_details: { reasoning_tokens: 10 },
+          });
+          expect(JSON.stringify(response)).toBe(originalResponse);
+        }
+      );
+    }
+  );
+
   describe("convertRequest", () => {
     it("converts messages to input items", () => {
       const result = converter.convertRequest({
