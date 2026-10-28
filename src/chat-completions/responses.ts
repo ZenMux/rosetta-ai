@@ -766,6 +766,8 @@ export class ChatCompletionToResponsesConverter {
       prompt_tokens_details: {
         cached_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
         ...(cacheWriteTokens != null ? { cache_write_tokens: cacheWriteTokens } : {}),
+        // @ts-expect-error Preserve cache-write details not yet declared by the SDK.
+        cache_write_tokens_details: usage.input_tokens_details?.cache_write_tokens_details,
         ...(webSearchCount > 0 ? { web_search: webSearchCount } : {}),
       },
       completion_tokens_details: {
