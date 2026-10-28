@@ -1,0 +1,14 @@
+package.json
+  h_795d6201dfb27b 3,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "535400055dee0d65bccf4a366dffaa1d482b9b3f",
+  "prompts": {},
+  "humans": {
+    "h_795d6201dfb27b": {
+      "author": "hancheng.ln <20748212+lian-xiao-xi@users.noreply.github.com>"
+    }
+  }
+}
