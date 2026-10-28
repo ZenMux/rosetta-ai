@@ -1,0 +1,20 @@
+src/chat-completions/responses.ts
+  s_7018287e06ddc6::t_4d5082e565f17b 769
+  s_7018287e06ddc6::t_cc32753f5069c1 770
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dad3cbad802120faa4aa05296e28ec0d8a25b583",
+  "prompts": {},
+  "sessions": {
+    "s_7018287e06ddc6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a181b6-2496-7c30-9d3b-04feaf4b44e6",
+        "model": "openai/gpt-6.1-sol"
+      },
+      "human_author": "hancheng.ln <20748212+lian-xiao-xi@users.noreply.github.com>"
+    }
+  }
+}
