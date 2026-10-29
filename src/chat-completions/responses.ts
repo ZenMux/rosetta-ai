@@ -70,6 +70,9 @@ export class ChatCompletionToResponsesConverter {
     if (params.prompt_cache_key != null) {
       result.prompt_cache_key = params.prompt_cache_key;
     }
+    if (params.prompt_cache_options != null) {
+      result.prompt_cache_options = params.prompt_cache_options;
+    }
     if (params.prompt_cache_retention != null) {
       result.prompt_cache_retention = params.prompt_cache_retention;
     }
@@ -374,7 +377,7 @@ export class ChatCompletionToResponsesConverter {
           input.push({
             role: msg.role,
             type: "message",
-            content: msg.content.map(p => ({ type: "input_text", text: p.text })),
+            content: msg.content.map(p => this.convertInputText(p)),
           });
         }
       } else if (msg.role === "user") {
@@ -442,7 +445,7 @@ export class ChatCompletionToResponsesConverter {
         const output =
           typeof msg.content === "string"
             ? msg.content
-            : msg.content.map(p => ({ type: "input_text" as const, text: p.text }));
+            : msg.content.map(p => this.convertInputText(p));
         input.push({
           type:
             toolCallTypes.get(msg.tool_call_id) === "custom"
@@ -516,7 +519,13 @@ export class ChatCompletionToResponsesConverter {
       const parts = content.map(part =>
         part.type === "refusal"
           ? { type: "refusal" as const, refusal: part.refusal }
-          : { type: "output_text" as const, text: part.text }
+          : {
+              type: "output_text" as const,
+              text: part.text,
+              ...(part.prompt_cache_breakpoint != null
+                ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint }
+                : {}),
+            }
       );
       if (message.refusal != null && !content.some(part => part.type === "refusal")) {
         parts.push({ type: "refusal", refusal: message.refusal });
@@ -546,18 +555,33 @@ export class ChatCompletionToResponsesConverter {
     };
   }
 
+  private convertInputText(
+    part: OpenAI.Chat.Completions.ChatCompletionContentPartText
+  ): OpenAI.Responses.ResponseInputText {
+    return {
+      type: "input_text",
+      text: part.text,
+      ...(part.prompt_cache_breakpoint != null
+        ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint }
+        : {}),
+    };
+  }
+
   private convertUserContent(
     parts: Exclude<OpenAI.Chat.Completions.ChatCompletionUserMessageParam["content"], string>
   ): OpenAI.Responses.ResponseInputContent[] {
     const content: OpenAI.Responses.ResponseInputContent[] = [];
     for (const part of parts) {
       if (part.type === "text") {
-        content.push({ type: "input_text", text: part.text });
+        content.push(this.convertInputText(part));
       } else if (part.type === "image_url") {
         content.push({
           type: "input_image",
           image_url: part.image_url.url,
           detail: part.image_url.detail ?? "auto",
+          ...(part.prompt_cache_breakpoint != null
+            ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint }
+            : {}),
         });
       } else if (part.type === "file") {
         content.push({
@@ -565,6 +589,9 @@ export class ChatCompletionToResponsesConverter {
           file_data: part.file.file_data,
           file_id: part.file.file_id,
           filename: part.file.filename,
+          ...(part.prompt_cache_breakpoint != null
+            ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint }
+            : {}),
         });
       }
     }
