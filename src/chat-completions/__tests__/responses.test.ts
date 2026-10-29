@@ -92,6 +92,161 @@ describe("ChatCompletionToResponsesConverter", () => {
   );
 
   describe("convertRequest", () => {
+    describe.each([false, true])("prompt cache controls (stream=%s)", stream => {
+      it.each([
+        { name: "ordinary request", options: undefined, breakpoints: [] },
+        {
+          name: "explicit mode without breakpoints",
+          options: { mode: "explicit", ttl: "30m" },
+          breakpoints: [],
+        },
+        {
+          name: "30m default inherited by a breakpoint",
+          options: { mode: "explicit", ttl: "30m" },
+          breakpoints: [{ mode: "explicit" }],
+        },
+        {
+          name: "12h default inherited by a breakpoint",
+          options: { mode: "explicit", ttl: "12h" },
+          breakpoints: [{ mode: "explicit" }],
+        },
+        {
+          name: "mixed TTLs in their original positions",
+          options: { mode: "explicit", ttl: "30m" },
+          breakpoints: [
+            { mode: "explicit", ttl: "12h" },
+            { mode: "explicit", ttl: "30m" },
+          ],
+        },
+        {
+          name: "implicit mode with an explicit override",
+          options: { mode: "implicit", ttl: "12h", prewarm: false },
+          breakpoints: [{ mode: "explicit", ttl: "30m" }],
+        },
+        {
+          name: "a breakpoint without request options",
+          options: undefined,
+          breakpoints: [{ mode: "explicit", ttl: "12h" }],
+        },
+      ])("preserves $name", ({ options, breakpoints }) => {
+        const content = ["shared reference", "session context", "current question"].map(
+          (text, index) => ({
+            type: "text",
+            text,
+            ...(breakpoints[index] ? { prompt_cache_breakpoint: breakpoints[index] } : {}),
+          })
+        );
+        // Exercise newer TTL values without upgrading the SDK's older 30m-only types.
+        const request = {
+          model: "gpt-6.1-terra",
+          stream,
+          messages: [{ role: "user", content }],
+          ...(options ? { prompt_cache_options: options, prompt_cache_key: "cache-key" } : {}),
+        } as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParams;
+        const original = JSON.stringify(request);
+        const result = converter.convertRequest(request);
+
+        expect(result.prompt_cache_options).toEqual(options);
+        expect(result).toHaveProperty("stream", stream);
+        expect(result.prompt_cache_key).toBe(options ? "cache-key" : undefined);
+        expect(result.input).toStrictEqual([
+          {
+            role: "user",
+            type: "message",
+            content: content.map(part => ({ ...part, type: "input_text" })),
+          },
+        ]);
+        if (options === undefined) {
+          expect(result).not.toHaveProperty("prompt_cache_options");
+        }
+        expect(JSON.stringify(request)).toBe(original);
+      });
+    });
+
+    it.each(["system", "developer", "assistant", "tool"] as const)(
+      "preserves text breakpoints in %s history",
+      role => {
+        const breakpoint = { mode: "explicit" as const, ttl: "12h" };
+        const request = {
+          model: "gpt-6.1-terra",
+          messages: [
+            {
+              role,
+              ...(role === "tool" ? { tool_call_id: "call_1" } : {}),
+              content: [
+                { type: "text", text: "prefix", prompt_cache_breakpoint: breakpoint },
+                { type: "text", text: "suffix" },
+              ],
+            },
+          ],
+        } as OpenAI.Chat.Completions.ChatCompletionCreateParams;
+        const result = converter.convertRequest(request);
+        const content = [
+          {
+            type: role === "assistant" ? "output_text" : "input_text",
+            text: "prefix",
+            prompt_cache_breakpoint: breakpoint,
+          },
+          { type: role === "assistant" ? "output_text" : "input_text", text: "suffix" },
+        ];
+        expect(result.input).toStrictEqual([
+          role === "tool"
+            ? { type: "function_call_output", call_id: "call_1", output: content }
+            : { role, type: "message", content },
+        ]);
+      }
+    );
+
+    it("preserves image and file breakpoints without moving them onto adjacent text", () => {
+      const imageBreakpoint = { mode: "explicit" as const, ttl: "12h" };
+      const fileBreakpoint = { mode: "explicit" as const, ttl: "30m" };
+      const result = converter.convertRequest({
+        model: "gpt-6.1-terra",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "before" },
+              {
+                type: "image_url",
+                image_url: { url: "https://example.com/image.png", detail: "low" },
+                prompt_cache_breakpoint: imageBreakpoint,
+              },
+              {
+                type: "file",
+                file: { file_id: "file_1", filename: "reference.pdf" },
+                prompt_cache_breakpoint: fileBreakpoint,
+              },
+              { type: "text", text: "after" },
+            ],
+          },
+        ],
+      });
+      expect(result.input).toStrictEqual([
+        {
+          role: "user",
+          type: "message",
+          content: [
+            { type: "input_text", text: "before" },
+            {
+              type: "input_image",
+              image_url: "https://example.com/image.png",
+              detail: "low",
+              prompt_cache_breakpoint: imageBreakpoint,
+            },
+            {
+              type: "input_file",
+              file_id: "file_1",
+              filename: "reference.pdf",
+              file_data: undefined,
+              prompt_cache_breakpoint: fileBreakpoint,
+            },
+            { type: "input_text", text: "after" },
+          ],
+        },
+      ]);
+    });
+
     it("converts messages to input items", () => {
       const result = converter.convertRequest({
         model: "gpt-4o",
