@@ -618,6 +618,13 @@ export class ResponsesToGeminiConverter {
         parts.push({ text: p.text });
       } else if (p.type === "refusal") {
         parts.push({ text: p.refusal });
+      } else if (p.type === "input_audio") {
+        parts.push({
+          inlineData: {
+            mimeType: `audio/${p.input_audio?.format || "*"}`,
+            data: p.input_audio?.data,
+          },
+        });
       } else if (p.type === "input_image") {
         const url: string = p.image_url || "";
         const match = url.match(/^data:([^;]+);base64,(.+)$/);
