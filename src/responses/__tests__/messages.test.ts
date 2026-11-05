@@ -126,7 +126,158 @@ describe("ResponsesToMessagesConverter", () => {
       });
     });
 
-    it("coerces non-string function_call_output to string", () => {
+    describe("multimodal function_call_output", () => {
+      const imageData =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII=";
+      const image: OpenAI.Responses.ResponseInputImage = {
+        type: "input_image",
+        image_url: `data:image/png;base64,${imageData}`,
+        detail: "auto",
+      };
+      const imageBlock = {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: imageData },
+      };
+      const file: OpenAI.Responses.ResponseInputFile = {
+        type: "input_file",
+        filename: "report.pdf",
+        file_data: "data:application/pdf;base64,JVBERi0xLjQ=",
+      };
+      const documentBlock = {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" },
+      };
+
+      function convertOutput(
+        output: OpenAI.Responses.ResponseFunctionToolCallOutputItem["output"],
+        stream: boolean
+      ) {
+        return converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          stream,
+          input: [
+            { role: "user", content: "Read the tool result." },
+            { type: "function_call", call_id: "call_image", name: "screenshot", arguments: "{}" },
+            { type: "function_call_output", call_id: "call_image", output },
+          ],
+        });
+      }
+
+      const cases: Array<{
+        name: string;
+        output: OpenAI.Responses.ResponseFunctionToolCallOutputItem["output"];
+        expected: unknown[];
+      }> = [
+        {
+          name: "text parts",
+          output: [
+            { type: "input_text", text: "first" },
+            { type: "input_text", text: "second" },
+          ],
+          expected: [
+            { type: "text", text: "first" },
+            { type: "text", text: "second" },
+          ],
+        },
+        { name: "base64 image", output: [image], expected: [imageBlock] },
+        {
+          name: "image URL",
+          output: [
+            { type: "input_image", image_url: "https://example.com/image.png", detail: "auto" },
+          ],
+          expected: [
+            { type: "image", source: { type: "url", url: "https://example.com/image.png" } },
+          ],
+        },
+        { name: "base64 document", output: [file], expected: [documentBlock] },
+        {
+          name: "document URL",
+          output: [{ type: "input_file", file_url: "https://example.com/report.pdf" }],
+          expected: [
+            { type: "document", source: { type: "url", url: "https://example.com/report.pdf" } },
+          ],
+        },
+        {
+          name: "mixed text, image and document parts in order",
+          output: [
+            { type: "input_text", text: "before" },
+            image,
+            { type: "input_text", text: "after" },
+            file,
+          ],
+          expected: [
+            { type: "text", text: "before" },
+            imageBlock,
+            { type: "text", text: "after" },
+            documentBlock,
+          ],
+        },
+      ];
+
+      describe.each([false, true])("stream=%s", stream => {
+        it.each(cases)("preserves $name as native content blocks", ({ output, expected }) => {
+          const originalOutput = JSON.stringify(output);
+          const result = convertOutput(output, stream);
+
+          expect(result.stream ?? false).toBe(stream);
+          expect(result.messages[2]).toEqual({
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "call_image", content: expected }],
+          });
+          expect(JSON.stringify(output)).toBe(originalOutput);
+        });
+
+        it("does not reinterpret JSON strings containing content parts", () => {
+          const output = JSON.stringify([image, file]);
+          const result = convertOutput(output, stream);
+          expect(result.messages[2].content).toEqual([
+            {
+              type: "tool_result",
+              tool_use_id: "call_image",
+              content: [{ type: "text", text: output }],
+            },
+          ]);
+        });
+      });
+
+      it.each([{ output: [] }, { output: [{ temperature: 72 }] }, { output: [null, 7, "result"] }])(
+        "preserves legacy JSON array output %#",
+        ({ output }) => {
+          const result = convertOutput(output as any, false);
+          expect(result.messages[2].content).toEqual([
+            {
+              type: "tool_result",
+              tool_use_id: "call_image",
+              content: [{ type: "text", text: JSON.stringify(output) }],
+            },
+          ]);
+        }
+      );
+
+      it("keeps parallel tool result IDs, grouping and media blocks", () => {
+        const result = converter.convertRequest({
+          model: "claude-sonnet-4-20250514",
+          input: [
+            { role: "user", content: "Read both results." },
+            { type: "function_call", call_id: "call_image", name: "screenshot", arguments: "{}" },
+            { type: "function_call", call_id: "call_file", name: "read_file", arguments: "{}" },
+            { type: "function_call_output", call_id: "call_image", output: [image] },
+            { type: "function_call_output", call_id: "call_file", output: [file] },
+          ],
+        });
+
+        expect(result.messages).toHaveLength(3);
+        expect(result.messages[2]).toEqual({
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "call_image", content: [imageBlock] },
+            { type: "tool_result", tool_use_id: "call_file", content: [documentBlock] },
+          ],
+        });
+      });
+    });
+
+    it("coerces non-array object function_call_output to string", () => {
       const result = converter.convertRequest({
         model: "claude-sonnet-4-20250514",
         input: [
