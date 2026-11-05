@@ -12,6 +12,11 @@ import { sanitizeAnthropicInputSchema } from "../sanitize-anthropic-schema";
 
 const DEFAULT_MAX_TOKENS = 4096;
 
+type InputContentBlock =
+  | Anthropic.TextBlockParam
+  | Anthropic.ImageBlockParam
+  | Anthropic.DocumentBlockParam;
+
 interface StreamState {
   id: string;
   model: string;
@@ -895,15 +900,21 @@ export class ResponsesToMessagesConverter {
       } else if (typed.type === "function_call_output") {
         flushAssistant();
         const output = typed.output;
-        // Array content-part outputs are lossy: serialized as raw JSON rather than
-        // unwrapping input_text/image/file parts. Acceptable since Anthropic tool_result
-        // text expects a string and array outputs are rare on this path.
-        const outputText =
-          typeof output === "string" ? output : output == null ? "" : JSON.stringify(output);
+        // Preserve native content parts while keeping legacy JSON outputs and strings as text.
+        const isContentArray =
+          Array.isArray(output) &&
+          output.length > 0 &&
+          output.every(
+            part => part != null && ["input_text", "input_image", "input_file"].includes(part.type)
+          );
+        let content = output;
+        if (!isContentArray && typeof output !== "string") {
+          content = output == null ? "" : JSON.stringify(output);
+        }
         const toolResult: Anthropic.ToolResultBlockParam = {
           type: "tool_result",
           tool_use_id: typed.call_id,
-          content: [{ type: "text", text: outputText }],
+          content: this.convertInputContent(content),
         };
         // Anthropic requires parallel tool_results grouped in one user message,
         // so append to the prior user message if it already holds tool_results.
@@ -944,13 +955,13 @@ export class ResponsesToMessagesConverter {
     return "";
   }
 
-  private convertInputContent(content: any): Anthropic.ContentBlockParam[] {
+  private convertInputContent(content: any): InputContentBlock[] {
     if (typeof content === "string") {
       return [{ type: "text", text: content }];
     }
     if (!Array.isArray(content)) return [{ type: "text", text: "" }];
 
-    const blocks: Anthropic.ContentBlockParam[] = [];
+    const blocks: InputContentBlock[] = [];
     for (const part of content) {
       if (part.type === "input_text") {
         blocks.push({ type: "text", text: part.text });
