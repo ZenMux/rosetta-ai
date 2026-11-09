@@ -421,7 +421,12 @@ export class MessagesToResponsesConverter {
       case "error": {
         throw new APIError(
           undefined,
-          { code: event.code, message: event.message, param: event.param, type: "server_error" },
+          {
+            code: event.code ?? "server_error",
+            message: event.message,
+            param: event.param,
+            type: "server_error",
+          },
           undefined,
           undefined
         );

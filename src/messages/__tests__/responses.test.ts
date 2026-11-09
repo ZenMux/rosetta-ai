@@ -741,16 +741,18 @@ describe("MessagesToResponsesConverter", () => {
         sequence_number: 10,
       } as OpenAI.Responses.ResponseStreamEvent;
 
-      expect(() => c.convertStreamEvent(failure)).toThrow(APIError);
+      let caught: unknown;
       try {
         c.convertStreamEvent(failure);
       } catch (error) {
-        expect(error).toMatchObject({
-          code: "rate_limit_exceeded",
-          message: "Provider overloaded",
-        });
-        expect((error as APIError).status).toBeUndefined();
+        caught = error;
       }
+      expect(caught).toBeInstanceOf(APIError);
+      expect(caught).toMatchObject({
+        code: "rate_limit_exceeded",
+        message: "Provider overloaded",
+      });
+      expect((caught as APIError).status).toBeUndefined();
     });
 
     it("does not emit a success terminal when an async stream contains a failure", async () => {
@@ -783,6 +785,29 @@ describe("MessagesToResponsesConverter", () => {
           sequence_number: 1,
         })
       ).toThrow("Stream failed");
+    });
+
+    it("defaults a null error code without losing the message or parameter", () => {
+      const c = new MessagesToResponsesConverter();
+      let caught: unknown;
+      try {
+        c.convertStreamEvent({
+          type: "error",
+          code: null,
+          message: "Stream failed without a code",
+          param: "input",
+          sequence_number: 1,
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(APIError);
+      expect(caught).toMatchObject({
+        code: "server_error",
+        message: "Stream failed without a code",
+        param: "input",
+      });
+      expect((caught as APIError).status).toBeUndefined();
     });
 
     it("includes usage in completed event", () => {
