@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import { APIError } from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MessagesToResponsesConverter } from "../responses";
 
@@ -725,20 +726,63 @@ describe("MessagesToResponsesConverter", () => {
       expect(events.find(e => e.type === "message_stop")).toBeDefined();
     });
 
-    it("emits end_turn on response.failed", () => {
+    it("preserves response.failed as an error instead of emitting end_turn", () => {
       const c = new MessagesToResponsesConverter();
       c.convertStreamEvent(responseCreated());
 
-      const events = c.convertStreamEvent({
+      const failure = {
         type: "response.failed",
-        response: { id: "resp_123", status: "failed", output: [] } as any,
+        response: {
+          id: "resp_123",
+          status: "failed",
+          output: [],
+          error: { code: "rate_limit_exceeded", message: "Provider overloaded" },
+        } as any,
         sequence_number: 10,
-      });
+      } as OpenAI.Responses.ResponseStreamEvent;
 
-      const msgDelta = events.find(
-        e => e.type === "message_delta"
-      ) as Anthropic.RawMessageDeltaEvent;
-      expect(msgDelta.delta.stop_reason).toBe("end_turn");
+      expect(() => c.convertStreamEvent(failure)).toThrow(APIError);
+      try {
+        c.convertStreamEvent(failure);
+      } catch (error) {
+        expect(error).toMatchObject({
+          code: "rate_limit_exceeded",
+          message: "Provider overloaded",
+        });
+        expect((error as APIError).status).toBeUndefined();
+      }
+    });
+
+    it("does not emit a success terminal when an async stream contains a failure", async () => {
+      const c = new MessagesToResponsesConverter();
+      async function* source(): AsyncIterable<OpenAI.Responses.ResponseStreamEvent> {
+        yield responseCreated();
+        yield {
+          type: "response.failed",
+          response: { status: "failed" } as any,
+          sequence_number: 1,
+        };
+      }
+      const received: Anthropic.RawMessageStreamEvent[] = [];
+      await expect(
+        (async () => {
+          for await (const event of c.convertStream(source())) received.push(event);
+        })()
+      ).rejects.toThrow("Provider response stream failed");
+      expect(received.map(event => event.type)).toEqual(["message_start"]);
+    });
+
+    it("preserves a Responses error event", () => {
+      const c = new MessagesToResponsesConverter();
+      expect(() =>
+        c.convertStreamEvent({
+          type: "error",
+          code: "server_error",
+          message: "Stream failed",
+          param: null,
+          sequence_number: 1,
+        })
+      ).toThrow("Stream failed");
     });
 
     it("includes usage in completed event", () => {

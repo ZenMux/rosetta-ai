@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import { APIError } from "openai";
 import type Anthropic from "@anthropic-ai/sdk";
 
 type RespResponse = OpenAI.Responses.Response;
@@ -402,18 +403,28 @@ export class MessagesToResponsesConverter {
       }
 
       case "response.failed": {
-        events.push({
-          type: "message_delta",
-          delta: {
-            stop_reason: "end_turn",
-            stop_sequence: null,
-            stop_details: null,
-            container: null,
+        const failure = event.response.error;
+        // SSE failures have no HTTP error status. Preserve the provider error
+        // for the caller instead of fabricating a successful Messages terminal.
+        throw new APIError(
+          undefined,
+          {
+            code: failure?.code ?? "server_error",
+            message: failure?.message ?? "Provider response stream failed",
+            type: "server_error",
           },
-          usage: this.buildUsage(null, state.webSearchCount),
-        });
-        events.push({ type: "message_stop" });
-        break;
+          undefined,
+          undefined
+        );
+      }
+
+      case "error": {
+        throw new APIError(
+          undefined,
+          { code: event.code, message: event.message, param: event.param, type: "server_error" },
+          undefined,
+          undefined
+        );
       }
     }
 
