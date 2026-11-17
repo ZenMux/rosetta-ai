@@ -94,4 +94,3 @@ jobs:
           VERSION="$(node -p 'require("./package.json").version')"
           printf 'Package: `@zenmux/rosetta-ai@%s`\n\nDist-tag: `%s`\n\nSource commit: `%s`\n\nInstall: `npm install --save-exact @zenmux/rosetta-ai@%s`\n' \
             "$VERSION" "$DIST_TAG" "$GITHUB_SHA" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
-
