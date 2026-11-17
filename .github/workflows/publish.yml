@@ -1,31 +1,80 @@
 name: Publish
+run-name: Publish ${{ github.event_name == 'push' && 'stable' || inputs.channel || 'beta' }} from ${{ github.ref_name }}
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel (beta keeps latest unchanged)"
+        required: true
+        type: choice
+        default: beta
+        options:
+          - beta
+          - stable
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write  # Required for OIDC
+      id-token: write # Required for OIDC
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Select release channel
+        id: release
+        env:
+          CHANNEL: ${{ github.event_name == 'push' && 'stable' || inputs.channel || 'beta' }}
+        run: |
+          # 以下为安全注释COSEC：校验发布渠道，参数通过环境变量传入，不拼接到 Shell 源码。
+          case "$CHANNEL" in
+            beta) DIST_TAG=beta ;;
+            stable)
+              VERSION="$(node -p 'require("./package.json").version')"
+              if [[ "$VERSION" == *-* ]]; then
+                echo "::error::Stable publishing requires a version without a prerelease suffix."
+                exit 1
+              fi
+              DIST_TAG=latest
+              ;;
+            *)
+              echo "::error::Unsupported release channel."
+              exit 1
+              ;;
+          esac
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - name: Set beta version
+        if: steps.release.outputs.channel == 'beta'
+        run: |
+          # Change the version only in this runner; never create a commit or tag.
+          npm version prerelease --preid beta --no-git-tag-version --ignore-scripts
+          BETA_VERSION="$(node -p '`${require("./package.json").version.split("-")[0]}-beta.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`')"
+          npm version "$BETA_VERSION" --no-git-tag-version --ignore-scripts
       - run: npm run build
-      - run: npm publish
+      - name: Publish beta package
+        if: steps.release.outputs.channel == 'beta'
+        run: npm publish --tag beta
+      - name: Publish stable package
+        if: steps.release.outputs.channel == 'stable'
+        # Keep npm's protection against implicitly moving latest to an older version.
+        run: npm publish
       - name: Create tag and GitHub release
+        if: steps.release.outputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -38,3 +87,10 @@ jobs:
               --generate-notes \
               --target "$GITHUB_SHA"
           fi
+      - name: Write package summary
+        env:
+          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: |
+          VERSION="$(node -p 'require("./package.json").version')"
+          printf 'Package: `@zenmux/rosetta-ai@%s`\n\nDist-tag: `%s`\n\nSource commit: `%s`\n\nInstall: `npm install --save-exact @zenmux/rosetta-ai@%s`\n' \
+            "$VERSION" "$DIST_TAG" "$GITHUB_SHA" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
