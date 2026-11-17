@@ -23,6 +23,7 @@ export function validateMessagesInteractionsParameters(
     "stop_sequences",
     "thinking",
     "output_config",
+    "cache_control",
   ]);
   for (const [key, value] of Object.entries(p))
     if (value != null && !known.has(key))
@@ -82,7 +83,6 @@ export function validateMessagesInteractionsParameters(
       fail("Only custom function tools are supported by this converter");
     if (tool.strict === true) fail("Interactions V1 cannot guarantee tool strict=true");
     for (const key of [
-      "cache_control",
       "defer_loading",
       "allowed_callers",
       "input_examples",
@@ -103,6 +103,7 @@ export function convertMessagesInteractionRequest(
   params: Anthropic.MessageCreateParams
 ): InteractionCreateParams {
   validateMessagesInteractionsParameters(params);
+  // Ignore Messages cache hints, matching the Gemini converter; only map supported content.
   const p = params;
   const model = nonempty(p.model, "model");
   if (!Array.isArray(p.messages) || !p.messages.length) fail("messages must be a nonempty array");
@@ -129,7 +130,6 @@ export function convertMessagesInteractionRequest(
       const block = object(rawBlock, "content block");
       if (block.interactions != null)
         fail("Native history is not supported by Messages conversion");
-      if (block.cache_control != null) fail("cache_control has no equivalent in Interactions V1");
       if (block.type === "tool_use") {
         flush();
         if (message.role !== "assistant") fail("tool_use requires assistant role");
@@ -218,8 +218,7 @@ export function convertMessagesInteractionRequest(
         ? p.system
         : array(p.system, "system")
             .map(block => {
-              if (block.type !== "text" || block.cache_control != null)
-                fail("system supports plain text only");
+              if (block.type !== "text") fail("system supports plain text only");
               return string(block.text, "system.text");
             })
             .join("\n");
@@ -236,7 +235,6 @@ export function convertMessagesInteractionRequest(
 
 function convertContent(raw: unknown): InteractionContent {
   const block = object(raw, "content block");
-  if (block.cache_control != null) fail("cache_control has no equivalent in Interactions V1");
   if (block.type === "text") {
     if (block.citations != null && (!Array.isArray(block.citations) || block.citations.length))
       fail("Citation history has no equivalent in Interactions conversion");
