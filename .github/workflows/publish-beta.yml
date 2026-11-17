@@ -1,0 +1,42 @@
+name: Publish Beta
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Set beta version
+        id: beta
+        run: |
+          # Change the version only in this runner; never create a commit or tag.
+          npm version prerelease --preid beta --no-git-tag-version --ignore-scripts
+          BETA_VERSION="$(node -p '`${require("./package.json").version.split("-")[0]}-beta.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`')"
+          npm version "$BETA_VERSION" --no-git-tag-version --ignore-scripts
+          echo "version=$BETA_VERSION" >> "$GITHUB_OUTPUT"
+      - run: npm run build
+      # Register this file as an additional npm trusted publisher; keep publish.yml registered.
+      - name: Publish beta package
+        run: npm publish --tag beta
+      - name: Write package summary
+        env:
+          BETA_VERSION: ${{ steps.beta.outputs.version }}
+        run: |
+          printf 'Package: `@zenmux/rosetta-ai@%s`\n\nSource commit: `%s`\n\nInstall: `npm install --save-exact @zenmux/rosetta-ai@%s`\n' \
+            "$BETA_VERSION" "$GITHUB_SHA" "$BETA_VERSION" >> "$GITHUB_STEP_SUMMARY"
