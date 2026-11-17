@@ -7,16 +7,17 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
@@ -30,10 +31,9 @@ jobs:
           npm version "$BETA_VERSION" --no-git-tag-version --ignore-scripts
           echo "version=$BETA_VERSION" >> "$GITHUB_OUTPUT"
       - run: npm run build
+      # Register this file as an additional npm trusted publisher; keep publish.yml registered.
       - name: Publish beta package
-        run: npm publish --access public --tag beta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --tag beta
       - name: Write package summary
         env:
           BETA_VERSION: ${{ steps.beta.outputs.version }}
