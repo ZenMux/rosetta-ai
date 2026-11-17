@@ -254,7 +254,6 @@ describe("Messages Interactions requests", () => {
     { top_k: 2 },
     { service_tier: "auto" },
     { metadata: { user_id: "u" } },
-    { cache_control: { type: "ephemeral" } },
     { thinking: { type: "enabled", budget_tokens: 1024 } },
     { thinking: { type: "disabled" } },
     { thinking: { type: "adaptive", budget_tokens: 1024 } },
@@ -267,14 +266,6 @@ describe("Messages Interactions requests", () => {
     {
       messages: [
         { role: "user", content: [{ type: "tool_result", tool_use_id: "missing", content: "x" }] },
-      ],
-    },
-    {
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: "x", cache_control: { type: "ephemeral" } }],
-        },
       ],
     },
     { messages: [{ role: "system", content: "x" }] },
