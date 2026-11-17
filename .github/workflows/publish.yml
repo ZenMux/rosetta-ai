@@ -1,4 +1,5 @@
 name: Publish
+run-name: Publish ${{ github.event_name == 'push' && 'stable' || inputs.channel || 'beta' }} from ${{ github.ref_name }}
 
 on:
   push:
@@ -65,10 +66,13 @@ jobs:
           BETA_VERSION="$(node -p '`${require("./package.json").version.split("-")[0]}-beta.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`')"
           npm version "$BETA_VERSION" --no-git-tag-version --ignore-scripts
       - run: npm run build
-      - name: Publish package
-        env:
-          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
-        run: npm publish --tag "$DIST_TAG"
+      - name: Publish beta package
+        if: steps.release.outputs.channel == 'beta'
+        run: npm publish --tag beta
+      - name: Publish stable package
+        if: steps.release.outputs.channel == 'stable'
+        # Keep npm's protection against implicitly moving latest to an older version.
+        run: npm publish
       - name: Create tag and GitHub release
         if: steps.release.outputs.channel == 'stable'
         env:
