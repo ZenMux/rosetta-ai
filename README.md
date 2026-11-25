@@ -38,6 +38,7 @@ One converter instance handles the full round-trip for a single gateway route.
 | `ResponsesToGeminiConverter` | OpenAI Responses | Google Gemini |
 | `GeminiToChatCompletionConverter` | Google Gemini | OpenAI Chat Completions |
 | `GeminiToMessagesConverter` | Google Gemini | Anthropic Messages |
+| `SystemOneToGeminiDecisionsConverter` | SystemOne | Google Gemini Decisions |
 | `GeminiToResponsesConverter` | Google Gemini | OpenAI Responses |
 
 ## Usage
