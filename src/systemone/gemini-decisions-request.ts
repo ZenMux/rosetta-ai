@@ -15,7 +15,9 @@ export interface DecisionQuestionMapping {
   originalLevels?: string[];
 }
 
-export class SystemOneDecisionRequestError extends Error {}
+export class SystemOneDecisionRequestError extends Error {
+  override name = "SystemOneDecisionRequestError";
+}
 function invalid(path: string, message: string): never {
   throw new SystemOneDecisionRequestError(`${path}: ${message}`);
 }
@@ -31,18 +33,15 @@ function count(n: number, path: string, min: number, max: number) {
 }
 
 // Only string values carry references. Object keys (including option IDs) are business data.
-function render(value: unknown, path: string, replace: (s: string) => string): string {
-  if (typeof value === "string") return text(replace(value), path);
+type Replace = (value: string, path: string) => string;
+function render(value: unknown, path: string, replace: Replace): string {
+  if (typeof value === "string") return text(replace(value, path), path);
   if (!record(value) && !Array.isArray(value))
     invalid(path, "expected text, an object or an array");
-  return JSON.stringify(value, (_key, v) => (typeof v === "string" ? replace(v) : v));
+  return JSON.stringify(value, (_key, v) => (typeof v === "string" ? replace(v, path) : v));
 }
 
-function convertQuestion(
-  value: unknown,
-  path: string,
-  replace: (s: string) => string
-): Decisions.Question {
+function convertQuestion(value: unknown, path: string, replace: Replace): Decisions.Question {
   if (!record(value)) invalid(path, "expected a question object");
   for (const field of Object.keys(value)) {
     if (!["type", "instructions", "criteria"].includes(field))
@@ -56,7 +55,11 @@ function convertQuestion(
   if (type === "score") {
     if (!Array.isArray(criteria)) invalid(p, "expected an ordered array of levels");
     count(criteria.length, p, 2, 255);
-    return { type, instructions, criteria: criteria.map((v, i) => replace(text(v, `${p}[${i}]`))) };
+    return {
+      type,
+      instructions,
+      criteria: criteria.map((v, i) => replace(text(v, `${p}[${i}]`), `${p}[${i}]`)),
+    };
   }
   if (type === "noul" && criteria === undefined) return { type, instructions };
   if (!record(criteria)) invalid(p, "expected an object");
@@ -68,7 +71,7 @@ function convertQuestion(
         Object.entries(criteria).map(([k, v]) => {
           if (k !== "true" && k !== "false") invalid(`${p}.${k}`, "expected true or false");
           if (typeof v !== "string") invalid(`${p}.${k}`, "expected text");
-          return [`${k}_description`, replace(v)];
+          return [`${k}_description`, replace(v, `${p}.${k}`)];
         })
       ),
     };
@@ -88,7 +91,7 @@ function convertQuestion(
         )
           invalid(`${p}.${k}`, "invalid Google choice option ID");
         if (v !== null && typeof v !== "string") invalid(`${p}.${k}`, "expected text or null");
-        return [k, v === null ? "" : replace(v)];
+        return [k, v === null ? "" : replace(v, `${p}.${k}`)];
       })
     ),
   };
@@ -133,8 +136,8 @@ export function convertSystemOneDecisionRequest(
       labels.set(ref, label);
     }
   }
-  function replacer(used: Set<string>, path: string) {
-    return (s: string): string => {
+  function replacer(used: Map<string, string>): Replace {
+    return (s, path) => {
       // Track one occurrence per distinct image, not an array of every reference in a large state.
       const pending = [];
       for (const [ref, label] of labels) {
@@ -152,27 +155,37 @@ export function convertSystemOneDecisionRequest(
         if (hit.start < end) invalid(path, "overlapping image references");
         output += s.slice(end, hit.start) + hit.label;
         end = hit.start + hit.ref.length;
-        used.add(hit.ref);
+        if (!used.has(hit.ref)) used.set(hit.ref, path);
         hit.start = s.indexOf(hit.ref, hit.start + 1);
         if (hit.start === -1) pending.splice(next, 1);
       }
       return output + s.slice(end);
     };
   }
-  const shared = new Set<string>();
-  const state = render(request.state, "state", replacer(shared, "state"));
+  const shared = new Map<string, string>();
+  const state = render(request.state, "state", replacer(shared));
   const reservedIds = new Set(Object.keys(request.questions));
   let sequence = 0;
-  let firstExtra: Set<string> | undefined;
+  let firstExtra: Map<string, string> | undefined;
   const mapping = entries.map(([originalId, raw]): DecisionQuestionMapping => {
     const path = `questions.${originalId}`;
-    const used = new Set<string>();
-    const question = convertQuestion(raw, path, replacer(used, path));
-    for (const ref of used) if (shared.has(ref)) used.delete(ref);
-    const previous = firstExtra;
-    if (previous && (previous.size !== used.size || [...used].some(r => !previous.has(r))))
-      invalid(path, "Google Decisions requires the same images to be visible to every question");
-    firstExtra ??= used;
+    const used = new Map<string, string>();
+    const question = convertQuestion(raw, path, replacer(used));
+    for (const ref of used.keys()) if (shared.has(ref)) used.delete(ref);
+    if (firstExtra) {
+      for (const [refs, other] of [
+        [firstExtra, used],
+        [used, firstExtra],
+      ] as const) {
+        for (const [ref, source] of refs) {
+          if (!other.has(ref))
+            invalid(
+              source,
+              `${ref} is visible to only some questions; Google Decisions requires shared images`
+            );
+        }
+      }
+    } else firstExtra = used;
     let id = originalId;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
       do {

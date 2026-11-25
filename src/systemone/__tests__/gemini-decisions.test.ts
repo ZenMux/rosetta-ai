@@ -1,5 +1,10 @@
 import type { Decisions } from "@google/genai";
-import { SystemOneDecisionRequestError, SystemOneToGeminiDecisionsConverter } from "../../index";
+import {
+  SystemOneDecisionBlockedError,
+  SystemOneDecisionResponseError,
+  SystemOneDecisionRequestError,
+  SystemOneToGeminiDecisionsConverter,
+} from "../../index";
 
 const converter = new SystemOneToGeminiDecisionsConverter();
 const model = "gemini-decision-1";
@@ -107,7 +112,11 @@ it("allows shared pictures with different focus and an image inside a single que
   ).toBe('{"compare":["[Image 2]","[Image 1]"]}');
 });
 it.each([
-  [req({ a: { ...question, instructions: "<b>" }, b: question }, "<a>"), images, /questions.b/],
+  [
+    req({ a: { ...question, instructions: "<b>" }, b: question }, "<a>"),
+    images,
+    /questions\.a\.instructions: <b>/,
+  ],
   [req({ a: question, b: { type: "box", instructions: "where" } }), new Map(), /questions.b.type/],
   [req({ a: question }, { "<a>": "<b>" }), images, /not referenced/],
   [
@@ -151,7 +160,6 @@ it.each([
   [{ answers: { q: good, extra: good }, usage }, /question IDs/],
   [{ answers: { q: { ...good, noul: 1.2 } }, usage }, /noul/],
   [{ answers: { q: { type: "score" } }, usage }, /type/],
-  [{ answers: { q: good }, usage, prompt_feedback: { block_reason: "safety" } }, /block_reason/],
 ] as const)("does not fabricate an answer or usage (#%#)", (raw, expected) => {
   expect(() =>
     converter.convertResponse(
@@ -188,4 +196,60 @@ it("rejects a probability map for different choices and a score legend that does
       r
     )
   ).toThrow("answers.s.legend");
+});
+
+it("treats an object key as business text even if a question uses the same string as an image", () => {
+  const r = converter.convertRequest(
+    req({ q: { ...question, instructions: "compare <a>" } }, { "<a>": "left" }),
+    new Map([["<a>", image("A")]])
+  );
+  expect(r.body.input).toEqual([
+    { type: "text", text: '{"<a>":"left"}' },
+    { type: "text", text: "\n[Image 1]:\n" },
+    image("A"),
+  ]);
+  expect(r.body.questions.q.instructions).toBe("compare [Image 1]");
+});
+it.each([false, true])(
+  "identifies the image and the field that introduced it regardless of question order (%s)",
+  reverse => {
+    const rows = [
+      ["private", { ...score, criteria: ["low", "high <b>"] }],
+      ["other", question],
+    ] as const;
+    expect(() =>
+      converter.convertRequest(
+        req(Object.fromEntries(reverse ? [...rows].reverse() : rows), "<a>"),
+        images
+      )
+    ).toThrow("questions.private.criteria[1]: <b>");
+  }
+);
+it.each(["safety", "other", "future_reason", "unspecified"])(
+  "preserves explicit block reason %s before looking for answers or usage",
+  reason => {
+    const request = converter.convertRequest(req({ q: question }));
+    const convert = () =>
+      converter.convertResponse(
+        { prompt_feedback: { block_reason: reason, block_reason_message: "filtered" } },
+        request
+      );
+    expect(convert).toThrow(SystemOneDecisionBlockedError);
+    expect(convert).toThrow(
+      expect.objectContaining({
+        blockReason: reason,
+        blockReasonMessage: "filtered",
+        message: "filtered",
+      })
+    );
+  }
+);
+it("keeps empty feedback without answers a malformed response", () => {
+  const convert = () =>
+    converter.convertResponse(
+      { prompt_feedback: {} },
+      converter.convertRequest(req({ q: question }))
+    );
+  expect(convert).toThrow(SystemOneDecisionResponseError);
+  expect(convert).not.toThrow(SystemOneDecisionBlockedError);
 });

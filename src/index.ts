@@ -31,5 +31,9 @@ export { convertInteractionResponseUsage } from "./interactions/usage";
 export type { InteractionResponseUsage } from "./interactions/usage";
 export { ResponsesToMessagesConverter } from "./responses/messages";
 export { ResponsesToChatCompletionConverter } from "./responses/chat-completions";
-export { SystemOneToGeminiDecisionsConverter } from "./systemone/gemini-decisions";
+export {
+  SystemOneToGeminiDecisionsConverter,
+  SystemOneDecisionResponseError,
+  SystemOneDecisionBlockedError,
+} from "./systemone/gemini-decisions";
 export { SystemOneDecisionRequestError } from "./systemone/gemini-decisions-request";

@@ -18,8 +18,20 @@ function sameKeys(value: unknown, expected: string[]): boolean {
     expected.every(k => Object.hasOwn(value, k))
   );
 }
+export class SystemOneDecisionResponseError extends Error {
+  override name = "SystemOneDecisionResponseError";
+}
+export class SystemOneDecisionBlockedError extends SystemOneDecisionResponseError {
+  override name = "SystemOneDecisionBlockedError";
+  constructor(
+    readonly blockReason: string,
+    readonly blockReasonMessage?: string
+  ) {
+    super(blockReasonMessage || blockReason);
+  }
+}
 function invalid(path: string): never {
-  throw new Error(`Invalid Gemini Decisions response: ${path}`);
+  throw new SystemOneDecisionResponseError(`Invalid Gemini Decisions response: ${path}`);
 }
 
 type SystemOneAnswer =
@@ -42,12 +54,13 @@ export class SystemOneToGeminiDecisionsConverter {
     response: Decisions.CreateDecisionResponse,
     request: ConvertedDecisionRequest
   ): SystemOneDecisionResponse {
-    const { answers, usage } = response;
-    if (
-      response.prompt_feedback?.block_reason &&
-      response.prompt_feedback.block_reason !== "unspecified"
-    )
-      invalid("prompt_feedback.block_reason");
+    const { answers, usage, prompt_feedback } = response;
+    if (typeof prompt_feedback?.block_reason === "string" && prompt_feedback.block_reason) {
+      throw new SystemOneDecisionBlockedError(
+        prompt_feedback.block_reason,
+        prompt_feedback.block_reason_message
+      );
+    }
     if (
       !answers ||
       !sameKeys(
