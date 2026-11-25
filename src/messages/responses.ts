@@ -13,6 +13,7 @@ interface StreamState {
   outputTokens: number;
   cacheReadTokens: number;
   webSearchCount: number;
+  webFetchCount: number;
   stopReason: Anthropic.StopReason | null;
 }
 
@@ -92,6 +93,7 @@ export class MessagesToResponsesConverter {
   convertResponse(response: RespResponse): Anthropic.Message {
     const content: Anthropic.ContentBlock[] = [];
     let webSearchCount = 0;
+    let webFetchCount = 0;
 
     for (const item of response.output) {
       if (item.type === "reasoning") {
@@ -102,12 +104,9 @@ export class MessagesToResponsesConverter {
           thinking: summaryText,
           signature: this.packReasoningSignature(ri.id, ri.encrypted_content),
         });
-      } else if (
-        item.type === "web_search_call" &&
-        item.status === "completed" &&
-        item.action.type === "search"
-      ) {
-        webSearchCount++;
+      } else if (item.type === "web_search_call" && item.status === "completed") {
+        if (item.action.type === "search") webSearchCount++;
+        else if (item.action.type === "open_page") webFetchCount++;
       }
     }
 
@@ -152,7 +151,7 @@ export class MessagesToResponsesConverter {
     }
 
     const stopReason = this.statusToStopReason(response.status, response.output);
-    const usage = this.buildUsage(response.usage, webSearchCount);
+    const usage = this.buildUsage(response.usage, webSearchCount, webFetchCount);
 
     return {
       id: response.id,
@@ -169,7 +168,7 @@ export class MessagesToResponsesConverter {
     };
   }
 
-  private buildUsage(usage: any, webSearchCount: number): any {
+  private buildUsage(usage: any, webSearchCount: number, webFetchCount = 0): any {
     const u = usage ?? {};
     const inputTokens = u.input_tokens ?? 0;
     const outputTokens = u.output_tokens ?? 0;
@@ -197,9 +196,9 @@ export class MessagesToResponsesConverter {
       output_tokens_details: null,
       cache_read_input_tokens: cachedTokens,
       server_tool_use:
-        webSearchCount > 0
+        webSearchCount > 0 || webFetchCount > 0
           ? {
-              web_fetch_requests: 0,
+              web_fetch_requests: webFetchCount,
               web_search_requests: webSearchCount,
             }
           : null,
@@ -335,8 +334,9 @@ export class MessagesToResponsesConverter {
         const doneEvent = event as OpenAI.Responses.ResponseOutputItemDoneEvent;
         const item = doneEvent.item;
         if (item?.type === "web_search_call") {
-          if (item.status === "completed" && item.action.type === "search") {
-            state.webSearchCount++;
+          if (item.status === "completed") {
+            if (item.action.type === "search") state.webSearchCount++;
+            else if (item.action.type === "open_page") state.webFetchCount++;
           }
           break;
         }
@@ -377,7 +377,7 @@ export class MessagesToResponsesConverter {
             stop_details: null,
             container: null,
           },
-          usage: this.buildUsage(resp.usage, state.webSearchCount),
+          usage: this.buildUsage(resp.usage, state.webSearchCount, state.webFetchCount),
         });
         events.push({ type: "message_stop" });
         break;
@@ -395,7 +395,7 @@ export class MessagesToResponsesConverter {
             stop_details: null,
             container: null,
           },
-          usage: this.buildUsage(resp.usage, state.webSearchCount),
+          usage: this.buildUsage(resp.usage, state.webSearchCount, state.webFetchCount),
         });
         events.push({ type: "message_stop" });
         break;
@@ -410,7 +410,7 @@ export class MessagesToResponsesConverter {
             stop_details: null,
             container: null,
           },
-          usage: this.buildUsage(null, state.webSearchCount),
+          usage: this.buildUsage(null, state.webSearchCount, state.webFetchCount),
         });
         events.push({ type: "message_stop" });
         break;
@@ -657,6 +657,7 @@ export class MessagesToResponsesConverter {
       outputTokens: 0,
       cacheReadTokens: 0,
       webSearchCount: 0,
+      webFetchCount: 0,
       stopReason: null,
     };
   }
