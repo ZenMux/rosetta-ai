@@ -440,6 +440,26 @@ describe("MessagesToResponsesConverter", () => {
       expect((result.usage as any).server_tool_use?.web_search_requests).toBe(1);
     });
 
+    it("counts completed open_page web search calls as web fetch requests", () => {
+      const result = converter.convertResponse(
+        makeResponse({
+          output: [
+            {
+              type: "web_search_call",
+              id: "ws_1",
+              status: "completed",
+              action: { type: "open_page", url: "https://example.com" },
+            } as any,
+          ],
+        })
+      );
+
+      expect((result.usage as any).server_tool_use).toEqual({
+        web_fetch_requests: 1,
+        web_search_requests: 0,
+      });
+    });
+
     it("converts empty output to empty text content", () => {
       const result = converter.convertResponse(
         makeResponse({
